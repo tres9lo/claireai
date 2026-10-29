@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claireai"
+version = "0.1.0"
+description = "ClaireAI local-first personal assistant runtime (Track A)"
+requires-python = ">=3.11"
+dependencies = [
+  # Local model runtime is reached over its loopback HTTP API; no hosted SDK.
+  "httpx>=0.27",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  # OS-specific application-data locations, maintained rather than hard-coded.
+  "platformdirs>=4.2",
+  # API layer, installed now, wired up only after the core services are tested.
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "apscheduler>=3.10,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+claireai = "claireai.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claireai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
