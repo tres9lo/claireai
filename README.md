@@ -16,7 +16,9 @@ Implemented and tested:
 - SQLite storage with a versioned, checksummed migration runner;
 - `tasks`, `task_log` (append-only audit), `summaries`, `notes` tables;
 - provider-neutral `Brain` interface with an `OllamaBrain` adapter;
-- CLI chat that records every turn as a task plus an audit entry.
+- CLI chat that records every turn as a task plus an audit entry;
+- a model capability harness (`scripts/eval_model.py`) that scores the local
+  model against fixed cases before features depend on it.
 
 Not implemented yet (planned for later weeks): the FastAPI service, tool
 registry, permission/approval layer, browser and file agents, the daily summary

@@ -23,3 +23,15 @@ nothing has been released yet.
   state transitions, redaction, the Ollama adapter (mocked) and CLI logging.
 - Docs: README, `.env.example`, Linux/Windows setup guides, platform support
   matrix, model licence record.
+
+### Added — model evaluation harness
+
+- `claireai.evaluation` with four deterministic check kinds and a repeat-each-case
+  runner; no model grades another model.
+- `scripts/eval_model.py` with a clearly-labelled stub mode and a real
+  `temperature=0` run against the configured local model; results written outside
+  git with exit codes for stable / failed / misconfigured / unavailable.
+- `scripts/model_eval_cases.json`: 10 cases covering intent routing, slot
+  extraction, JSON tool calls, the three-section summary and two safety cases.
+- `OllamaBrain` accepts decoding `options`; `docs/testing.md` documents the
+  suite and the harness.

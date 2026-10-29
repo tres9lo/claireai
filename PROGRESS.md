@@ -93,12 +93,56 @@ Ollama model tag checked on the library page: `qwen2.5:1.5b` exists (Q4_K_M,
 986 MB, Apache-2.0, lists `tools` support). It has **not** been pulled or run
 here yet.
 
+### Added after the first commit: model evaluation harness (same session)
+
+Purpose: decide which features may rely on the local model and which must be
+plain code, from measurement rather than assumption.
+
+- `claireai.evaluation`: case loading/validation, four deterministic check kinds
+  (`exact`, `json` with dotted paths, `contains_all`, `contains_any`), a runner
+  that repeats each case N times, a report and a JSON summary. No model grades
+  another model.
+- `scripts/eval_model.py`: `--stub` (wiring check, clearly labelled as not a
+  model result), or a real run against the configured local model with
+  `temperature=0`. Exit codes 0/1/2/3 (all stable / a case failed / bad config /
+  runtime or model missing). Results go to `<data-dir>/eval/` (git-ignored).
+- `scripts/model_eval_cases.json`: 10 cases across intent routing, slot
+  extraction, JSON tool calls, the three-section summary, and two safety cases
+  (refuse to bypass approval; do not invent private data).
+- `OllamaBrain` gained optional decoding `options`, used to pin `temperature=0`
+  for repeatable measurement.
+- `docs/testing.md` documents the suite, the harness, and the rule that a
+  failing case is never deleted to make a run green.
+
+Verified:
+
+```
+$ assistant/.venv/bin/python -m pytest
+67 passed in 1.68s
+
+$ assistant/.venv/bin/python scripts/eval_model.py --stub --out runtime-data/eval/stub-wiring-check.json
+STUB MODE - harness wiring check, NOT a model result
+PASS  3/3  intent       intent-list-files
+... (10 cases)
+cases stable: 10/10   checks passed: 30/30
+EXIT=0
+
+$ assistant/.venv/bin/python scripts/eval_model.py --runs 3
+ERROR: cannot reach Ollama at http://127.0.0.1:11434: ConnectError
+EXIT=3
+```
+
+The stub run proves loading, running, scoring, reporting and saving work. It is
+**not** a model measurement: no case has been scored against a real model yet.
+
 ### Blockers / not verified
 
 1. **Real local inference not yet proven on this machine.** Ollama was not
    installed during this session (the owner is installing it, with Rust/cargo).
    The Week 1 acceptance check "answers a question without an API key and logs
-   it" is therefore **not yet passed**; everything around it is.
+   it" is therefore **not yet passed**; everything around it is. For the same
+   reason **no evaluation case has been scored against a real model** — the only
+   harness run so far is the stub wiring check.
 2. `python3.12-venv` (system package) is missing, so `python3 -m venv` produces a
    venv without pip. Worked around with `uv venv --seed`; the standard-library
    route is documented but untested here.
@@ -113,5 +157,7 @@ here yet.
 Once Ollama is installed and the model pulled: run the real smoke test
 (`ollama pull qwen2.5:1.5b`, then `claireai --once ...`), record RAM use,
 latency and the task/audit rows in this file, then disconnect the network and
-repeat to prove inference is local. Only after that, Month 1 Week 2 (tool
-registry, read-only file tools, allow-list) with owner approval.
+repeat to prove inference is local; then run
+`assistant/.venv/bin/python scripts/eval_model.py --runs 3` and record the
+per-case results here. Only after that, Month 1 Week 2 (tool registry,
+read-only file tools, allow-list) with owner approval.

@@ -62,6 +62,19 @@ async def test_tools_are_forwarded_when_provided() -> None:
     assert captured["tools"] == tools
 
 
+async def test_decoding_options_are_forwarded() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"model": "m", "message": {"content": "ok"}})
+
+    client = httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(handler))
+    brain = OllamaBrain(base_url=BASE_URL, model="m", client=client, options={"temperature": 0})
+    await brain.generate([Message(role="user", content="hi")])
+    assert captured["options"] == {"temperature": 0}
+
+
 async def test_missing_model_error_names_the_pull_command() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"error": "model not found"})

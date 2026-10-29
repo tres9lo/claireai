@@ -30,9 +30,13 @@ class OllamaBrain:
         *,
         timeout: float = 120.0,
         client: httpx.AsyncClient | None = None,
+        options: Mapping[str, Any] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        # Decoding options (temperature, num_predict, ...) are sent with every
+        # request; the evaluation harness pins temperature=0 for repeatability.
+        self.options = dict(options or {})
         self._client = client or httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
         self._owns_client = client is None
 
@@ -93,6 +97,8 @@ class OllamaBrain:
         }
         if tools:
             payload["tools"] = list(tools)
+        if self.options:
+            payload["options"] = self.options
 
         try:
             response = await self._client.post("/api/chat", json=payload)
