@@ -52,7 +52,17 @@ $env:CLAIREAI_DATA_DIR = "$PWD\runtime-data"
 Without `CLAIREAI_DATA_DIR`, data lives under `%LOCALAPPDATA%\ClaireAI\ClaireAI`
 (resolved by `platformdirs`, not hard-coded).
 
-## 5. Tests
+## 5. Diagnostics
+
+```powershell
+$env:CLAIREAI_DATA_DIR = "$PWD\runtime-data"
+.\assistant\.venv\Scripts\python.exe scripts\doctor.py
+```
+
+Read-only: no database, model or config is created, and no secret values are
+printed.
+
+## 6. Tests
 
 ```powershell
 cd assistant

@@ -76,7 +76,19 @@ assistant/.venv/bin/python -m claireai.cli        # interactive; /log shows the 
 
 Exit codes: `0` success, `2` invalid configuration, `3` model runtime unavailable.
 
-## 5. Tests
+## 5. Diagnostics
+
+`scripts/doctor.py` is read-only: it reports versions, paths, database/schema
+state and model-runtime status, never creates anything and never prints secret
+values (only the names of set `CLAIREAI_*` variables).
+
+```bash
+export CLAIREAI_DATA_DIR=./runtime-data
+assistant/.venv/bin/python scripts/doctor.py        # exit 0 ready, 1 not ready, 2 bad config
+assistant/.venv/bin/python scripts/doctor.py --json
+```
+
+## 6. Tests
 
 ```bash
 cd assistant && .venv/bin/python -m pytest

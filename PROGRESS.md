@@ -135,22 +135,61 @@ EXIT=3
 The stub run proves loading, running, scoring, reporting and saving work. It is
 **not** a model measurement: no case has been scored against a real model yet.
 
+### Added while the Ollama download was running: CI + read-only diagnostics
+
+Both are part of Initial Repository Setup (step 8 and the step-10 report), not
+Week 2, so no phase gate was skipped.
+
+- `claireai.doctor`: read-only environment report (OS/Python/package versions,
+  data paths, config, database + schema/migration state, model-runtime
+  reachability and whether the configured model is installed, dependency
+  versions). It opens SQLite with `mode=ro`, creates nothing, and prints only the
+  *names* of set `CLAIREAI_*` variables. Exit 0 ready / 1 not ready / 2 bad config.
+- `scripts/doctor.py`: thin CLI with `--json`.
+- `.github/workflows/python-tests.yml`: pytest on Ubuntu and Windows with Python
+  3.11 and 3.12. No Ollama, audio, browser or packaging steps — hosted runners
+  cannot verify those, and the workflow says so.
+
+Verified:
+
+```
+$ CLAIREAI_DATA_DIR=./runtime-data assistant/.venv/bin/python scripts/doctor.py
+Environment / Configuration / Database / Local model runtime / Dependencies
+  Schema              all expected tables present
+  Migrations applied  0001_initial
+  [FAIL] Runtime reachable           no - cannot reach Ollama at ...: ConnectError
+  [FAIL] Configured model installed  no - run: ollama pull qwen2.5:1.5b
+Problems to fix:
+  - model runtime unreachable at http://127.0.0.1:11434
+EXIT=2
+
+$ assistant/.venv/bin/python -m pytest
+75 passed in 0.90s
+```
+
+CI workflow YAML was parsed (via `uv run --with pyyaml`, no project dependency
+added) and shows 1 job, matrix `[ubuntu-latest, windows-latest]`,
+`["3.11", "3.12"]`, 4 steps. **The workflow itself has not run** — this repo has
+no remote and nothing was pushed, so CI success is unverified.
+
 ### Blockers / not verified
 
-1. **Real local inference not yet proven on this machine.** Ollama was not
+1. **CI has never executed.** The workflow is written and its YAML parses, but
+   no run has happened (no remote, no push). Do not count it as Windows coverage.
+2. **Real local inference not yet proven on this machine.** Ollama was not
    installed during this session (the owner is installing it, with Rust/cargo).
    The Week 1 acceptance check "answers a question without an API key and logs
    it" is therefore **not yet passed**; everything around it is. For the same
    reason **no evaluation case has been scored against a real model** — the only
    harness run so far is the stub wiring check.
-2. `python3.12-venv` (system package) is missing, so `python3 -m venv` produces a
+3. `python3.12-venv` (system package) is missing, so `python3 -m venv` produces a
    venv without pip. Worked around with `uv venv --seed`; the standard-library
    route is documented but untested here.
-3. Windows: nothing has been run on Windows. Setup steps are written but
+4. Windows: nothing has been run on Windows. Setup steps are written but
    unverified — no Windows claims are made.
-4. Machine has 7.1 GiB RAM (~2.6 GiB available). Expect the 1.5B model to load
+5. Machine has 7.1 GiB RAM (~2.6 GiB available). Expect the 1.5B model to load
    slowly; a larger model may not fit comfortably.
-5. Redaction is pattern-based best effort, not a guarantee.
+6. Redaction is pattern-based best effort, not a guarantee.
 
 ### Next single task
 

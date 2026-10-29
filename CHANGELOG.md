@@ -35,3 +35,11 @@ nothing has been released yet.
   extraction, JSON tool calls, the three-section summary and two safety cases.
 - `OllamaBrain` accepts decoding `options`; `docs/testing.md` documents the
   suite and the harness.
+
+### Added — CI and diagnostics
+
+- `claireai.doctor` + `scripts/doctor.py`: read-only report of versions, paths,
+  database/schema state and local model-runtime status; creates nothing and
+  prints no secret values.
+- `.github/workflows/python-tests.yml`: pytest on Ubuntu and Windows, Python
+  3.11 and 3.12. Never executed yet (no remote); not evidence of Windows support.
