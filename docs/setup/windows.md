@@ -62,7 +62,24 @@ $env:CLAIREAI_DATA_DIR = "$PWD\runtime-data"
 Read-only: no database, model or config is created, and no secret values are
 printed.
 
-## 6. Tests
+## 6. File tools and the allow-list
+
+The allow-list is a JSON array, so Windows backslashes need doubling. Use
+forward slashes instead — Windows accepts them and the value stays readable:
+
+```powershell
+$env:CLAIREAI_ALLOWED_FOLDERS = '["C:/Users/tresor/Downloads"]'
+.\assistant\.venv\Scripts\python.exe -m claireai.cli --once "List the biggest files in my Downloads folder"
+```
+
+Setting it in a `.env` file follows the same rule (`CLAIREAI_ALLOWED_FOLDERS=["C:/Users/tresor/Downloads"]`),
+because pydantic-settings parses a JSON array before any Windows path handling
+happens. Empty or unset means every file tool is refused.
+
+Typed tool results use forward slashes on every OS (`sub/inner.txt`), so what the
+model sees and what lands in the audit log is identical on Windows and Linux.
+
+## 7. Tests
 
 ```powershell
 cd assistant
@@ -71,3 +88,9 @@ cd assistant
 
 Record the Python version, Windows build, resolved dependency versions, and the
 pytest output in `docs/platform-support.md`.
+
+Three allow-list tests create symlinks, which Windows only permits with
+**Developer Mode** enabled or in an elevated shell. Elsewhere they are reported
+as skipped with that reason — a skip there is an environment limit, not a
+passing security check, so run the suite once on a Windows machine where
+symlinks work before claiming Windows coverage.

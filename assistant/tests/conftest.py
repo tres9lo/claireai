@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -46,3 +47,25 @@ def settings(tmp_path: Path) -> Settings:
 @pytest.fixture()
 def sqlite_conn(conn: sqlite3.Connection) -> sqlite3.Connection:
     return conn
+
+
+@pytest.fixture()
+def make_symlink():
+    """Create a symlink, or skip the test where the OS refuses.
+
+    Windows needs Developer Mode or an elevated process; a normal user session
+    raises OSError (WinError 1314). Skipping with a reason is honest: the
+    allow-list tests still run on Linux and on elevated CI runners, and a
+    contributor on Windows sees why instead of a false failure.
+    """
+
+    def _make(link: Path, target: Path) -> None:
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(
+                f"this OS refused to create a symlink ({exc}); "
+                "on Windows enable Developer Mode or run pytest elevated"
+            )
+
+    return _make

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -166,11 +165,11 @@ def test_search_files_respects_max_results(context: ToolContext, root: Path) -> 
 
 
 def test_search_files_skips_symlinks_leaving_the_allow_list(
-    context: ToolContext, root: Path, tmp_path: Path
+    context: ToolContext, root: Path, tmp_path: Path, make_symlink
 ) -> None:
     outside = tmp_path / "outside-secret.txt"
     outside.write_text("secret", encoding="utf-8")
-    os.symlink(outside, root / "linked-report.txt")
+    make_symlink(root / "linked-report.txt", outside)
 
     result = search_files(context, SearchFilesArgs(path=str(root), pattern="*report*"))
     assert result.detail["matches"] == 0

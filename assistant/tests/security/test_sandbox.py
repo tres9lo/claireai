@@ -6,7 +6,6 @@ cannot reach a file outside the folders the owner named.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -58,29 +57,33 @@ def test_parent_traversal_is_refused(sandbox: Sandbox, downloads: Path) -> None:
         sandbox.resolve(str(downloads / ".." / "outside.txt"))
 
 
-def test_symlink_escaping_the_allow_list_is_refused(sandbox: Sandbox, downloads: Path, tmp_path: Path) -> None:
+def test_symlink_escaping_the_allow_list_is_refused(
+    sandbox: Sandbox, downloads: Path, tmp_path: Path, make_symlink
+) -> None:
     secret = tmp_path / "secret.txt"
     secret.write_text("secret", encoding="utf-8")
     link = downloads / "shortcut.txt"
-    os.symlink(secret, link)
+    make_symlink(link, secret)
 
     assert link.exists()  # the link resolves on disk...
     with pytest.raises(PermissionDenied):  # ...but the sandbox refuses it
         sandbox.resolve(str(link))
 
 
-def test_directory_symlink_escape_is_refused(sandbox: Sandbox, downloads: Path, tmp_path: Path) -> None:
+def test_directory_symlink_escape_is_refused(
+    sandbox: Sandbox, downloads: Path, tmp_path: Path, make_symlink
+) -> None:
     outside = tmp_path / "outside-dir"
     outside.mkdir()
     (outside / "leak.txt").write_text("leak", encoding="utf-8")
-    os.symlink(outside, downloads / "escape")
+    make_symlink(downloads / "escape", outside)
 
     with pytest.raises(PermissionDenied):
         sandbox.resolve(str(downloads / "escape" / "leak.txt"))
 
 
-def test_symlink_inside_allow_list_is_followed(sandbox: Sandbox, downloads: Path) -> None:
-    os.symlink(downloads / "report.pdf", downloads / "alias.pdf")
+def test_symlink_inside_allow_list_is_followed(sandbox: Sandbox, downloads: Path, make_symlink) -> None:
+    make_symlink(downloads / "alias.pdf", downloads / "report.pdf")
     assert sandbox.resolve(str(downloads / "alias.pdf")) == (downloads / "report.pdf").resolve()
 
 
