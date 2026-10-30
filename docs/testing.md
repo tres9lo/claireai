@@ -16,6 +16,12 @@ permissions or logging work.
 cd assistant && .venv/bin/python -m pytest
 ```
 
+Run it from `assistant/`, not the repository root: the pytest configuration
+(including `asyncio_mode = "auto"`) lives in `assistant/pyproject.toml`, so from
+the root the async tests fail with "async def functions are not natively
+supported" and the run reports 23 failed / 52 passed. CI uses
+`working-directory: assistant` for the same reason.
+
 Covered today: settings validation and loopback enforcement, migration runner
 (idempotency, checksum tampering, statement splitting with trigger bodies),
 schema safety (foreign keys, append-only audit triggers), task state machine,
@@ -70,3 +76,26 @@ Rules for the case file:
   and design around it (deterministic code instead of free-form model output).
 - Keep cases small and unambiguous; a flaky case usually means the prompt or the
   output contract is ambiguous, not that the model is random.
+
+## Proving inference is local (offline check)
+
+The roadmap asks for a repeat with the network disconnected. If the owner cannot
+drop their connection (it may be carrying the coding session), the same
+condition can be created for the process alone: run the CLI inside a network
+namespace that has no route anywhere, bridged to the local runtime over a Unix
+socket. Nothing leaves the machine, and the model still answers.
+
+```bash
+# scratch relay, outside git: runtime-data/tmp/relay.py unix-out|tcp-out
+python runtime-data/tmp/relay.py unix-out --socket "$PWD/runtime-data/tmp/ollama.sock" &
+unshare -rn bash -c '
+  ip link set lo up
+  # prove it: no route, egress blocked, DNS broken
+  # then bridge 127.0.0.1:11434 to the Unix socket and run the real CLI
+  python -m claireai.cli --data-dir ./runtime-data --once "what does a tokenizer do?"'
+```
+
+Record it in `PROGRESS.md` with the egress/DNS lines, the answer and the audit
+row. State the limit honestly: this proves the client process used no network
+and that the runtime serves from local model files; it does not audit the
+runtime's own syscalls.
