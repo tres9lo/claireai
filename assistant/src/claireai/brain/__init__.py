@@ -8,6 +8,7 @@ from claireai.brain.base import (
     BrainResponseError,
     BrainUnavailable,
     Message,
+    ToolCall,
 )
 from claireai.brain.ollama import OllamaBrain
 
@@ -20,4 +21,5 @@ __all__ = [
     "BrainUnavailable",
     "Message",
     "OllamaBrain",
+    "ToolCall",
 ]

@@ -36,6 +36,28 @@ nothing has been released yet.
 - `OllamaBrain` accepts decoding `options`; `docs/testing.md` documents the
   suite and the harness.
 
+### Added — Month 1, Week 2: tool registry, allow-list and agent loop
+
+- `claireai.tools`: registry of tools with name, description, JSON schema and
+  risk level. Arguments are validated against each tool's pydantic model before
+  a handler runs; unexpected keys are rejected.
+- Five read-only file tools: `list_folder`, `get_file_info`, `read_text_file`,
+  `search_files`, `find_largest_files`. All are `safe`; none writes.
+- `claireai.permissions`: folder allow-list (`CLAIREAI_ALLOWED_FOLDERS`, empty by
+  default = deny everything) with symlink-aware containment checks, plus a risk
+  policy that refuses `needs_approval`/`dangerous` tools while no approval flow
+  exists.
+- `claireai.agent`: the agent loop — validate, authorize, execute, log, feed the
+  result back, stop after `CLAIREAI_AGENT_MAX_STEPS` (default 8). Every step and
+  the final answer are written to `task_log`.
+- `BrainResponse`/`Message` now carry tool calls and tool results; `OllamaBrain`
+  parses `message.tool_calls` and rejects malformed calls instead of guessing.
+- CLI: tools on by default, `--no-tools` for plain chat, `--dry-run` to show
+  calls without reading anything; exit code 1 when a task cannot finish.
+- Tests: 155 passing, including a security suite for the allow-list (parent
+  traversal, symlink escape, empty allow-list) and agent-loop tests for refusal,
+  invalid arguments, dry run and the step limit.
+
 ### Verified — first real local inference (Linux, 2026-10-30)
 
 No product code changed; this records the Week 1 acceptance result and the

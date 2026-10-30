@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     ollama_timeout_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
     allow_non_loopback_ollama: bool = False
 
+    # Tool sandbox (roadmap 7.2). Empty by default: file tools can reach nothing
+    # until the owner names the folders. Set as a JSON array, e.g.
+    # CLAIREAI_ALLOWED_FOLDERS='["~/Downloads"]'.
+    allowed_folders: list[Path] = Field(default_factory=list)
+    agent_max_steps: int = Field(default=8, ge=1, le=24)
+
     # Development override. Production data belongs in the OS application-data
     # directory resolved by ``default_data_dir``.
     data_dir: Path | None = None
@@ -72,6 +78,14 @@ class Settings(BaseSettings):
         if not self.ollama_model.strip():
             raise ValueError("CLAIREAI_OLLAMA_MODEL must not be empty")
         object.__setattr__(self, "ollama_base_url", url)
+
+        cleaned: list[Path] = []
+        for folder in self.allowed_folders:
+            text = str(folder).strip()
+            if not text:
+                raise ValueError("CLAIREAI_ALLOWED_FOLDERS must not contain empty entries")
+            cleaned.append(Path(text).expanduser())
+        object.__setattr__(self, "allowed_folders", cleaned)
         return self
 
     @property
@@ -90,6 +104,11 @@ class Settings(BaseSettings):
     @property
     def log_dir(self) -> Path:
         return self.resolved_data_dir / "logs"
+
+    @property
+    def allowed_folder_roots(self) -> tuple[Path, ...]:
+        """Allow-list entries as absolute paths, without requiring them to exist."""
+        return tuple(folder.expanduser().resolve(strict=False) for folder in self.allowed_folders)
 
     def ensure_directories(self) -> None:
         for directory in (self.database_path.parent, self.log_dir):

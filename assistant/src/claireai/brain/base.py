@@ -14,12 +14,45 @@ Role = Literal["system", "user", "assistant", "tool"]
 
 
 @dataclass(frozen=True)
-class Message:
-    role: Role
-    content: str
+class ToolCall:
+    """One tool invocation proposed by the model.
 
-    def as_wire(self) -> dict[str, str]:
-        return {"role": self.role, "content": self.content}
+    The model only ever *proposes*: the agent runtime validates the name,
+    arguments and risk level before anything runs (roadmap 6.2, 7.1).
+    """
+
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    index: int = 0
+
+    def as_wire(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {"index": self.index, "name": self.name, "arguments": self.arguments},
+        }
+
+
+@dataclass(frozen=True)
+class Message:
+    """One chat message in the provider-neutral shape.
+
+    ``tool_calls`` is set on an assistant message that proposed calls, and
+    ``tool_name`` on a ``tool`` message carrying one result
+    (https://docs.ollama.com/capabilities/tool-calling, checked 2026-10-30).
+    """
+
+    role: Role
+    content: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_name: str | None = None
+
+    def as_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            wire["tool_calls"] = [call.as_wire() for call in self.tool_calls]
+        if self.tool_name:
+            wire["tool_name"] = self.tool_name
+        return wire
 
 
 @dataclass(frozen=True)
@@ -28,6 +61,7 @@ class BrainResponse:
     model: str
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
 
 
 @dataclass(frozen=True)

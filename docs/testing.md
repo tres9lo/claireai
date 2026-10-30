@@ -25,8 +25,15 @@ supported" and the run reports 23 failed / 52 passed. CI uses
 Covered today: settings validation and loopback enforcement, migration runner
 (idempotency, checksum tampering, statement splitting with trigger bodies),
 schema safety (foreign keys, append-only audit triggers), task state machine,
-credential redaction, the Ollama adapter via `httpx.MockTransport`, CLI
-task/audit bookkeeping, and the evaluation checkers/runner.
+credential redaction, the Ollama adapter via `httpx.MockTransport` (including
+tool-call parsing and malformed-call rejection), CLI task/audit bookkeeping, the
+evaluation checkers/runner, the tool registry, the five read-only file tools, the
+agent loop (refusals, invalid arguments, empty replies, dry run, step limit), and
+a security suite for the folder allow-list in `tests/security/`.
+
+The allow-list tests are the ones to keep strict: they assert that parent
+traversal, absolute paths outside the list, and symlinks that resolve outside it
+are all refused, and that an empty allow-list allows nothing.
 
 **Labelled honestly:** every Ollama test is **mocked** — it proves our request
 shape and error mapping, not that a real runtime answers. The real proof is the

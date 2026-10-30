@@ -7,6 +7,7 @@ and no API key is read.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping, Sequence
 
 import httpx
@@ -17,6 +18,7 @@ from claireai.brain.base import (
     BrainResponseError,
     BrainUnavailable,
     Message,
+    ToolCall,
 )
 
 
@@ -124,8 +126,11 @@ class OllamaBrain:
 
         try:
             data = response.json()
-            content = data["message"]["content"]
-        except (ValueError, KeyError, TypeError) as exc:
+            message = data["message"]
+            # A tool-calling reply may carry no text at all, so it must not be
+            # required: an empty string keeps the contract total.
+            content = message.get("content") or ""
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise BrainResponseError("Ollama returned an unexpected /api/chat response shape") from exc
 
         return BrainResponse(
@@ -133,4 +138,43 @@ class OllamaBrain:
             model=str(data.get("model", self.model)),
             prompt_tokens=data.get("prompt_eval_count"),
             completion_tokens=data.get("eval_count"),
+            tool_calls=_parse_tool_calls(message.get("tool_calls")),
         )
+
+
+def _parse_tool_calls(raw: Any) -> tuple[ToolCall, ...]:
+    """Turn Ollama's ``message.tool_calls`` into validated :class:`ToolCall`s.
+
+    Malformed calls are rejected here rather than guessed at: a call with no
+    name, or arguments that are neither an object nor JSON describing one, is a
+    runtime error the agent must surface (roadmap 10: reject malformed calls).
+    """
+    if not raw:
+        return ()
+    if not isinstance(raw, list):
+        raise BrainResponseError("Ollama returned tool_calls that are not a list")
+
+    calls: list[ToolCall] = []
+    for position, entry in enumerate(raw):
+        function = entry.get("function") if isinstance(entry, Mapping) else None
+        if not isinstance(function, Mapping):
+            raise BrainResponseError("Ollama returned a tool call without a function object")
+        name = function.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise BrainResponseError("Ollama returned a tool call without a name")
+
+        arguments = function.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments) if arguments.strip() else {}
+            except ValueError as exc:
+                raise BrainResponseError(
+                    f"Ollama returned arguments for {name!r} that are not valid JSON"
+                ) from exc
+        if not isinstance(arguments, Mapping):
+            raise BrainResponseError(f"Ollama returned arguments for {name!r} that are not an object")
+
+        raw_index = function.get("index", position)
+        index = raw_index if isinstance(raw_index, int) else position
+        calls.append(ToolCall(name=name, arguments=dict(arguments), index=index))
+    return tuple(calls)

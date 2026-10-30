@@ -7,12 +7,14 @@ model's answer. The real Ollama path is exercised by the manual smoke test.
 from __future__ import annotations
 
 import sqlite3
+from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
 from claireai.audit import AuditLog
-from claireai.brain import BrainHealth, BrainResponse, BrainUnavailable
-from claireai.cli import ask
+from claireai.brain import BrainHealth, BrainResponse, BrainUnavailable, ToolCall
+from claireai.cli import _handle_turn, ask
 from claireai.config import Settings
 from claireai.storage import TaskRepository
 
@@ -87,3 +89,91 @@ async def test_secrets_in_request_are_not_stored(
     stored = TaskRepository(conn).recent(limit=1)[0].request
     assert "sk-live-1234567890abc" not in stored
     assert "[REDACTED]" in stored
+
+
+# --- agent wiring: the CLI must use the tool loop by default ------------------
+
+
+class ScriptedBrain:
+    """Two turns: a tool call, then a final answer."""
+
+    name = "scripted"
+
+    def __init__(self, call: ToolCall, answer: str) -> None:
+        self._responses = [
+            BrainResponse(content="", model="scripted", tool_calls=(call,)),
+            BrainResponse(content=answer, model="scripted"),
+        ]
+        self.tools_seen: list = []
+
+    async def health(self) -> BrainHealth:
+        return BrainHealth(available=True, model_present=True, models=("scripted",))
+
+    async def generate(self, messages, tools=None) -> BrainResponse:
+        self.tools_seen.append(tools)
+        return self._responses.pop(0)
+
+
+def _args(**overrides) -> Namespace:  # noqa: ANN003
+    base = {"no_tools": False, "dry_run": False, "device": "desktop"}
+    base.update(overrides)
+    return Namespace(**base)
+
+
+async def test_cli_uses_the_agent_loop_by_default(
+    conn: sqlite3.Connection, settings: Settings, tmp_path: Path, capsys
+) -> None:
+    folder = tmp_path / "Downloads"
+    folder.mkdir()
+    (folder / "a.txt").write_text("hello", encoding="utf-8")
+    settings = settings.model_copy(update={"allowed_folders": [folder]})
+    brain = ScriptedBrain(ToolCall(name="list_folder", arguments={"path": str(folder)}), "One file.")
+
+    code = await _handle_turn(
+        args=_args(), settings=settings, conn=conn, brain=brain, question="list it", database_path=tmp_path / "db"
+    )
+
+    assert code == 0
+    assert brain.tools_seen[0]  # tools were offered
+    out = capsys.readouterr().out
+    assert "steps:" in out
+    assert "list_folder" in out
+    assert "One file." in out
+    assert TaskRepository(conn).recent(1)[0].kind == "agent"
+
+
+async def test_cli_no_tools_keeps_plain_chat(
+    conn: sqlite3.Connection, settings: Settings, tmp_path: Path, capsys
+) -> None:
+    brain = StubBrain(content="plain answer")
+
+    code = await _handle_turn(
+        args=_args(no_tools=True), settings=settings, conn=conn, brain=brain, question="hi", database_path=tmp_path / "db"
+    )
+
+    assert code == 0
+    assert "plain answer" in capsys.readouterr().out
+    assert TaskRepository(conn).recent(1)[0].kind == "chat"
+
+
+async def test_cli_dry_run_passes_through(
+    conn: sqlite3.Connection, settings: Settings, tmp_path: Path, capsys
+) -> None:
+    folder = tmp_path / "Downloads"
+    folder.mkdir()
+    settings = settings.model_copy(update={"allowed_folders": [folder]})
+    brain = ScriptedBrain(ToolCall(name="list_folder", arguments={"path": str(folder)}), "Plan only.")
+
+    await _handle_turn(
+        args=_args(dry_run=True),
+        settings=settings,
+        conn=conn,
+        brain=brain,
+        question="list it",
+        database_path=tmp_path / "db",
+    )
+
+    task = TaskRepository(conn).recent(1)[0]
+    logged = AuditLog(conn).for_task(task.id)
+    assert logged[0].status == "skipped"
+    assert "dry run" in capsys.readouterr().out

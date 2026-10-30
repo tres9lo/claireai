@@ -8,20 +8,27 @@ The project name and the assistant name are both **ClaireAI**. Package names,
 application IDs and visible branding stay provisional until the owner confirms
 them; nothing user-facing has been branded yet.
 
-## Status: Month 1, Week 1 (foundations)
+## Status: Month 1, Week 2 (first tools and agent loop)
 
 Implemented and tested:
 
 - validated configuration with loopback-only model endpoints by default;
 - SQLite storage with a versioned, checksummed migration runner;
 - `tasks`, `task_log` (append-only audit), `summaries`, `notes` tables;
-- provider-neutral `Brain` interface with an `OllamaBrain` adapter;
+- provider-neutral `Brain` interface with an `OllamaBrain` adapter, including
+  tool calls;
 - CLI chat that records every turn as a task plus an audit entry;
+- a tool registry with five **read-only** file tools (`list_folder`,
+  `get_file_info`, `read_text_file`, `search_files`, `find_largest_files`), each
+  with a name, description, JSON schema and risk level;
+- an agent loop: the model proposes a call, the runtime validates the arguments,
+  applies the risk policy and the folder allow-list, runs it, feeds the result
+  back, and repeats up to 8 steps — logging every step;
 - a model capability harness (`scripts/eval_model.py`) that scores the local
   model against fixed cases before features depend on it.
 
-Not implemented yet (planned for later weeks): the FastAPI service, tool
-registry, permission/approval layer, browser and file agents, the daily summary
+Not implemented yet (planned for later weeks): approval prompts and any tool that
+mutates files (Week 3), the FastAPI service, the browser agent, the daily summary
 scheduler, desktop and mobile clients, and the from-scratch model.
 
 See `ROADMAP.md` for the full plan and `PROGRESS.md` for the current state,
@@ -35,7 +42,7 @@ brain-lab/        from-scratch tokenizer/model/training research (Track B), isol
 desktop/          Tauri v2 + React shell (not started)
 mobile/           Expo/React Native client (not started)
 docs/             setup, architecture, platform support, licenses
-scripts/          setup and diagnostic scripts (not written yet)
+scripts/          diagnostics: doctor.py, eval_model.py, model_eval_cases.json
 runtime-data/     local only, git-ignored (databases, logs, downloads, profiles)
 ```
 
@@ -53,15 +60,48 @@ ollama pull qwen2.5:1.5b
 
 # 3. Ask one question; the turn is logged to SQLite
 CLAIREAI_DATA_DIR=./runtime-data assistant/.venv/bin/python -m claireai.cli --once "Hello"
+
+# 4. Let the model use read-only file tools (deny-by-default allow-list)
+CLAIREAI_DATA_DIR=./runtime-data \
+CLAIREAI_ALLOWED_FOLDERS='["~/Downloads"]' \
+assistant/.venv/bin/python -m claireai.cli --once "List the biggest files in my Downloads folder"
 ```
 
 Details, Windows steps and troubleshooting: `docs/setup/linux.md`,
 `docs/setup/windows.md`, `docs/platform-support.md`.
 
+## Tools and the allow-list
+
+`CLAIREAI_ALLOWED_FOLDERS` is a JSON array of the only folders file tools may
+read. It is **empty by default**: with no entries, every file tool is refused.
+
+```bash
+CLAIREAI_ALLOWED_FOLDERS='["~/Downloads", "~/Documents"]'
+```
+
+The model chooses a tool and its arguments; the runtime does all of this:
+
+- validates arguments against the tool's schema and refuses unexpected keys;
+- resolves the path, follows symlinks, and refuses anything outside the
+  allow-list (a link inside a trusted folder that points out is refused too);
+- refuses any tool whose risk is above `safe` — this build has no approval flow,
+  so "needs approval" means "refused", never "allowed silently";
+- logs one `task_log` row per step (tool, arguments, target, status, result
+  size) and one for the final answer;
+- stops after `CLAIREAI_AGENT_MAX_STEPS` steps (default 8) and fails the task
+  rather than looping forever.
+
+Useful flags: `--no-tools` for plain chat, `--dry-run` to see which tools would
+be called without reading anything.
+
 ## Safety defaults
 
 - The model runtime must be loopback unless explicitly overridden.
 - No hosted model provider, no API keys.
+- File tools are deny-by-default: nothing is readable until a folder is
+  allow-listed, and every path is checked in code, not by the model.
+- Tools that write, move or delete do not exist yet; when they arrive they are
+  `needs_approval`/`dangerous` and refused until an approval flow exists.
 - Audit rows are append-only at the database level (triggers reject UPDATE/DELETE).
 - Secrets are redacted and long text truncated before anything is stored.
 - `runtime-data/`, databases, model weights, browser profiles and `.env` files are git-ignored.

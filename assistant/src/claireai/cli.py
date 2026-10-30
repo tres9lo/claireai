@@ -21,10 +21,13 @@ from typing import Sequence
 
 from pydantic import ValidationError
 
+from claireai.agent import AgentError, describe_steps, run_task
 from claireai.audit import AuditLog, redact
 from claireai.brain import Brain, BrainError, Message, OllamaBrain
 from claireai.config import Settings
+from claireai.permissions import Sandbox
 from claireai.storage import Database, TaskRepository, transaction
+from claireai.tools import default_registry
 
 SYSTEM_PROMPT = (
     "You are ClaireAI, a local personal assistant running on the user's own computer. "
@@ -33,6 +36,7 @@ SYSTEM_PROMPT = (
 )
 
 EXIT_OK = 0
+EXIT_TASK_FAILED = 1
 EXIT_CONFIG = 2
 EXIT_RUNTIME = 3
 
@@ -116,6 +120,53 @@ def _print_log(conn: sqlite3.Connection, limit: int = 10) -> None:
         print(f"{entry.created_at}  {entry.status:<7} {entry.action:<16} task={task}  {entry.detail or ''}")
 
 
+async def _handle_turn(
+    *,
+    args: argparse.Namespace,
+    settings: Settings,
+    conn: sqlite3.Connection,
+    brain: Brain,
+    question: str,
+    database_path: Path,
+) -> int:
+    """Answer one question, with tools unless ``--no-tools`` was given."""
+    if args.no_tools:
+        try:
+            turn = await ask(settings=settings, conn=conn, brain=brain, question=question, device=args.device)
+        except BrainError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return EXIT_RUNTIME
+        _print_turn(turn, database_path)
+        return EXIT_OK
+
+    try:
+        outcome = await run_task(
+            settings=settings,
+            conn=conn,
+            brain=brain,
+            request=question,
+            device=args.device,
+            dry_run=args.dry_run,
+        )
+    except AgentError as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        return EXIT_TASK_FAILED
+    except BrainError as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME
+
+    if outcome.steps:
+        print("steps:")
+        print(describe_steps(outcome.steps))
+        print()
+    print(outcome.content or "(the model returned no answer)")
+    print(
+        f"\n[task {outcome.task_id} | {outcome.model} | {outcome.duration_ms} ms"
+        f" | steps: {len(outcome.steps)} | logged: {database_path}]\n"
+    )
+    return EXIT_OK
+
+
 async def _run(args: argparse.Namespace, settings: Settings, database_path: Path) -> int:
     database = Database(database_path)
     applied = database.migrate()
@@ -124,6 +175,11 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
         print(f"Applied migrations: {', '.join(applied)}")
     print(f"database: {database_path}")
     print(f"brain: {'ollama'} @ {settings.ollama_base_url} model={settings.ollama_model}")
+    sandbox = Sandbox.from_settings(settings)
+    tool_label = "off (--no-tools)" if args.no_tools else f"{len(default_registry())} read-only"
+    print(f"tools: {tool_label} | allow-list: {sandbox.describe()}")
+    if args.dry_run:
+        print("dry run: tools will report what they would do, nothing will be read")
 
     brain = OllamaBrain(
         base_url=settings.ollama_base_url,
@@ -143,15 +199,14 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
             return EXIT_RUNTIME
 
         if args.once:
-            try:
-                turn = await ask(
-                    settings=settings, conn=conn, brain=brain, question=args.once, device=args.device
-                )
-            except BrainError as exc:
-                print(f"\nERROR: {exc}", file=sys.stderr)
-                return EXIT_RUNTIME
-            _print_turn(turn, database_path)
-            return EXIT_OK
+            return await _handle_turn(
+                args=args,
+                settings=settings,
+                conn=conn,
+                brain=brain,
+                question=args.once,
+                database_path=database_path,
+            )
 
         print("ClaireAI ready. Commands: /log [n], /exit\n")
         while True:
@@ -169,14 +224,14 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
                 limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
                 _print_log(conn, limit)
                 continue
-            try:
-                turn = await ask(
-                    settings=settings, conn=conn, brain=brain, question=question, device=args.device
-                )
-            except BrainError as exc:
-                print(f"ERROR: {exc}\n", file=sys.stderr)
-                continue
-            _print_turn(turn, database_path)
+            await _handle_turn(
+                args=args,
+                settings=settings,
+                conn=conn,
+                brain=brain,
+                question=question,
+                database_path=database_path,
+            )
     finally:
         await brain.aclose()
         conn.close()
@@ -190,6 +245,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", help="override the application data directory (development use)")
     parser.add_argument("--db", help="use a specific SQLite file instead of the default location")
     parser.add_argument("--device", default="desktop", help="device label recorded in the task log")
+    parser.add_argument(
+        "--no-tools",
+        action="store_true",
+        help="plain chat: do not offer file tools to the model",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show which tools would be called without running them",
+    )
     return parser
 
 

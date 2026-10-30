@@ -12,7 +12,13 @@ import json
 import httpx
 import pytest
 
-from claireai.brain import BrainResponseError, BrainUnavailable, Message, OllamaBrain
+from claireai.brain import (
+    BrainResponseError,
+    BrainUnavailable,
+    Message,
+    OllamaBrain,
+    ToolCall,
+)
 
 BASE_URL = "http://127.0.0.1:11434"
 
@@ -137,3 +143,109 @@ async def test_health_reports_unreachable_runtime() -> None:
     health = await _brain(handler).health()
     assert health.available is False
     assert "cannot reach Ollama" in health.detail
+
+
+# --- tool calling (https://docs.ollama.com/capabilities/tool-calling) ---------
+
+
+def _tool_reply(message: dict) -> object:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"model": "qwen2.5:1.5b", "message": message})
+
+    return handler
+
+
+async def test_tool_calls_are_parsed_from_the_reply() -> None:
+    handler = _tool_reply(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "index": 0,
+                        "name": "list_folder",
+                        "arguments": {"path": "/home/tresor/Downloads"},
+                    },
+                }
+            ],
+        }
+    )
+
+    response = await _brain(handler).generate([Message(role="user", content="list it")])
+
+    assert response.content == ""
+    assert len(response.tool_calls) == 1
+    call = response.tool_calls[0]
+    assert call.name == "list_folder"
+    assert call.arguments == {"path": "/home/tresor/Downloads"}
+    assert call.index == 0
+
+
+async def test_tool_call_arguments_sent_as_a_json_string_are_parsed() -> None:
+    handler = _tool_reply(
+        {
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "search_files", "arguments": '{"pattern": "*.pdf"}'}}
+            ],
+        }
+    )
+
+    response = await _brain(handler).generate([Message(role="user", content="find pdfs")])
+    assert response.tool_calls[0].arguments == {"pattern": "*.pdf"}
+
+
+async def test_content_may_be_absent_alongside_a_tool_call() -> None:
+    handler = _tool_reply({"tool_calls": [{"function": {"name": "list_folder", "arguments": {}}}]})
+    response = await _brain(handler).generate([Message(role="user", content="go")])
+    assert response.content == ""
+    assert response.tool_calls[0].name == "list_folder"
+
+
+async def test_a_tool_call_without_a_name_is_rejected() -> None:
+    handler = _tool_reply({"content": "", "tool_calls": [{"function": {"arguments": {}}}]})
+    with pytest.raises(BrainResponseError, match="without a name"):
+        await _brain(handler).generate([Message(role="user", content="go")])
+
+
+async def test_tool_call_arguments_that_are_not_json_are_rejected() -> None:
+    handler = _tool_reply(
+        {"content": "", "tool_calls": [{"function": {"name": "list_folder", "arguments": "{not json"}}]}
+    )
+    with pytest.raises(BrainResponseError, match="not valid JSON"):
+        await _brain(handler).generate([Message(role="user", content="go")])
+
+
+async def test_tool_call_arguments_that_are_not_an_object_are_rejected() -> None:
+    handler = _tool_reply(
+        {"content": "", "tool_calls": [{"function": {"name": "list_folder", "arguments": [1, 2]}}]}
+    )
+    with pytest.raises(BrainResponseError, match="not an object"):
+        await _brain(handler).generate([Message(role="user", content="go")])
+
+
+async def test_assistant_tool_calls_and_tool_results_are_serialized_for_the_wire() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"model": "m", "message": {"content": "done"}})
+
+    call = ToolCall(name="list_folder", arguments={"path": "/tmp"}, index=0)
+    await _brain(handler).generate(
+        [
+            Message(role="user", content="list /tmp"),
+            Message(role="assistant", content="", tool_calls=(call,)),
+            Message(role="tool", tool_name="list_folder", content="2 entries"),
+        ]
+    )
+
+    messages = captured["messages"]
+    assert messages[1]["tool_calls"] == [
+        {"type": "function", "function": {"index": 0, "name": "list_folder", "arguments": {"path": "/tmp"}}}
+    ]
+    assert messages[2] == {"role": "tool", "tool_name": "list_folder", "content": "2 entries"}
+    # A plain message must not grow empty tool fields.
+    assert messages[0] == {"role": "user", "content": "list /tmp"}

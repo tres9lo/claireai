@@ -141,3 +141,17 @@ class TaskRepository:
         updated = self.get(task_id)
         assert updated is not None
         return updated
+
+    def set_current_step(self, task_id: str, step: int) -> None:
+        """Record how far into the plan a running task is.
+
+        Kept separate from :meth:`update_status` because a step counter is not a
+        state change: ``running`` does not legally transition to ``running``, and
+        loosening the state machine to allow it would hide real bugs.
+        """
+        cursor = self._conn.execute(
+            "UPDATE tasks SET current_step = ?, updated_at = ? WHERE id = ?",
+            (step, utc_now(), task_id),
+        )
+        if cursor.rowcount == 0:
+            raise LookupError(f"no task with id {task_id}")
