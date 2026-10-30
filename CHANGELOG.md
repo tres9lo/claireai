@@ -36,6 +36,31 @@ nothing has been released yet.
 - `OllamaBrain` accepts decoding `options`; `docs/testing.md` documents the
   suite and the harness.
 
+### Planned and specified — presence renderer and machine access
+
+Documentation and configuration only; no renderer, camera or input code exists
+in this release.
+
+- **Presence renderer** contract (`docs/architecture/presence-renderer.md`):
+  `PresenceEvent` state stream (idle, listening, thinking, tool_running,
+  awaiting_approval, speaking, error, offline) derived from the task log, a
+  performance budget for integrated GPUs, 2D fallback, accessibility rules, and
+  the rule that a renderer failure never changes task behaviour. Scheduled as v0
+  in Month 1 Week 4, lip-sync in Months 2–3, WebGL quality in Months 6–7.
+- **Machine access** contract (`docs/architecture/machine-access.md`): camera,
+  screen capture, clipboard, windows, cursor and keyboard as deny-by-default
+  capabilities with per-task expiring grants, mandatory indicators, 1-frame
+  in-memory image handling, platform matrix (Wayland portal limits included), and
+  redaction of typed text in the audit log. Scheduled for Months 2–3.
+- Settings: `presence_mode`, `presence_fps_cap`, `presence_reduce_motion`,
+  `allowed_capabilities`, `camera_device`. Unknown capability names are rejected
+  at startup; an empty list refuses every machine-access call.
+- `claireai.permissions.check_capability` plus 11 tests pinning the
+  deny-by-default behaviour.
+- Licences recorded from upstream package metadata: three.js MIT,
+  @react-three/fiber MIT, `mss` MIT, `opencv-python` Apache-2.0, `pyautogui` BSD.
+  `pynput` (LGPLv3) deliberately not adopted.
+
 ### Added — Month 1, Week 2: tool registry, allow-list and agent loop
 
 - `claireai.tools`: registry of tools with name, description, JSON schema and

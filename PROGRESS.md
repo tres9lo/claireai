@@ -509,3 +509,81 @@ Month 1, Week 3 — approval-gated tools (`create_folder`, `move_file`,
 `rename_file`, `create_text_file`, `write_to_file`, `move_to_trash`), the CLI
 approval prompt, dry-run for mutations, and then the Playwright browser tools —
 with owner approval first.
+
+## 2026-10-31 — Session 4: planning a presence renderer and machine access
+
+Owner asked for a Jarvis-style rendering layer that syncs with the assistant,
+and for the assistant to be able to use the camera, the cursor and "everything
+the computer has to offer during tasks". Recorded as **two features with written
+contracts, configuration and a week-by-week slot** — deliberately **no renderer
+code and no camera/input code**, because the desktop shell does not exist yet
+(Week 4) and every one of these capabilities needs the approval flow first
+(Week 3).
+
+### Added
+
+- `docs/architecture/presence-renderer.md`: `PresenceEvent` contract (idle,
+  listening, thinking, tool_running, awaiting_approval, speaking, error,
+  offline), monotonic `seq`, active-capture indicators, performance budget
+  (30 fps cap, ≤5% CPU idle, 150 MB GPU), `off/auto/2d/webgl` modes with 2D
+  fallback, accessibility rules, and the rule that a renderer crash cannot change
+  task behaviour.
+- `docs/architecture/machine-access.md`: five deny-by-default capabilities
+  (`screen`, `camera`, `clipboard`, `cursor`, `keyboard`), per-task expiring
+  grants, mandatory indicators, in-memory-only frames, a platform matrix
+  including the Wayland portal limits, and typed-text redaction in the log.
+- Roadmap: Vision bullets, stack rows, engineering rules, new sections 6.4/6.5,
+  safety items 13–15, 7A.11, renderer v0 in Week 4, camera/screen/cursor in
+  Months 2–3, WebGL quality in Months 6–7, release-gate rows, 12A honest
+  expectations, month table, smoke-test items 11–13, Definition of Done and
+  references.
+- Settings: `presence_mode`, `presence_fps_cap` (5–60), `presence_reduce_motion`,
+  `allowed_capabilities`, `camera_device`. Unknown capability names are rejected
+  at startup; duplicates and case are normalised.
+- `claireai.permissions.check_capability`: the same deny-by-default shape as the
+  folder allow-list, so the first camera/cursor tool must ask this policy instead
+  of inventing one.
+- Licence rows for the intended packages, checked from upstream metadata.
+
+### What was measured before choosing any of this
+
+| Check | Result |
+| --- | --- |
+| Display server | `XDG_SESSION_TYPE=wayland` — global input and screen capture go through `xdg-desktop-portal` |
+| Input tooling present | `ydotool`, `xdotool`, `grim`: **none installed** |
+| Camera devices | `/dev/video0`, `/dev/video1` present |
+| `three` / `@react-three/fiber` | 0.187.0 / 9.8.2, both **MIT** (npm metadata) |
+| `mss` / `opencv-python` / `pyautogui` | 10.2.0 MIT / 5.0.0.93 Apache-2.0 / 0.9.54 BSD (PyPI metadata) |
+| `pynput` | 1.8.2 **LGPLv3** — not adopted; `pyautogui` covers the need under BSD |
+| `Pillow` | 13.0.0, no licence classifier on PyPI; upstream MIT-CMU, flagged for re-check at packaging |
+
+Those results are why the plan says "report unsupported" for Linux input control
+on this laptop rather than promising it, and why the renderer defaults to 30 fps
+with a 2D fallback on integrated graphics.
+
+### Verified
+
+```
+$ cd assistant && .venv/bin/python -m pytest
+166 passed in 5.15s
+```
+
+11 of those are new: deny-by-default capabilities, unknown capability rejection,
+case/duplicate normalisation, presence defaults, `presence_mode` enumeration,
+fps bounds and camera-index bounds.
+
+### Blockers / not verified (unchanged by planning)
+
+1. **No renderer exists.** The contracts are design documents; nothing renders.
+2. **No machine-access tools exist.** Camera, screen, cursor and keyboard are
+   refused by policy and by absence.
+3. Wayland input control is untested here and may be unsupported; the plan says
+   so explicitly instead of assuming `pyautogui` will work.
+4. Renderer performance on this i5-6300U with the model loaded is unmeasured —
+   the budgets in the contract are targets to verify, not results.
+
+### Next single task
+
+Unchanged: Month 1, Week 3 (approval-gated mutating tools, CLI approval prompt,
+dry run), then Week 4 builds the Tauri window and the presence renderer v0 on
+top of the approval flow.

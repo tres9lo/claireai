@@ -24,6 +24,8 @@ Build **ClaireAI**: a personal assistant that lives on Tresor's PC and Android p
 - Keep a log of everything it does.
 - Write a **daily summary** each evening: what happened, what did not happen, what is still pending.
 - Talk with a natural voice.
+- Show a **live visual presence**: a local rendering layer that mirrors what the assistant is doing — idle, listening, thinking, running a tool, speaking, waiting for approval — and can draw an avatar/HUD scene, in the spirit of Jarvis-style assistants.
+- **Perceive and operate the computer when a task needs it**: camera snapshots, screen capture, cursor and keyboard control, clipboard, windows and apps. All of it approval-gated with a visible indicator; none of it a background capability.
 - Eventually develop an experimental model from scratch (own tokenizer, own transformer, randomly initialized weights, own training pipeline). Keep this educational research track separate from the practical assistant model. The usable assistant may run a downloaded open-weight model locally; the from-scratch model is not expected to match it within 12 months.
 
 ## 2. Strategy: Two Tracks, One Product
@@ -64,6 +66,10 @@ The local model is the default brain, not a cloud placeholder. All application c
 | Wake word | **openWakeWord** (local detection) behind a `WakeWordEngine` interface | Open-source, on-device detection; design for Linux and Windows, with push-to-talk fallback |
 | Phone client | **Expo / React Native** with TypeScript | Android client |\n| Sync between devices | Small **FastAPI or Node/Express** service with authenticated API, or LAN sync first | Keeps PC and phone in step; sync is optional for local desktop use |
 | Scheduler | APScheduler inside the Python sidecar | Runs the nightly summary |
+| Presence renderer | **three.js** + **@react-three/fiber** (WebGL2) inside the Tauri webview, with a canvas 2D fallback | Local, GPU-light, no CDN; the 2D fallback keeps an integrated-GPU laptop usable |
+| Screen and camera | `mss` for screenshots, `opencv-python` for camera frames, `xdg-desktop-portal` on Wayland | Local only; Wayland requires a user-granted portal session |
+| Cursor, keyboard, windows | `pyautogui`/`SendInput` on Windows and X11, portal + `ydotool`/libei on Wayland | Powerful and OS-dependent; must degrade honestly instead of pretending to work |
+| UI state transport | local FastAPI server + Tauri events (SSE) | The renderer is a read-only consumer of state, never a second source of truth |
 
 ### 4.2 Track B: Brain
 
@@ -111,6 +117,9 @@ The local model is the default brain, not a cloud placeholder. All application c
 - Test both Linux and Windows on every phase that touches process launching, file paths, browser automation, audio, permissions, packaging, or system tasks. Android is a separate client and must not be assumed to run the desktop agent.
 - CI should run portable unit tests on Linux and Windows. Where microphone devices or desktop integration cannot run in CI, document and perform manual acceptance tests on each OS.
 - Do not promise identical system-control features on both operating systems. If a feature cannot be implemented safely or reliably on one OS, report it as unsupported instead of silently falling back to a risky command.
+- The presence renderer is optional decoration over real state: if it is disabled, slow, or crashes, every task must still work. Never let rendering failure change task behaviour.
+- Machine access (camera, screen, cursor, keyboard) differs per display server. On **Wayland** global input and screen capture go through the desktop portal and may be refused; on X11 they use XTest; on Windows they use `SendInput`. Detect and report, never assume.
+- Accessibility is a requirement, not a later polish: respect the OS "reduce motion" setting, avoid flashing above 3 Hz, and keep every indicator readable without relying on colour alone.
 
 ## 5. Repository Layout
 
@@ -269,6 +278,41 @@ Every tool is a plain function with: a name, a description, a JSON schema for it
 
 Every action writes a row: timestamp, device, agent, tool, inputs, result, status (`done`, `failed`, `skipped`, `pending`), and approval info. The daily summary reads only from this log plus the calendar. Nothing else.
 
+### 6.4 Presence renderer interface (visual state sync)
+
+The renderer draws the assistant's state; it never decides anything. One contract, two consumers (the Tauri window and, later, the phone as a mirror):
+
+```ts
+// Server -> renderer. `seq` is monotonic per task stream; the renderer drops
+// out-of-order or duplicate events instead of guessing.
+type PresenceEvent = {
+  seq: number;
+  ts: string;              // ISO-8601 UTC
+  taskId: string | null;
+  state: "idle" | "listening" | "thinking" | "tool_running"
+       | "awaiting_approval" | "speaking" | "error" | "offline";
+  detail?: { tool?: string; label?: string; progress?: number };
+  active: { microphone: boolean; camera: boolean; screen: boolean; input: boolean };
+};
+```
+
+Rules:
+
+- **Derived, not invented.** State comes from the same task/tool log the audit trail uses; if the log says `failed`, the renderer shows `error`, not a hopeful idle animation.
+- **Read-only consumer.** The renderer has no database, filesystem, shell or model access, and makes no network requests at runtime. Assets ship with the app.
+- **Indicators are mandatory.** Whenever `microphone`, `camera`, `screen` or `input` is true the UI shows it plainly: what is active and for which task.
+- **Cheap by default.** Target 30 fps with a configurable cap, drop frames under load, ≤5% CPU and ≤10% of one core when idle, no per-frame allocations. WebGL scene with a canvas 2D fallback for integrated GPUs and remote sessions.
+- **Failure is cosmetic.** A crashed or disabled renderer must never block, slow or alter a task.
+
+### 6.5 Machine access interface (camera, screen, cursor, keyboard)
+
+Machine access is a capability, not a tool with a hidden side door. Each capability declares: a name (`screen`, `camera`, `cursor`, `keyboard`, `clipboard`), the data it can read or the change it can make, a risk level, the platforms where it is supported, and the indicator text shown while it is active.
+
+- Capabilities are **deny-by-default**: absent from `CLAIREAI_ALLOWED_CAPABILITIES`, the call is refused in code, exactly like a path outside the folder allow-list.
+- A capability grant is **per task and expiring**, and names the exact device/display and the approval reference. A new task needs a new grant; nothing is granted for the whole session by accident.
+- Read capabilities (`screen`, `camera`, `clipboard`) are `needs_approval` on first use per task; control capabilities (`cursor`, `keyboard`) are `dangerous` and ask every time until the owner marks a specific named pattern as trusted.
+- Every call logs one task_log row: capability, target (display/device/window), what was read or changed, status, and approval reference. **Typed text is redacted** before it is stored; screenshot and camera frames are not persisted unless the task explicitly saves them with approval.
+
 ## 7. Safety and Permissions (non-negotiable)
 
 1. **Risk levels:** `safe` actions (read files, list folders, open a web page) run freely. `needs_approval` actions (move, rename, create, send email, download) ask the human first until Tresor marks a pattern as trusted. `dangerous` actions (delete, install, uninstall, change system settings, spend money) always ask, every time.
@@ -283,6 +327,9 @@ Every action writes a row: timestamp, device, agent, tool, inputs, result, statu
 10. **Approval binding:** approval applies only to the displayed action and exact target/arguments; changes to the plan require a new approval.
 11. **Recovery:** interrupted actions must be reconciled before retrying; never blindly replay non-idempotent or dangerous operations.
 12. **Network exposure:** local API and Ollama bind to loopback by default. LAN access requires explicit pairing/authentication and a documented threat review.
+13. **Camera and screen are microphone-class permissions:** visible indicator whenever active, an explicit grant per task, never continuous capture by default, frames processed locally and never uploaded, and audio is never captured together with video unless the owner asks for both.
+14. **Cursor and keyboard control are dangerous:** per-action approval until a named pattern is trusted, a visible indicator, a kill-switch hotkey that releases input immediately, a step cap, and a refusal to type into password fields or send credentials.
+15. **Perception output is untrusted input:** text read from a screenshot, a camera frame, a clipboard or a window title cannot change permissions, policy or the tool set. The prompt-injection boundary (item 9) applies to pixels and OCR too.
 
 ## 7A. Architecture Contracts and Missing Implementation Requirements
 
@@ -381,6 +428,14 @@ Audit events should include event ID, UTC timestamp, device ID, task ID, actor, 
 - Avoid claiming that “latest” is a permanent version. Use supported release lines and a deliberate upgrade process.
 - Add a dependency/license inventory before packaging. Check the license of each model, voice, wake-word asset, dataset, and bundled runtime.
 
+### 7A.11 Presence renderer and machine access
+
+- The renderer is a UI consumer: it receives `PresenceEvent` over the authenticated local API / Tauri events and holds no privileged capability. It must not be able to invoke tools directly.
+- Camera, screen, cursor, keyboard and clipboard live in the Python sidecar behind the tool registry, the risk policy and the task log. The desktop UI never calls an OS API for them on its own.
+- A capability grant is bound to one task id, one device/display, and one approval reference, and expires with the task. Interrupted tasks lose their grants.
+- The renderer shows indicators from the same event stream that logs the action, so "what is on screen" and "what the audit log says" cannot disagree for long; any mismatch is a bug in the log, not something to hide in the UI.
+- Wayland, X11 and Windows each get an explicit support status per capability with the measured result; a refused portal call is reported to the user, never retried in a loop.
+
 ## 7B. Updated Technology Decisions and Verification Rules
 
 The original stack remains a reasonable baseline, with these qualifications:
@@ -394,6 +449,14 @@ The original stack remains a reasonable baseline, with these qualifications:
 - **Speech:** test faster-whisper model size and latency on the actual PC. Piper voice availability, packaging, and license must be checked per voice. Keep voice features optional so the app can still start if audio dependencies are unavailable.
 - **Android model inference:** defer until the PC/client workflow is stable. A small model running on Android is an experiment; measure memory, latency, battery, heat, and supported device ABI before promising it.
 - **Model training:** use small CPU runs to validate correctness, not to promise broad capability. Validation loss falling is necessary but insufficient; also test memorization, generation samples, repetition, data leakage, and fixed evaluation prompts.
+
+### 12A. Presence renderer and machine access — honest expectations
+
+- The renderer costs CPU/GPU and battery on a 4-thread laptop. Default to 2D, cap the frame rate, and measure before raising quality. A pretty avatar is never worth a slow assistant.
+- Screen capture and the camera are the most sensitive features in the product. One accidentally stored or uploaded frame would break the privacy promise, so frames stay transient and the indicator is always visible.
+- Cursor and keyboard automation can misclick into something destructive. Step caps, dry runs, per-action approval and the kill switch are mandatory; on Wayland the desktop portal may simply refuse, and that must be reported as unsupported rather than worked around.
+- Jarvis-style expectations are easy to over-promise. The renderer is decoration over a small local model: it must never imply capabilities the assistant does not actually have.
+- Lip-sync is approximate mouth-shape animation from audio, not phoneme-accurate visemes; document it as such.
 
 ---
 
@@ -429,6 +492,7 @@ Each phase lists a goal, the steps, and **acceptance checks**. Time estimates as
 - Add approval-gated tools: `create_folder`, `move_file`, `rename_file`, `create_text_file`, `write_to_file`, `move_to_trash`.
 - Add dry-run mode and a simple approval prompt in the CLI.
 - Add a basic Playwright browser tool: `open_url`, `get_page_text`, `search_web`, `download_file` (approval required).
+- Build the approval record as a **per-task grant** (action, target, reference, expiry) so the camera, screen and input capabilities in section 6.5 reuse it instead of inventing a second mechanism.
 - *Check:* "Organize my Downloads folder into folders by file type" shows a plan, asks for approval, then executes and logs.
 
 **Week 4: Daily summary and a face**
@@ -436,7 +500,8 @@ Each phase lists a goal, the steps, and **acceptance checks**. Time estimates as
 - Build `summary_agent`: reads the day's task log plus today's calendar events, produces a short report with three sections: **Done**, **Failed or skipped**, **Still pending**.
 - Schedule it with APScheduler for a configurable time each evening, and save to the `summaries` table and a markdown file.
 - Build a minimal Tauri window on both Linux and Windows: chat box, live task log, approve/deny buttons, kill switch, voice controls, wake-word status, and a "Today's summary" tab. Keep styling and behavior consistent, while respecting each OS's conventions.
-- *Check:* after a day of use, the summary correctly lists what was done and what was not. **This is the month-1 demo.**
+- Build the **presence renderer v0** inside that window (section 6.4): a state HUD driven by `PresenceEvent` — idle, listening, thinking, tool_running, awaiting_approval, error — canvas 2D first, with a WebGL scene behind a flag. Include indicators for microphone, camera, screen and input control, honour the OS "reduce motion" setting, and allow switching the renderer off entirely.
+- *Check:* every state the HUD shows matches the task log for the same task; with the renderer disabled the rest of the app behaves identically; the renderer stays inside its CPU/fps budget on this laptop. Then the daily-summary check: after a day of use, the summary correctly lists what was done and what was not. **This is the month-1 demo.**
 
 **In parallel (Track B, light touch, about 2 hours per week):** read about tokenizers and attention, and write a toy character-level language model on a small text file using NumPy or PyTorch. No pressure to finish.
 
@@ -453,7 +518,10 @@ Each phase lists a goal, the steps, and **acceptance checks**. Time estimates as
 - Voice input: add faster-whisper with a push-to-talk hotkey first; this is the reliable fallback while wake-word detection is being built.
 - Voice output: add Piper with a chosen, documented open-licensed voice. Never assume all voice packs share the same license.
 - Improve reliability: retries, clearer error messages, a task queue so failed jobs can be retried later.
-- *Acceptance:* ten different real tasks completed end to end across a week, with an accurate daily summary each night. Repeat the core workflow on Linux and Windows.
+- **Machine perception** (new, approval-gated): `screen_capture`, `camera_snapshot`, `list_windows`, `read_clipboard`, each behind `CLAIREAI_ALLOWED_CAPABILITIES` and a per-task grant. Visible indicator while active, frames kept in memory unless the task saves them with approval, OCR/window text treated as untrusted input.
+- **Machine control** (new, `dangerous`): `move_cursor`, `click`, `type_text`, `press_key`, `focus_window`, `launch_app`. Per-action approval, dry run, kill-switch hotkey, step cap, typed text redacted in the log. Wayland only through the portal where the environment allows it; otherwise report the capability as unsupported.
+- **Presence sync:** `speaking` state and lip-sync driven by the Piper audio actually playing, plus the WebGL scene on machines that can hold it.
+- *Acceptance:* ten different real tasks completed end to end across a week, with an accurate daily summary each night. At least one of those tasks needs the screen ("find the total in the open invoice and save it as text") and one needs the cursor, each with a visible indicator, a recorded approval, and log rows that match what happened on screen. Repeat the core workflow on Linux and Windows.
 
 **Track B this period:** build the byte-level BPE tokenizer from scratch, train it on a small corpus, write tests (encode then decode returns the original text).
 
@@ -484,6 +552,7 @@ Each phase lists a goal, the steps, and **acceptance checks**. Time estimates as
 - Train a model of roughly 1 to 10 million parameters on CPU. Log loss curves.
 - Build inference code with sampling (temperature, top-k, top-p) and a KV cache.
 - Save sample generations at each checkpoint so progress is visible.
+- Presence renderer quality pass: WebGL scene with texture/mesh budgets, measured fps on integrated graphics, and the 2D fallback kept as the default on weak GPUs.
 - *Acceptance:* validation loss steadily falls, and the model writes coherent short passages in the style of its training data. Be honest about quality. It will be small.
 
 **Track A this period:** hardening, a settings screen, better approval rules, and packaging for non-developer installs (see section 9).
@@ -696,6 +765,7 @@ Create both `scripts/setup_linux.sh` and `scripts/setup_windows.ps1` (plus a sha
 - The Python agent runtime is bundled as a **sidecar executable** (built with PyInstaller or Nuitka) that Tauri starts and stops with the app.
 - Playwright's browser is installed on first run into the app's data folder, so the installer stays small.
 - The local LLM, speech-recognition model, Piper voice, and wake-word model are downloaded on first run or provided as optional model packs. Show model licenses and disk requirements before downloading; do not bundle third-party weights without checking redistribution terms.
+- Renderer assets (meshes, textures, shaders, avatar art) ship inside the app bundle and must be licence-checked like any model; no CDN or remote fetch at runtime, because the assistant must work offline.
 - Auto-update: use Tauri's updater with signed releases.
 - Start on login is optional and off by default.
 
@@ -726,6 +796,8 @@ Before calling any phase complete, maintain a simple matrix in `docs/platform-su
 | Local model management | Required | Required | Optional later |
 | File tools and allow-list | Required | Required | Limited to Android APIs |
 | Browser automation | Required, if Playwright supports target browser | Required | Not the desktop browser agent |
+| Presence renderer (visual state sync) | Required | Required | Optional mirror in the client |
+| Camera, screen capture, cursor and keyboard | Required where the OS permits (Wayland portal may refuse; report it honestly) | Required | Limited to Android APIs and explicit permissions |
 | Push-to-talk voice | Required | Required | Optional/mobile implementation |
 | Wake-word detection | Required, after microphone testing | Required, after microphone testing | Separate mobile implementation; do not assume background listening is permitted |
 | Daily summary and local log | Required | Required | View through client after sync |
@@ -757,10 +829,10 @@ A feature is not “cross-platform” just because it compiles. Record tested OS
 
 | Month | Track A: Assistant | Track B: Brain |
 | --- | --- | --- |
-| 1 | CLI, local Ollama model, tools, approvals, daily summary, Linux/Windows desktop UI | Toy language model |
-| 2 to 3 | Email, calendar, memory, local voice, wake-word prototype, OS-specific installs | Byte-level BPE tokenizer |
+| 1 | CLI, local Ollama model, tools, approvals, daily summary, Linux/Windows desktop UI, presence renderer v0 | Toy language model |
+| 2 to 3 | Email, calendar, memory, local voice, wake-word prototype, OS-specific installs, camera/screen/cursor access, lip-sync | Byte-level BPE tokenizer |
 | 4 to 5 | Phone app, sync, notifications | Hand-written transformer |
-| 6 to 7 | Hardening, packaging | First real CPU training run |
+| 6 to 7 | Hardening, packaging, presence renderer quality (WebGL) | First real CPU training run |
 | 8 to 9 | ClaireAI adapter and switch | Instruction tuning |
 | 10 to 11 | Tool-use fine-tuning | Bigger run, quantization |
 | 12 | Linux + Windows installers, Android client/inference experiment, review | Evaluation and next plan |
@@ -784,6 +856,9 @@ Run these checks after installation. The coding agent must adapt commands to the
 8. Run unit tests on Linux and Windows.
 9. Test allow-list enforcement, approval prompts, dry-run mode, and the kill switch.
 10. Verify that no API key is required for local chat and that prompts/audio are not sent to a remote service.
+11. Presence renderer: force each state (idle, thinking, tool_running, error) and confirm the HUD matches the task log; disable the renderer and confirm tasks behave identically.
+12. Machine access: confirm camera, screen and input indicators appear only while the matching capability is granted and active, and that a refused Wayland portal grant is reported instead of retried.
+13. Kill switch: while a cursor action is running, trigger the hotkey and confirm input stops immediately and the task is logged as cancelled.
 
 ## Appendix B. Model and Runtime References
 
@@ -808,6 +883,7 @@ A phase is complete only when all applicable items are true:
 - [ ] Automated tests pass; any skipped tests are listed with a reason.
 - [ ] Failure paths were tested, not just the happy path.
 - [ ] Security/permission tests cover the new tools and API endpoints.
+- [ ] Renderer and machine-access changes show the correct indicator, can be disabled, and disabling them changes no task result.
 - [ ] Linux and Windows behavior is tested for shared desktop/runtime changes; Android is tested for mobile changes.
 - [ ] `docs/platform-support.md` records tested versions, results, and limitations.
 - [ ] `PROGRESS.md` records changes, tests, blockers, and next task.
@@ -866,5 +942,9 @@ The roadmap is a project plan, not a substitute for checking current upstream do
 - PyTorch documentation: https://pytorch.org/docs/stable/index.html
 - Playwright Python: https://playwright.dev/python/
 - openWakeWord project: https://github.com/dscripka/openWakeWord
+- three.js: https://threejs.org/docs/ and React Three Fiber: https://r3f.docs.pmnd.rs/
+- `mss` screen capture: https://python-mss.readthedocs.io/ · `opencv-python`: https://docs.opencv.org/
+- `pyautogui`: https://pyautogui.readthedocs.io/ · `ydotool` for Wayland input: https://github.com/ReimuNotMoe/ydotool
+- xdg-desktop-portal (Wayland screen/input grants): https://flatpak.github.io/xdg-desktop-portal/
 
 Before distributing the app, verify license obligations for every third-party model, tokenizer, voice, wake-word model, dataset, dependency, and bundled runtime. Record the checked version, license, source URL, date checked, and whether redistribution is allowed in `docs/model-and-data-licenses.md`.

@@ -12,6 +12,9 @@ tests green on Ubuntu and Windows runners, CLI tools exercised on Linux only).
 | Local model management | ⛔ not started | ⛔ never run | ⛔ not planned |
 | File tools and allow-list | ✅ tested 2026-10-30 on Linux: 5 read-only tools, allow-list refusal verified with the live model, every step logged | 🟨 unit tests pass on `windows-latest`; the CLI has never been run by a human there | ⛔ n/a |
 | Browser automation | ⛔ Week 3 | ⛔ never run | ⛔ n/a |
+| Presence renderer (visual state sync) | ⛔ contract written, v0 scheduled Week 4 | ⛔ never run | ⛔ optional mirror later |
+| Camera / screen capture | ⛔ Phase 2, deny-by-default; this machine is **Wayland** and has `/dev/video0`–`/dev/video1` | ⛔ never run | ⛔ Android APIs only |
+| Cursor / keyboard control | ⛔ Phase 2, `dangerous`; on Wayland needs the portal or `ydotool` (neither installed here) — may be unsupported | ⛔ never run | ⛔ not planned |
 | Push-to-talk voice | ⛔ Phase 2 | ⛔ never run | ⛔ later |
 | Wake-word detection | ⛔ no "Hey Claire" model exists yet; treat as pending | ⛔ never run | ⛔ separate implementation, may not be permitted in background |
 | Daily summary and local log | 🟨 task/audit log works; summary agent ⛔ Week 4 | ⛔ never run | ⛔ client phase |
@@ -52,3 +55,13 @@ tests green on Ubuntu and Windows runners, CLI tools exercised on Linux only).
 - Creating symlinks on Windows needs Developer Mode or an elevated process. The
   allow-list tests that need one pass on the GitHub runners (elevated) but may
   need adjusting for a normal Windows user session.
+- Display server matters for machine access. The development machine runs
+  `XDG_SESSION_TYPE=wayland`, where screen capture needs `xdg-desktop-portal` and
+  global cursor/keyboard control needs the portal or `ydotool`; none of
+  `ydotool`, `xdotool` or `grim` is installed. Do not promise Linux input control
+  until that path is tested, and report "unsupported" instead of falling back to
+  a risky workaround.
+- The presence renderer is GPU-bound, not CPU-bound: an integrated GPU may only
+  hold the 2D HUD comfortably. `CLAIREAI_PRESENCE_MODE=auto` picks 2D when WebGL2
+  is unavailable or the frame budget is missed; measure on the target machine
+  before raising quality.

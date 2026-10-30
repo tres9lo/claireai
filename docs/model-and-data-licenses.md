@@ -27,6 +27,39 @@ No datasets have been downloaded. When data is added, record per-dataset:
 source URL, licence, retrieval date, size, and processing steps in
 `brain-lab/data/manifests/` (tracked) while the raw files stay git-ignored.
 
+## Presence renderer (planned, Month 1 Week 4)
+
+Not installed yet — the desktop shell does not exist, so nothing is bundled.
+These are the intended packages, checked from upstream package metadata:
+
+| Component | Version seen | Licence | Source | Checked | Redistribution |
+| --- | --- | --- | --- | --- | --- |
+| three.js | 0.187.0 | MIT | <https://registry.npmjs.org/three/latest> (license field); upstream `LICENSE` | 2026-10-31 | Yes, with the copyright notice retained |
+| @react-three/fiber | 9.8.2 | MIT | <https://registry.npmjs.org/@react-three/fiber/latest> | 2026-10-31 | Yes, with the copyright notice retained |
+
+Every bundled asset (avatar art, meshes, textures, shaders, fonts, sounds) needs
+its own row here before it ships, including the licence, source URL and whether
+redistribution is allowed. No runtime CDN fetches: an offline assistant cannot
+depend on a remote asset host, and remote assets would leak what is displayed.
+
+## Machine access (planned, Months 2–3)
+
+| Component | Version seen | Licence | Use | Checked |
+| --- | --- | --- | --- | --- |
+| `mss` | 10.2.0 | MIT | screenshots | 2026-10-31 |
+| `opencv-python` | 5.0.0.93 | Apache-2.0 | camera frames | 2026-10-31 |
+| `pyautogui` | 0.9.54 | BSD | cursor/keyboard on X11 and Windows | 2026-10-31 |
+| `Pillow` | 13.0.0 | MIT-CMU per upstream LICENSE (PyPI metadata carries no licence classifier — confirm at packaging) | image handling | 2026-10-31 |
+| `pynput` | 1.8.2 | LGPLv3 | **not adopted**: LGPL obligations are not worth it while `pyautogui` covers the need | 2026-10-31 |
+
+System dependencies, not distributed with this repository: `xdg-desktop-portal`
+(Wayland screen/input grants), `ydotool` + `uinput` permissions (Wayland input),
+`wmctrl`/`xdotool` (X11 window control), Windows `SendInput` (OS API).
+
+Camera frames and screenshots are processed in memory and never uploaded; if a
+task saves one, the saved file is the owner's data and follows the same rules as
+any other file ClaireAI writes.
+
 ## Dependencies
 
 Python dependencies are pinned in `assistant/requirements.lock.txt`. A full

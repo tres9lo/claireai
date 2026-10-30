@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from claireai.config import Settings
+from claireai.config import KNOWN_CAPABILITIES, Settings
 
 RISK_LEVELS = ("safe", "needs_approval", "dangerous")
 
@@ -46,6 +46,27 @@ def check_risk(risk: str, *, approval_available: bool = False) -> None:
         f"{risk} tools are not available yet: this build has no approval flow, "
         "so the action was refused rather than run unapproved"
     )
+
+
+def check_capability(capability: str, allowed: Iterable[str]) -> None:
+    """Refuse a machine-access capability the owner has not enabled.
+
+    Same shape as the folder allow-list: absent from
+    ``CLAIREAI_ALLOWED_CAPABILITIES`` (empty by default), the call is refused in
+    code before any device or display is touched. Enabling a capability only
+    makes it *available*; each use still needs approval while no named action is
+    trusted (docs/architecture/machine-access.md).
+    """
+    name = str(capability).strip().lower()
+    if name not in KNOWN_CAPABILITIES:
+        raise PermissionDenied(
+            f"unknown capability {capability!r}; known: {', '.join(sorted(KNOWN_CAPABILITIES))}"
+        )
+    if name not in {str(item).strip().lower() for item in allowed}:
+        raise PermissionDenied(
+            f"capability {name!r} is not enabled. Add it to "
+            "CLAIREAI_ALLOWED_CAPABILITIES to allow it for this assistant."
+        )
 
 
 @dataclass(frozen=True)

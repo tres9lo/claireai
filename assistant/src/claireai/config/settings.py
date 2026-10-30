@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from platformdirs import user_data_path
@@ -17,6 +18,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_NAME = "ClaireAI"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# Machine-access capabilities (docs/architecture/machine-access.md). Knowing the
+# names here lets configuration reject typos early; the tools that use them land
+# in Month 1 Week 3 and Months 2-3.
+KNOWN_CAPABILITIES = frozenset({"screen", "camera", "cursor", "keyboard", "clipboard"})
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -56,6 +62,16 @@ class Settings(BaseSettings):
     allowed_folders: list[Path] = Field(default_factory=list)
     agent_max_steps: int = Field(default=8, ge=1, le=24)
 
+    # Presence renderer (docs/architecture/presence-renderer.md). `auto` means
+    # WebGL when the webview supports it and holds the frame budget, else 2D.
+    presence_mode: Literal["off", "auto", "2d", "webgl"] = "auto"
+    presence_fps_cap: int = Field(default=30, ge=5, le=60)
+    presence_reduce_motion: bool = False
+
+    # Machine access is deny-by-default, like the folder allow-list.
+    allowed_capabilities: list[str] = Field(default_factory=list)
+    camera_device: int = Field(default=0, ge=0)
+
     # Development override. Production data belongs in the OS application-data
     # directory resolved by ``default_data_dir``.
     data_dir: Path | None = None
@@ -86,6 +102,15 @@ class Settings(BaseSettings):
                 raise ValueError("CLAIREAI_ALLOWED_FOLDERS must not contain empty entries")
             cleaned.append(Path(text).expanduser())
         object.__setattr__(self, "allowed_folders", cleaned)
+
+        capabilities = [str(name).strip().lower() for name in self.allowed_capabilities]
+        unknown = sorted({name for name in capabilities if name not in KNOWN_CAPABILITIES})
+        if unknown:
+            raise ValueError(
+                f"CLAIREAI_ALLOWED_CAPABILITIES contains unknown capability {unknown[0]!r}. "
+                f"Known capabilities: {', '.join(sorted(KNOWN_CAPABILITIES))}"
+            )
+        object.__setattr__(self, "allowed_capabilities", list(dict.fromkeys(capabilities)))
         return self
 
     @property

@@ -29,7 +29,8 @@ Implemented and tested:
 
 Not implemented yet (planned for later weeks): approval prompts and any tool that
 mutates files (Week 3), the FastAPI service, the browser agent, the daily summary
-scheduler, desktop and mobile clients, and the from-scratch model.
+scheduler, desktop and mobile clients, the from-scratch model, and the two
+planned surfaces described below — the presence renderer and machine access.
 
 See `ROADMAP.md` for the full plan and `PROGRESS.md` for the current state,
 verified results, and open blockers.
@@ -93,6 +94,38 @@ The model chooses a tool and its arguments; the runtime does all of this:
 
 Useful flags: `--no-tools` for plain chat, `--dry-run` to see which tools would
 be called without reading anything.
+
+## Planned: presence renderer and machine access
+
+Two features are specified and scheduled but **not built yet**. Their contracts
+are written down first on purpose, because both touch privacy:
+
+- **Presence renderer** (`docs/architecture/presence-renderer.md`) — the
+  assistant's face: a local, state-driven 2D/WebGL scene in the desktop shell
+  showing idle / listening / thinking / tool_running / awaiting_approval /
+  speaking / error, plus indicators for microphone, camera, screen and input.
+  It renders state from the same task log the audit trail uses; it holds no
+  capability and never decides anything. Built as v0 in Month 1 Week 4.
+- **Machine access** (`docs/architecture/machine-access.md`) — camera snapshots,
+  screen capture, clipboard, window listing, cursor and keyboard control, all
+  denied by default and granted per task with a visible indicator. Perception
+  arrives in Months 2–3; input control is `dangerous` and asks every time until
+  a named action is trusted.
+
+Reserved configuration (validation is live, the features are not):
+
+```bash
+CLAIREAI_PRESENCE_MODE=auto          # off | auto | 2d | webgl
+CLAIREAI_PRESENCE_FPS_CAP=30         # 5-60, 30 recommended on integrated GPUs
+CLAIREAI_PRESENCE_REDUCE_MOTION=false
+CLAIREAI_ALLOWED_CAPABILITIES='["screen","camera"]'   # empty = refuse everything
+CLAIREAI_CAMERA_DEVICE=0
+```
+
+`claireai.permissions.check_capability` already enforces the deny-by-default rule
+(and has tests), so the first camera or cursor tool must ask that policy rather
+than invent its own. `scripts/doctor.py` reports the configured model and paths
+today; it does not yet print capability or renderer settings.
 
 ## Safety defaults
 
