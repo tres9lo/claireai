@@ -146,8 +146,9 @@ def test_search_files_finds_nested_matches(context: ToolContext, root: Path) -> 
     result = search_files(context, SearchFilesArgs(path=str(root), pattern="*.txt"))
     assert result.detail["matches"] == 2
     assert "small.txt" in result.text
-    assert "inner.txt" in result.text
+    assert "sub/inner.txt" in result.text
     assert "notes.md" not in result.text
+    assert "\\" not in result.text  # same text on Windows and Linux
 
 
 def test_search_files_is_case_insensitive(context: ToolContext, root: Path) -> None:
@@ -198,6 +199,8 @@ def test_find_largest_files_sorts_by_real_size(context: ToolContext, root: Path)
 def test_find_largest_files_searches_subfolders(context: ToolContext, root: Path) -> None:
     result = find_largest_files(context, LargestFilesArgs(path=str(root), limit=10))
     assert "sub/inner.txt" in result.text  # nested file was found
+    # Tool output is slash-normalised so Windows and Linux produce the same text.
+    assert "\\" not in result.text
     # Folders are not reported as files, whatever their apparent size.
     assert "sub/" not in [line.split()[-1] for line in result.text.splitlines()[1:]]
 

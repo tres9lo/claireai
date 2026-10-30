@@ -235,7 +235,9 @@ def find_largest_files(context: ToolContext, arguments: LargestFilesArgs) -> Too
                 continue
             if not stat.S_ISREG(info.st_mode):
                 continue
-            found.append((info.st_size, str((current / name).relative_to(root))))
+            # as_posix keeps tool output identical on Windows and Linux; the
+            # model and the audit log should not see `sub\\file.txt`.
+            found.append((info.st_size, (current / name).relative_to(root).as_posix()))
         if truncated:
             break
 
@@ -297,7 +299,8 @@ def search_files(context: ToolContext, arguments: SearchFilesArgs) -> ToolResult
             except OSError:
                 denied += 1
                 continue
-            matches.append((Path(current_root).relative_to(root) / name, size))
+            relative = (Path(current_root).relative_to(root) / name).as_posix()
+            matches.append((relative, size))
             if len(matches) >= arguments.max_results:
                 break
         if scanned > MAX_SCAN_ENTRIES or len(matches) >= arguments.max_results:
