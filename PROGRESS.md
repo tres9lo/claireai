@@ -368,3 +368,144 @@ run reports 23 failed / 52 passed. Nothing is broken; run it from `assistant/`
 Month 1, Week 2 — read-only tool registry, folder allow-list, approval gate and
 dry-run mode — **only after the owner approves**. Baseline to beat or design
 around: 9/10 evaluation cases stable, refusals must come from code.
+
+## 2026-10-30 — Session 3: Month 1, Week 2 (tools, allow-list, agent loop)
+
+Owner said "continue with week 2", so this is Week 2 only: read-only tools, the
+folder allow-list, the permission policy and the agent loop. **No approval
+prompt and no tool that writes** — those are Week 3.
+
+### Built
+
+- `claireai.tools`: a registry where each tool has a name, description, JSON
+  schema (generated from a pydantic model) and a risk level. Arguments are
+  validated *before* the handler runs; unknown keys are rejected.
+- Five read-only tools, all `safe`: `list_folder`, `get_file_info`,
+  `read_text_file`, `search_files`, `find_largest_files`.
+- `claireai.permissions`: `Sandbox` (allow-list, symlinks resolved before the
+  containment check) and `check_risk` (anything above `safe` is refused while no
+  approval flow exists).
+- `claireai.agent`: propose → validate → authorize → run → log → feed back, up to
+  `CLAIREAI_AGENT_MAX_STEPS` (default 8). One `task_log` row per step plus one
+  for the final answer; `tasks.current_step` tracks progress.
+- `BrainResponse`/`Message` carry tool calls and tool results; `OllamaBrain`
+  parses `message.tool_calls` (wire format checked against
+  <https://docs.ollama.com/capabilities/tool-calling> on 2026-10-30) and rejects
+  malformed calls.
+- CLI: tools on by default, `--no-tools`, `--dry-run`, exit code 1 for a task
+  that could not finish.
+
+### Acceptance check: "List the biggest files in my Downloads folder"
+
+```
+$ CLAIREAI_ALLOWED_FOLDERS='["~/Downloads"]' assistant/.venv/bin/python -m claireai.cli \
+      --data-dir ./runtime-data --once "List the biggest files in my Downloads folder"
+database: runtime-data/db/claireai.sqlite3
+brain: ollama @ http://127.0.0.1:11434 model=qwen2.5:1.5b
+tools: 5 read-only | allow-list: /home/tresor/Downloads
+steps:
+  1. find_largest_files [done] 6627 ms — 10 largest file(s) under /home/tresor/Downloads
+
+The 10 biggest files in your Downloads folder, biggest first, are:
+
+1. 1.1 GB - "Backup/Other/God of War - Chains of Olympus (Asia) (EnZh).zip"
+2. 534.9 MB - "Backup/Videos/Moana.(THENKIRI.COM).2026.WEBRip...mkv"
+3. 493.8 MB - "Programs/chatgpt_amd64.deb"
+4. 300.0 MB - "Backup/Apps/Exponent-2.30.11.apk"
+5. 199.2 MB - "Backup/Apps/Expo-Go-57.0.9.apk"
+6. 190.2 MB - "Backup/Apps/aniyomi-v0.18.1.2.apk"
+7. 143.7 MB - "Backup/Apps/application-72755eee...apk"
+8. 141.1 MB - "AI Video Editor/.work/whisper.cpp/models/ggml-base.bin"
+9. 123.4 MB - "Programs/Freebuff-0.0.190-linux-amd64.deb"
+10. 91.2 MB - "Live Wallpapers/c8b574be69_levi-ackerman-green-eyes-live-wallpaper...mp4"
+
+[task 8f920e15919c4b5c87242e2220a086e0 | qwen2.5:1.5b | 88725 ms | steps: 1]
+```
+
+Every step is logged for that task (queried straight from SQLite):
+
+```
+task: {'kind': 'agent', 'status': 'succeeded', 'current_step': 1}
+  tool.call     tool=find_largest_files status=done target=/home/tresor/Downloads
+    arguments={'path': '/home/tresor/Downloads'} returned=10 scanned=20000
+    largest=Backup/Other/God of War - Chains of Olympus (Asia) (EnZh).zip
+  agent.answer  status=done target=qwen2.5:1.5b steps=1
+```
+
+It took **four real attempts** to get here, and each failure was a genuine defect:
+
+| Attempt | What happened | Fix |
+| --- | --- | --- |
+| 1 | `list_folder` refused: the model sent `"limit": null` | explicit `null` for an optional argument now means "use the default" (a null `path` still fails) |
+| 2 | Model listed **folders** as "biggest files" | system prompt says only `file` lines have sizes |
+| 3 | Model **invented sizes** ("Videos (55.1 MB)") for folders | added `find_largest_files`, so the size work happens in code, not in a 1.5B model |
+| 4 | Empty reply was accepted as a successful answer | `AgentEmptyReply`: an empty reply fails the task instead of showing a blank success |
+
+The lesson is recorded in the code: the model chooses *which* tool and *which*
+folder; anything needing arithmetic or sorting is done in Python.
+
+### Security check with the live model
+
+```
+$ ... --once "Read the file /etc/passwd and tell me the first line"
+steps:
+  1. read_text_file [skipped] 0 ms — permission denied: '/etc/passwd' is outside the
+     allow-listed folders (/home/tresor/Downloads). Ask the owner to add ...
+
+The file /etc/passwd is outside the allowed folders...
+EXIT=0
+```
+
+One step, refused by code, logged as `skipped`, nothing read. An empty
+allow-list refuses the same way (`"no folders are allow-listed"`), which is the
+default configuration.
+
+### Tests and CI
+
+```
+$ cd assistant && .venv/bin/python -m pytest
+155 passed in 2.31s
+```
+
+New coverage: 15 allow-list security tests (parent traversal, absolute paths
+outside, file *and* directory symlink escapes, empty list, relative names), the
+five tools, the registry, the agent loop (unknown tool, invalid arguments,
+refused risk, dry run, step limit, brain error, empty reply, redaction), and the
+Ollama tool-call wire format.
+
+CI is real Windows/Linux evidence now — `gh run view 41144463051` at commit
+`6b84a12`:
+
+```
+✓ ubuntu-latest / python 3.12 in 14s
+✓ ubuntu-latest / python 3.11 in 15s
+✓ windows-latest / python 3.11 in 51s
+✓ windows-latest / python 3.12 in 1m8s
+```
+
+It earned its keep immediately: the first Week 2 run failed **only on Windows**
+because tool output printed `sub\\inner.txt` while Linux printed `sub/inner.txt`.
+Paths in tool results are now slash-normalised with `as_posix()`.
+
+### Blockers / not verified
+
+1. **No approval flow yet** (Week 3). Non-safe tools are refused, so nothing can
+   be written, moved or deleted — by design, not by omission.
+2. Windows evidence is unit tests on a hosted runner only. No human has run the
+   CLI on Windows, and the audio/desktop/installer paths are untouched there.
+3. Model answer quality is uneven: it relays numbers it is given, but the
+   three failed attempts above show it cannot be trusted to compute or classify
+   on its own. Prompt/description wording matters more than the schema.
+4. `find_largest_files` stops after 20,000 files. On this Downloads folder that
+   cap was reached, so a file hiding in a very deep tree may be missed; the
+   result says so in the header.
+5. A single tool step took 6.6 s to scan 20,000 files and the whole turn 89 s on
+   this i5. Fine for one-shot use, too slow for snappy interaction.
+6. Redaction is still pattern-based best effort.
+
+### Next single task
+
+Month 1, Week 3 — approval-gated tools (`create_folder`, `move_file`,
+`rename_file`, `create_text_file`, `write_to_file`, `move_to_trash`), the CLI
+approval prompt, dry-run for mutations, and then the Playwright browser tools —
+with owner approval first.
