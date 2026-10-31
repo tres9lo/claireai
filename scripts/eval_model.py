@@ -58,7 +58,7 @@ class StubBrain:
     async def health(self) -> BrainHealth:
         return BrainHealth(available=True, model_present=True, models=("stub",), detail="stub")
 
-    async def generate(self, messages, tools=None) -> BrainResponse:  # noqa: ANN001
+    async def generate(self, messages, tools=None, *, temperature=None) -> BrainResponse:  # noqa: ANN001
         for message in reversed(messages):
             if message.role == "user":
                 return BrainResponse(content=self._answers.get(message.content, "STUB"), model="stub")

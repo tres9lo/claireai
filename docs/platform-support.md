@@ -30,6 +30,28 @@ tests green on Ubuntu and Windows runners, CLI tools exercised on Linux only).
 | Windows (GitHub runner) | `windows-latest`, CI run 41144463051 | 3.11, 3.12 | 155 unit tests pass on both; **no manual run** — no CLI, audio, installer or desktop evidence |
 | Android | Tecno Spark 20 | — | not tested |
 
+## What the desktop window (Tauri) still needs
+
+The presence HUD is served over loopback and verified in a browser; the Tauri
+window that is meant to wrap it is not started, because the toolchain is not
+present on the development machine. Two blocked steps, both needing `sudo` or a
+network fetch that the build agent cannot perform:
+
+```bash
+# 1. WebKit/GTK runtime the window links against (Ubuntu/Debian family)
+sudo apt update
+sudo apt install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev
+
+# 2. Rust: the distro's rustc here is 1.75; Tauri 2 needs >= 1.90
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+cargo --version   # expect 1.9x or newer
+```
+
+Until both are done, `python scripts/presence_preview.py --demo` is the UI, and
+the `/today` page is the read-only one — both are the same HTML/CSS the window
+will wrap, so no work is wasted, only the shell is missing.
+
 ## Known platform differences to keep in mind
 
 - Data locations come from `platformdirs` (`~/.local/share/ClaireAI` on Linux,

@@ -26,7 +26,7 @@ from typing import Any, Mapping, Sequence
 
 from claireai.approval import ApprovalBroker, ApprovalRequest, DenyAll, new_ref
 from claireai.audit import AuditLog, redact
-from claireai.brain import Brain, BrainError, Message, ToolCall
+from claireai.brain import Brain, BrainError, BrainResponse, Message, ToolCall
 from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox, check_risk, requires_approval
 from claireai.presence import PresenceStream
@@ -44,12 +44,34 @@ SYSTEM_PROMPT = (
     "Lines starting with 'dir' are folders, not files; only 'file' lines have sizes. "
     "Write tools exist: they create, write, rename or move files, and every one needs "
     "the owner's approval before it runs. Propose them; never assume approval was given. "
+    "Start every path with one of the allowed folders; never invent an absolute path. "
+    "The current contents of those folders are listed for you with each request: use "
+    "those real names, and call list_folder or get_file_info for anything not shown. "
     "Nothing you have deletes permanently: move_to_trash moves a file to a recoverable bin. "
     "When you have the answer, reply with a short final answer and no tool call. "
     "If a tool returns an error or is denied, explain it or correct the arguments."
 )
 
 MAX_TOOL_TEXT = 4000
+# How many entries the runtime lists when it grounds a write. Enough to hold the
+# names a request mentions, short enough not to cost real prompt time.
+MAX_LISTED = 20
+
+
+def _retry_worthwhile(response: BrainResponse, temperature: float) -> bool:
+    """Is one more attempt at the same conversation likely to differ?
+
+    The empty replies we have measured come from a *generated but malformed*
+    tool call: Ollama reports ``completion_tokens`` while delivering neither
+    text nor a call, so the tokens exist and a fresh sample can differ. Nothing
+    generated means there is nothing to re-roll, and a temperature of 0 means
+    the same input yields the same empty reply again — in both cases a retry
+    would spend a full prompt evaluation (seconds of CPU on this hardware) to
+    reach a known answer, so it is refused here rather than silently.
+    """
+    if not response.completion_tokens:
+        return False
+    return temperature != 0
 
 
 class AgentError(Exception):
@@ -79,6 +101,9 @@ class AgentStep:
     duration_ms: int
     result_text: str = ""
     approval_ref: str | None = None
+    # True when the runtime read the folder on the model's behalf because a
+    # write arrived with nothing read yet (see ``_discovery``).
+    discovered: bool = False
 
 
 @dataclass(frozen=True)
@@ -158,13 +183,65 @@ async def run_task(
     if presence:
         presence.emit("thinking", task_id=task.id)
 
-    messages: list[Message] = [system_message(sandbox), Message(role="user", content=request)]
+    # A registry with no read tool at all starts verified: there is nothing to
+    # require, and a gate that can never be satisfied would block every write.
+    can_verify = any(registry.get(name).risk == "safe" for name in registry.names())
+    verified = not can_verify
+
+    # For a request that can write, read the allowed folders *before the model
+    # speaks*. Measured twice: qwen2.5:1.5b goes straight to move_file, and when
+    # told afterwards to read first it either answers with the instruction or
+    # gives up. Grounding it up front costs no model call and removes the guess.
+    context_note = ""
+    if can_verify and plan is not None and any(
+        registry.get(name).risk != "safe" for name in plan.tools
+    ):
+        listing, read_ok = _discovery(sandbox, registry, {})
+        if read_ok:
+            context_note = f"\n\nWhat those folders contain right now:\n{listing}"
+            verified = True
+
+    messages: list[Message] = [
+        Message(role="system", content=system_message(sandbox).content + context_note),
+        Message(role="user", content=request),
+    ]
     steps: list[AgentStep] = []
     started = time.perf_counter()
 
     try:
         for step_number in range(1, step_limit + 1):
-            response = await brain.generate(messages, tools=schemas)
+            # Dynamic decoding. Until a step has succeeded the model is choosing
+            # what to do, so it gets the low temperature; once it has real data
+            # it is phrasing an answer, so it gets the configured one.
+            decided = any(step.status == "done" for step in steps)
+            temperature = settings.temperature if decided else settings.tool_temperature
+            response = await brain.generate(messages, tools=schemas, temperature=temperature)
+
+            if not response.tool_calls and not response.content.strip() and _retry_worthwhile(
+                response, temperature
+            ):
+                # One bounded second attempt at the same messages, recorded as
+                # its own audit row: the first attempt is a real event the owner
+                # should be able to see, and a model that only ever recovers by
+                # retrying must not look like one that answered first time.
+                with transaction(conn):
+                    audit.record(
+                        task_id=task.id,
+                        device=device,
+                        action="agent.retry",
+                        status="skipped",
+                        target=response.model,
+                        detail={
+                            "reason": "empty reply",
+                            "step": step_number,
+                            "completion_tokens": response.completion_tokens,
+                        },
+                    )
+                if presence:
+                    presence.emit("thinking", task_id=task.id)
+                response = await brain.generate(
+                    messages, tools=schemas, temperature=temperature
+                )
 
             if not response.tool_calls:
                 if not response.content.strip():
@@ -232,6 +309,7 @@ async def run_task(
                     index=len(steps) + 1,
                     task_id=task.id,
                     device=device,
+                    shown=plan.tools if plan else registry.names(),
                     registry=registry,
                     sandbox=sandbox,
                     data_dir=data_dir,
@@ -240,8 +318,17 @@ async def run_task(
                     audit=audit,
                     conn=conn,
                     dry_run=dry_run,
+                    verified=verified,
                 )
                 steps.append(step)
+                if step.discovered or (
+                    step.status == "done"
+                    and step.tool in registry
+                    and registry.get(step.tool).risk == "safe"
+                ):
+                    # A read happened, whether the model asked for it or the
+                    # runtime did it on the model's behalf.
+                    verified = True
                 messages.append(
                     Message(role="tool", tool_name=call.name, content=_clip(step.result_text))
                 )
@@ -280,12 +367,73 @@ async def run_task(
         raise
 
 
+def _discovery(
+    sandbox: Sandbox, registry: ToolRegistry, arguments: Mapping[str, Any]
+) -> tuple[str, bool]:
+    """Read a folder the model should have looked at, and describe it.
+
+    Called only when a write arrives with nothing read yet. The runtime does the
+    read instead of asking again: measured, ``qwen2.5:1.5b`` went straight to
+    ``move_file`` in 6 of 6 runs and then, told to read first, answered instead
+    of reading. A local folder listing costs no model call, and putting the real
+    names in the transcript is the only way this model gets them.
+
+    Returns the text to feed back and whether a read actually happened.
+    """
+    if "list_folder" not in registry:
+        return "", False
+
+    folders: list[Path] = []
+    for key in ("source", "path", "destination"):
+        raw = arguments.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            resolved = sandbox.resolve(raw)
+        except PermissionDenied:
+            continue
+        folders.append(resolved if resolved.is_dir() else resolved.parent)
+        break
+    if not folders:
+        # The named path is not reachable at all. Show what *is* reachable,
+        # which is exactly the fact a model that invented /Users/... lacks.
+        folders = list(sandbox.roots)
+
+    # Absolute paths, one per line, each on its own: a small model copies a
+    # whole line and gets a working path. Fed the human-readable listing
+    # ("file 13 B quarterly-report.pdf") it pasted that fragment in as a name.
+    parts: list[str] = []
+    for folder in folders[:2]:
+        try:
+            entries = sorted(folder.iterdir(), key=lambda item: (not item.is_dir(), item.name))[:MAX_LISTED]
+        except OSError:
+            continue
+        block = [f"{folder} contains:"]
+        for entry in entries:
+            if entry.is_dir():
+                block.append(f"  {entry}  (folder)")
+            else:
+                try:
+                    block.append(f"  {entry}  (file, {entry.stat().st_size} bytes)")
+                except OSError:
+                    block.append(f"  {entry}  (file)")
+        try:
+            total = sum(1 for _ in folder.iterdir())
+        except OSError:
+            total = len(entries)
+        if total > len(entries):
+            block.append(f"  ... and {total - len(entries)} more")
+        parts.append("\n".join(block))
+    return "\n".join(parts), bool(parts)
+
+
 async def _execute(
     *,
     call: ToolCall,
     index: int,
     task_id: str,
     device: str,
+    shown: Sequence[str],
     registry: ToolRegistry,
     sandbox: Sandbox,
     data_dir: Path,
@@ -294,6 +442,7 @@ async def _execute(
     audit: AuditLog,
     conn: sqlite3.Connection,
     dry_run: bool,
+    verified: bool,
 ) -> AgentStep:
     """Validate, authorize, run and log one proposed call."""
     started = time.perf_counter()
@@ -317,6 +466,41 @@ async def _execute(
             status = "skipped"
             text = f"[dry run] would call {tool.name} with {rendered}"
             detail["reason"] = "dry_run"
+        elif requires_approval(tool.risk) and not verified:
+            # Nothing has been read in this task, so this target has never been
+            # checked. Offering the read tools was measured not to be enough, so
+            # the runtime reads the folder itself and hands back real names.
+            status = "skipped"
+            detail["reason"] = "verify_first"
+            found, did_read = _discovery(sandbox, registry, arguments)
+            detail["discovered"] = did_read
+            if did_read:
+                # Factual, with no instruction the model can mistake for an
+                # answer: it copied "call move_file again" back as its reply.
+                text = f"{tool.name} did not run. The folder really contains:\n{found}"
+            else:
+                text = (
+                    "nothing has been read in this task yet, so this target is "
+                    "unchecked; call list_folder or get_file_info on the allowed "
+                    f"folder first, then call {tool.name} again"
+                )
+            return _finish(
+                audit=audit,
+                conn=conn,
+                task_id=task_id,
+                device=device,
+                call=call,
+                index=index,
+                arguments=arguments,
+                target=target,
+                status=status,
+                text=text,
+                detail=detail,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                approval_ref=None,
+                presence=presence,
+                discovered=did_read,
+            )
         else:
             if requires_approval(tool.risk):
                 request = ApprovalRequest(
@@ -389,15 +573,37 @@ async def _execute(
 
     except UnknownTool as exc:
         status = "skipped"
-        text = f"error: {exc}"
+        # Name only the tools this request was offered. The registry's own list
+        # names every tool, including ones routing deliberately hid, so feeding
+        # it back hands the model a menu it was never shown and invites it to
+        # try them anyway. This is a display choice: a tool outside `shown` that
+        # the model calls anyway is still validated and executed normally.
+        # The full registry listing stays in the audit row, not in the reply.
+        detail["error"] = str(exc)
+        text = (
+            f"error: unknown tool {call.name!r}; "
+            f"offered for this request: {', '.join(shown) or '(none)'}"
+        )
     except PermissionDenied as exc:
         status = "skipped"
-        text = f"permission denied: {exc}"
+        # Naming the allowed folders in the refusal gives the model the one fact
+        # its next attempt needs. Measured: after a bare refusal the 1.5B had
+        # invented a path outside the sandbox, been refused, and then stopped
+        # instead of correcting itself — the correction was never made cheap.
+        text = f"permission denied: {exc}. Allowed folders: {sandbox.describe()}"
         detail["reason"] = "permission_denied"
     except ToolError as exc:
         status = "failed"
         text = f"error: {exc}"
         detail["error"] = str(exc)
+        if "does not exist" in str(exc):
+            # A missing path is the failure the model has to recover from, and
+            # it does not recover from a bare "does not exist" — it stops. Give
+            # it the real names, absolute paths, in the same breath.
+            found, did_read = _discovery(sandbox, registry, arguments)
+            if did_read:
+                text = f"error: {exc}\n{found}"
+                detail["discovered"] = True
     except OSError as exc:
         status = "failed"
         text = f"error: the operating system refused the request ({exc.strerror or exc})"
@@ -437,6 +643,7 @@ def _finish(
     duration_ms: int,
     approval_ref: str | None,
     presence: PresenceStream | None,
+    discovered: bool = False,
 ) -> AgentStep:
     """Write the tool row and build the step record."""
     summary = text if len(text) <= 160 else text[:157] + "..."
@@ -466,6 +673,7 @@ def _finish(
         duration_ms=duration_ms,
         result_text=text,
         approval_ref=approval_ref,
+        discovered=discovered,
     )
 
 

@@ -34,8 +34,8 @@ class ScriptedBrain:
     async def health(self):  # noqa: ANN201
         raise NotImplementedError
 
-    async def generate(self, messages, tools=None) -> BrainResponse:  # noqa: ANN001
-        self.calls.append({"messages": list(messages), "tools": tools})
+    async def generate(self, messages, tools=None, *, temperature=None) -> BrainResponse:  # noqa: ANN001
+        self.calls.append({"messages": list(messages), "tools": tools, "temperature": temperature})
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -97,6 +97,18 @@ def test_system_message_names_the_allowed_folders(downloads: Path) -> None:
     message = system_message(Sandbox(roots=(downloads,)))
     assert str(downloads) in message.content
     assert "approval" in message.content
+
+
+def test_the_system_prompt_tells_the_model_to_check_paths_before_writing(
+    downloads: Path,
+) -> None:
+    # The refusal is only useful if the model knows a check exists. Measured:
+    # after being refused for an invented path, the 1.5B stopped instead of
+    # correcting, because nothing told it how to get the fact it was missing.
+    content = system_message(Sandbox(roots=(downloads,))).content
+    assert "never invent an absolute path" in content
+    assert "list_folder" in content
+    assert "get_file_info" in content
 
 
 async def test_one_tool_call_then_an_answer(
@@ -181,6 +193,48 @@ async def test_unknown_tool_is_refused_and_logged(
     assert "unknown tool" in outcome.steps[0].result_text
     logged = trail(AuditLog(conn).for_task(outcome.task_id))
     assert logged[0].status == "skipped"
+
+
+async def test_the_unknown_tool_error_names_the_tools_that_were_offered(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    # "show me my downloads" routes to `list`, so the model is shown one tool.
+    # Naming the eleven tools it was never shown would send it back to a menu the
+    # route deliberately hid.
+    brain = ScriptedBrain([tool_call("delete_everything"), answer("I cannot do that.")])
+
+    outcome = await run_task(
+        settings=agent_settings, conn=conn, brain=brain, request="show me my downloads"
+    )
+
+    text = outcome.steps[0].result_text
+    assert "unknown tool" in text
+    assert "offered for this request: list_folder" in text
+    assert "move_to_trash" not in text
+    # The full registry listing is still recorded, just not shown to the model.
+    detail = trail(AuditLog(conn).for_task(outcome.task_id))[0].detail or ""
+    assert "move_to_trash" in detail
+    # Routing narrowed the menu, it did not remove a permission: an offered-out
+    # tool is still executed if called anyway.
+    assert len(brain.calls) == 2
+    assert brain.calls[0]["tools"] and len(brain.calls[0]["tools"]) == 1
+
+
+async def test_with_routing_off_the_error_lists_every_tool(
+    conn: sqlite3.Connection, agent_settings: Settings, tmp_path: Path, downloads: Path
+) -> None:
+    un_routed = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        allowed_folders=[downloads],
+        tool_routing="off",
+    )
+    brain = ScriptedBrain([tool_call("delete_everything"), answer("no")])
+
+    outcome = await run_task(settings=un_routed, conn=conn, brain=brain, request="delete it")
+
+    assert "list_folder" in outcome.steps[0].result_text
+    assert "move_to_trash" in outcome.steps[0].result_text
 
 
 async def test_invalid_arguments_are_refused_and_the_error_goes_back(
@@ -299,6 +353,12 @@ async def test_a_path_outside_the_allow_list_is_refused(
     assert outcome.steps[0].status == "skipped"
     assert "permission denied" in outcome.steps[0].result_text
     assert "private" not in outcome.steps[0].result_text
+    # The refusal must also say where the model *can* go, or a corrected
+    # attempt has nothing new to work with.
+    assert str(agent_settings.allowed_folders[0]) in outcome.steps[0].result_text
+    fed_back = brain.calls[1]["messages"][-1]
+    assert fed_back.role == "tool"
+    assert "Allowed folders" in fed_back.content
 
 
 async def test_permission_denied_never_reaches_the_handler(
@@ -374,6 +434,95 @@ async def test_an_empty_reply_is_a_failure_not_an_answer(
     assert '"reason": "empty reply"' in (logged[-1].detail or "")
 
 
+def _empty_reply(**kwargs) -> BrainResponse:
+    """An empty reply carrying the signature of a generated-but-swallowed call.
+
+    ``completion_tokens`` is what the real Ollama responses had: 23-40 tokens
+    generated, nothing delivered. It is also the field that decides whether a
+    retry is worth attempting.
+    """
+    return BrainResponse(content="", model="scripted", **kwargs)
+
+
+async def test_the_temperature_is_low_while_deciding_and_normal_once_decided(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    # Dynamic decoding: repeatable while the model is choosing a tool, natural
+    # once it has real data to phrase. Both values are configurable.
+    brain = ScriptedBrain(
+        [tool_call("list_folder", path=str(downloads)), answer("Two files.")]
+    )
+
+    await run_task(settings=agent_settings, conn=conn, brain=brain, request="list it")
+
+    assert agent_settings.temperature_tools < agent_settings.temperature
+    assert brain.calls[0]["temperature"] == agent_settings.temperature_tools
+    assert brain.calls[1]["temperature"] == agent_settings.temperature
+
+
+async def test_an_empty_reply_with_generated_tokens_gets_one_retry(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    brain = ScriptedBrain(
+        [_empty_reply(completion_tokens=32), answer("Recovered on the second attempt.")]
+    )
+
+    outcome = await run_task(settings=agent_settings, conn=conn, brain=brain, request="list it")
+
+    assert outcome.content == "Recovered on the second attempt."
+    assert len(brain.calls) == 2
+    rows = trail(AuditLog(conn).for_task(outcome.task_id))
+    assert [entry.action for entry in rows] == ["agent.retry", "agent.answer"]
+    retry = rows[0]
+    assert retry.status == "skipped"
+    assert retry.target == "scripted"
+    assert '"reason": "empty reply"' in (retry.detail or "")
+    assert TaskRepository(conn).get(outcome.task_id).status == "succeeded"
+
+
+async def test_the_empty_reply_retry_is_bounded_to_one_attempt(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    brain = ScriptedBrain(
+        [_empty_reply(completion_tokens=32), _empty_reply(completion_tokens=32)]
+    )
+
+    with pytest.raises(AgentEmptyReply, match="empty reply"):
+        await run_task(settings=agent_settings, conn=conn, brain=brain, request="list it")
+
+    # Two attempts, never a third: a model that keeps emitting nothing must fail
+    # honestly instead of burning the step budget on re-rolls.
+    assert len(brain.calls) == 2
+    rows = trail(AuditLog(conn).for_task(TaskRepository(conn).recent(1)[0].id))
+    assert sum(1 for entry in rows if entry.action == "agent.retry") == 1
+
+
+async def test_no_retry_when_nothing_was_generated(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    brain = ScriptedBrain([_empty_reply()])
+
+    with pytest.raises(AgentEmptyReply, match="empty reply"):
+        await run_task(settings=agent_settings, conn=conn, brain=brain, request="list it")
+
+    assert len(brain.calls) == 1
+
+
+async def test_no_retry_when_the_decoding_is_pinned(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    # Temperature 0 redraws the same messages to the same answer, so a retry
+    # would spend a full prompt evaluation to reach the same empty reply.
+    pinned = agent_settings.model_copy(update={"temperature": 0.0, "temperature_tools": 0.0})
+    brain = ScriptedBrain([_empty_reply(completion_tokens=32)])
+
+    with pytest.raises(AgentEmptyReply, match="empty reply"):
+        await run_task(settings=pinned, conn=conn, brain=brain, request="list it")
+
+    assert len(brain.calls) == 1
+    assert brain.calls[0]["temperature"] == 0.0
+
+
 async def test_a_brain_failure_fails_the_task(
     conn: sqlite3.Connection, agent_settings: Settings
 ) -> None:
@@ -429,13 +578,21 @@ async def test_an_approval_request_carries_the_exact_target(
 ) -> None:
     new_folder = downloads / "reports"
     broker = FixedBroker(approved=True)
-    brain = ScriptedBrain([tool_call("create_folder", path=str(new_folder)), answer("Created.")])
+    # A write needs a read first; the gate is what makes that true here.
+    brain = ScriptedBrain(
+        [
+            tool_call("list_folder", path=str(downloads)),
+            tool_call("create_folder", path=str(new_folder)),
+            answer("Created."),
+        ]
+    )
 
     outcome = await run_task(
         settings=agent_settings, conn=conn, brain=brain, request="make a folder", approvals=broker
     )
 
-    assert outcome.steps[0].status == "done"
+    assert outcome.steps[0].tool == "list_folder"
+    assert outcome.steps[1].status == "done"
     assert new_folder.is_dir()
     request = broker.requests[0]
     assert request.target == str(new_folder)
@@ -481,18 +638,125 @@ async def test_an_approved_action_records_the_same_reference_twice(
 ) -> None:
     broker = FixedBroker(approved=True)
     brain = ScriptedBrain(
-        [tool_call("create_folder", path=str(downloads / "x")), answer("Done.")]
+        [
+            tool_call("list_folder", path=str(downloads)),
+            tool_call("create_folder", path=str(downloads / "x")),
+            answer("Done."),
+        ]
     )
     outcome = await run_task(
         settings=agent_settings, conn=conn, brain=brain, request="make x", approvals=broker
     )
 
     logged = trail(AuditLog(conn).for_task(outcome.task_id))
-    decision, tool_row = logged[0], logged[1]
+    decision = next(row for row in logged if row.action == "approval.decision")
+    tool_row = next(
+        row for row in logged if row.action == "tool.call" and row.tool == "create_folder"
+    )
     assert decision.action == "approval.decision" and decision.status == "done"
     assert tool_row.action == "tool.call" and tool_row.status == "done"
     assert decision.approval_ref == tool_row.approval_ref
     assert '"approved": true' in (decision.detail or "")
+
+
+async def test_a_write_request_is_grounded_in_a_real_listing_first(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    # Measured: qwen2.5:1.5b goes straight to move_file and invents a path, and
+    # a refusal afterwards makes it answer instead of retry. So the runtime reads
+    # the allowed folders *before* the model speaks, at no extra model call.
+    target = downloads / "reports"
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain([tool_call("create_folder", path=str(target)), answer("Created.")])
+
+    outcome = await run_task(
+        settings=agent_settings, conn=conn, brain=brain, request="make a folder", approvals=broker
+    )
+
+    # Two calls, which is the floor here: propose the tool, then answer. A gate
+    # that refused the write would make it three.
+    assert len(brain.calls) == 2
+    system = brain.calls[0]["messages"][0]
+    assert system.role == "system"
+    assert "What those folders contain right now" in system.content
+    assert "big.iso" in system.content  # a real entry, not a guess
+
+    assert [step.tool for step in outcome.steps] == ["create_folder"]
+    assert outcome.steps[0].status == "done"
+    assert target.is_dir()
+
+
+async def test_a_read_request_pays_nothing_for_that_listing(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    # Only routes that can write get the context: reads must not pay prompt
+    # tokens (and a read is not a write target that needs checking).
+    brain = ScriptedBrain([tool_call("list_folder", path=str(downloads)), answer("Two files.")])
+
+    await run_task(settings=agent_settings, conn=conn, brain=brain, request="what is in my downloads")
+
+    system = brain.calls[0]["messages"][0]
+    assert "What those folders contain right now" not in system.content
+
+
+async def test_a_write_with_nothing_read_is_refused_when_no_listing_is_possible(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    # Fallback when the runtime cannot list anything (no list_folder tool): the
+    # write is refused rather than run blind, and a read by the model unblocks it.
+    ran: list[str] = []
+
+    def probe(context: ToolContext, arguments: NoArgs) -> ToolResult:
+        ran.append("probe")
+        return ToolResult(text="checked")
+
+    def writer(context: ToolContext, arguments: NoArgs) -> ToolResult:
+        ran.append("write")
+        return ToolResult(text="wrote")
+
+    registry = ToolRegistry(
+        [
+            Tool(name="get_file_info", description="Check", risk="safe", args_model=NoArgs, handler=probe),
+            Tool(
+                name="create_folder",
+                description="Create",
+                risk="needs_approval",
+                args_model=NoArgs,
+                handler=writer,
+            ),
+        ]
+    )
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain(
+        [
+            tool_call("create_folder"),
+            tool_call("get_file_info"),
+            tool_call("create_folder"),
+            answer("Done."),
+        ]
+    )
+
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="make a folder",
+        registry=registry,
+        approvals=broker,
+    )
+
+    refused = outcome.steps[0]
+    assert refused.status == "skipped"
+    assert "nothing has been read in this task yet" in refused.result_text
+    assert refused.approval_ref is None  # the human was never asked for it
+    assert ran == ["probe", "write"]  # the write never ran blind
+    assert [step.tool for step in outcome.steps] == ["create_folder", "get_file_info", "create_folder"]
+    assert outcome.steps[2].status == "done"
+    assert len(broker.requests) == 1
+
+    rows = trail(AuditLog(conn).for_task(outcome.task_id))
+    reason = next(row for row in rows if row.action == "tool.call" and row.status == "skipped")
+    assert '"reason": "verify_first"' in (reason.detail or "")
 
 
 async def test_validation_happens_before_asking_a_human(
@@ -536,13 +800,17 @@ async def test_the_denial_is_fed_back_to_the_model(
 ) -> None:
     broker = FixedBroker(approved=False, reason="no")
     brain = ScriptedBrain(
-        [tool_call("create_folder", path=str(downloads / "y")), answer("Not approved.")]
+        [
+            tool_call("list_folder", path=str(downloads)),
+            tool_call("create_folder", path=str(downloads / "y")),
+            answer("Not approved."),
+        ]
     )
     await run_task(
         settings=agent_settings, conn=conn, brain=brain, request="make y", approvals=broker
     )
 
-    fed_back = brain.calls[1]["messages"][-1]
+    fed_back = brain.calls[2]["messages"][-1]
     assert fed_back.role == "tool"
     assert "did not approve" in fed_back.content
 
@@ -573,7 +841,11 @@ async def test_presence_reports_waiting_for_approval(
     seen: list[str] = []
     stream = PresenceStream(reporter=lambda event: seen.append(event.state))
     brain = ScriptedBrain(
-        [tool_call("create_folder", path=str(downloads / "z")), answer("Done.")]
+        [
+            tool_call("list_folder", path=str(downloads)),
+            tool_call("create_folder", path=str(downloads / "z")),
+            answer("Done."),
+        ]
     )
     await run_task(
         settings=agent_settings,

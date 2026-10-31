@@ -302,7 +302,13 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
         model=settings.ollama_model,
         timeout=settings.ollama_timeout_seconds,
         # Bounded decoding: an unbounded reply took 126 s on this 4-thread CPU.
-        options={"num_predict": settings.max_output_tokens},
+        # The temperature here is the base for calls that do not choose one; the
+        # agent loop passes its own per phase (settings.temperature_tools while
+        # deciding, settings.temperature once it is phrasing an answer).
+        options={
+            "num_predict": settings.max_output_tokens,
+            "temperature": settings.temperature,
+        },
     )
     try:
         health = await brain.health()

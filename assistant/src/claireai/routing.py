@@ -35,6 +35,13 @@ _OBJECT = 2
 _FILE_NOUN = r"\b(file|files|folder|folders|document|documents|name|pdf|txt|doc)\b|\.\w{1,5}\b"
 
 INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
+    # Invariant, enforced by a test: **an intent that can write must also offer
+    # a read tool.** A write needs a fact only a read can establish — does the
+    # source exist, is there already a file there, what is really in the folder
+    # — and without one the model has to invent a path. Measured: with `move`
+    # offering only write tools, qwen2.5:1.5b answered with
+    # `/Users/yourname/quarterly-report.pdf` and the sandbox refused it, twice.
+    # Reads come after the tool that owns the intent, because order is a prior.
     (
         "trash",
         r"\b(delete|trash|discard|remove|get rid of|throw away|bin)\b",
@@ -53,8 +60,8 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
         "create_folder",
         r"\b(create|make|new|add)\b",
         r"\b(folder|folders|directory|directories)\b",
-        ("create_folder",),
-        "asking for a new folder",
+        ("create_folder", "list_folder"),
+        "asking for a new folder, which needs the parent seen before it is made",
     ),
     (
         "organize",
@@ -67,15 +74,15 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
         "move",
         r"\b(move|put|transfer|shift|place)\b",
         r"\b(file|files|into|in my|to my|folder|document|documents|downloads)\b",
-        ("move_file", "create_folder"),
-        "asking to move a file or folder",
+        ("move_file", "list_folder", "get_file_info", "create_folder"),
+        "asking to move a file or folder, so both ends must be discoverable",
     ),
     (
         "write",
         r"\b(write|save|append|add|create|make|put)\b",
         r"\b(file|files|note|notes|text|txt|\.md|\.txt|saying|content)\b",
-        ("create_text_file", "write_to_file"),
-        "asking to write text into a file",
+        ("create_text_file", "write_to_file", "get_file_info", "list_folder"),
+        "asking to write text into a file, which needs the existing file checked first",
     ),
     (
         "largest",

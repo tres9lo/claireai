@@ -97,10 +97,17 @@ class Brain(Protocol):
         self,
         messages: Sequence[Message],
         tools: Sequence[Mapping[str, Any]] | None = None,
+        *,
+        temperature: float | None = None,
     ) -> BrainResponse:
         """Produce one assistant message.
 
         ``tools`` is part of the contract from the start so the agent runtime can
         pass tool schemas later; adapters may ignore it while unused.
+
+        ``temperature`` overrides the adapter's configured decoding temperature
+        for this one call, so the agent loop can be more repeatable while it is
+        choosing a tool and more natural once it is phrasing an answer. ``None``
+        keeps the adapter's own options.
         """
         ...

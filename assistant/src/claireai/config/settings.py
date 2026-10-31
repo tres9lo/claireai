@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     # unbounded answer cost 126 s; a tool-using reply needs far less than 400.
     max_output_tokens: int = Field(default=400, ge=32, le=4096)
 
+    # Decoding temperature, chosen per phase by the agent loop rather than fixed:
+    # while no tool has run the model is deciding what to do, which wants
+    # repeatability; once it has real data it is phrasing an answer, which wants
+    # natural language. Defaults are deliberately not 0 — measured, a smaller
+    # model pinned at 0 emitted a malformed tool call on every single attempt.
+    temperature: float = Field(default=0.8, ge=0.0, le=2.0)
+    temperature_tools: float = Field(default=0.2, ge=0.0, le=2.0)
+
     presence_mode: Literal["off", "auto", "2d", "webgl"] = "auto"
     presence_fps_cap: int = Field(default=30, ge=5, le=60)
     presence_reduce_motion: bool = False
@@ -121,6 +129,11 @@ class Settings(BaseSettings):
             )
         object.__setattr__(self, "allowed_capabilities", list(dict.fromkeys(capabilities)))
         return self
+
+    @property
+    def tool_temperature(self) -> float:
+        """Temperature while the loop is still choosing a tool."""
+        return self.temperature_tools
 
     @property
     def default_data_dir(self) -> Path:

@@ -30,6 +30,31 @@ def test_non_loopback_runtime_allowed_only_with_explicit_flag() -> None:
     assert settings.ollama_base_url == "http://192.168.1.20:11434"
 
 
+def test_temperature_defaults_are_not_zero_and_differ_per_phase() -> None:
+    settings = Settings(_env_file=None)
+    assert settings.temperature == 0.8
+    assert settings.temperature_tools == 0.2
+    # Deciding on a tool must be more repeatable than phrasing the answer, and 0
+    # is never the default: measured, a pinned 0 made a smaller model emit a
+    # malformed tool call on every attempt.
+    assert settings.temperature_tools < settings.temperature
+    assert settings.tool_temperature == settings.temperature_tools
+
+
+def test_temperature_is_configurable_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("CLAIREAI_TEMPERATURE", "1.1")
+    monkeypatch.setenv("CLAIREAI_TEMPERATURE_TOOLS", "0")
+    settings = Settings(_env_file=None)
+    assert settings.temperature == 1.1
+    assert settings.temperature_tools == 0.0
+
+
+@pytest.mark.parametrize("value", ["-0.1", "2.1"])
+def test_temperature_outside_the_supported_range_is_rejected(value: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, temperature=float(value))
+
+
 def test_trailing_slash_is_normalised() -> None:
     settings = Settings(_env_file=None, ollama_base_url="http://localhost:11434/")
     assert settings.ollama_base_url == "http://localhost:11434"

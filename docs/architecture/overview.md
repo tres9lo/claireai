@@ -135,6 +135,16 @@ The remaining lever is sending fewer tools per call (`routing.py`): classify
 locally by keyword, send only the reachable tools, and fall back to the full
 registry whenever the router is unsure or the model asks for a filtered-out tool.
 
+Decoding temperature is chosen per phase rather than fixed: an assistant has two
+different jobs in one turn. While no step has succeeded it is *deciding* what to
+do — that wants repeatability, so it runs at `CLAIREAI_TEMPERATURE_TOOLS`
+(default 0.2). Once a step has produced real data it is *phrasing* an answer —
+that wants natural language, so it runs at `CLAIREAI_TEMPERATURE` (default 0.8).
+Both are ordinary settings, and a caller can pass a temperature for one call
+without the adapter's own options changing. Neither default is 0: measured, a
+model pinned at 0 emitted a malformed tool call on every attempt, which also
+disables the one bounded retry (identical input, identical reply).
+
 ## Deliberate non-decisions
 
 - **No FastAPI service.** The dependency is installed; nothing serves HTTP except

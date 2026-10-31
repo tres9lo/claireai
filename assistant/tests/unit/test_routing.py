@@ -131,6 +131,42 @@ def test_one_tool_intents_name_exactly_one_tool(registry) -> None:
     assert route("find every pdf inside my Documents folder", registry).tools == ("search_files",)
 
 
+def test_every_intent_that_can_write_also_offers_a_read(registry) -> None:
+    # A write needs a fact only a read can establish: does the source exist, is
+    # there already a file there, what is really in the folder. Without one,
+    # routing forces the model to invent a path — measured with qwen2.5:1.5b,
+    # which named /Users/yourname/quarterly-report.pdf for a move in the real
+    # loop and was refused by the sandbox, twice.
+    reads = {name for name in registry.names() if registry.get(name).risk == "safe"}
+    assert reads, "no read-only tool exists, so the invariant is meaningless"
+
+    for name, verb, obj, tools, reason in INTENTS:
+        offered = [tool for tool in tools if tool in registry]
+        writes = [tool for tool in offered if registry.get(tool).risk != "safe"]
+        if not writes:
+            continue
+        readable = [tool for tool in offered if tool in reads]
+        assert readable, f"{name!r} can write via {writes} but offers no read tool"
+
+
+def test_a_move_offers_discovery_and_leads_with_the_move(registry) -> None:
+    # Both ends of a move have to be discovered, and the tool that owns the
+    # intent must still come first — order is a prior for a small model.
+    result = route("put quarterly-report.pdf into my Documents folder", registry)
+    assert set(result.tools) >= {"move_file", "list_folder", "get_file_info"}
+    assert result.tools[0] == "move_file"
+    names = [schema["function"]["name"] for schema in result.schemas(registry)]
+    assert names[0] == "move_file"
+
+
+def test_a_write_offers_the_check_that_decides_create_or_overwrite(registry) -> None:
+    # create_text_file refuses an existing file and write_to_file requires one,
+    # so which of them to call is a fact only get_file_info can settle.
+    result = route("write a file called todo.txt in my Documents folder saying buy milk", registry)
+    assert set(result.tools) >= {"create_text_file", "write_to_file", "get_file_info"}
+    assert result.tools[0] == "create_text_file"
+
+
 def test_intent_metadata_is_well_formed() -> None:
     names = [name for name, *_ in INTENTS]
     assert len(names) == len(set(names))

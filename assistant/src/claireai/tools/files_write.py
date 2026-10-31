@@ -65,9 +65,12 @@ class RenameFileArgs(_Args):
 
 
 class MoveFileArgs(_Args):
-    source: str = Field(description="Absolute path of the file or folder to move.")
+    source: str = Field(
+        description="Absolute path of the item being moved: the file or folder that exists now."
+    )
     destination: str = Field(
-        description="Target folder, or a full target path. An existing target is never overwritten."
+        description="Where it goes: an existing folder, or a full path for a new location. "
+        "Never a file name. An existing target is never overwritten."
     )
 
 
@@ -159,16 +162,48 @@ def rename_file(context: ToolContext, arguments: RenameFileArgs) -> ToolResult:
     )
 
 
+def _looks_like_file_name(name: str) -> bool:
+    """True when ``name`` carries a file extension.
+
+    Deliberately loose: a folder called ``v1.2`` would match, so callers must
+    only apply it to a destination that does not already exist — an existing
+    folder is never in question.
+    """
+    suffix = Path(name).suffix
+    return bool(suffix) and suffix != "."
+
+
 def move_file(context: ToolContext, arguments: MoveFileArgs) -> ToolResult:
     source = context.sandbox.resolve(arguments.source)
     if not source.exists():
         raise ToolError(f"{source} does not exist")
 
-    destination = context.sandbox.resolve(arguments.destination)
-    if destination.is_dir():
-        destination = context.sandbox.resolve(destination / source.name)
+    destination_arg = context.sandbox.resolve(arguments.destination)
+    destination_is_dir = destination_arg.is_dir()
+    destination = destination_arg
+    if destination_is_dir:
+        destination = context.sandbox.resolve(destination_arg / source.name)
     if destination == source:
         raise ToolError("source and destination are the same path")
+
+    # Guards against the arguments arriving reversed — observed for real with a
+    # thin model that answered {source: "Documents",
+    # destination: "quarterly-report.pdf"}. Reversed arguments here would move a
+    # whole folder onto a file-shaped path; approval shows the arguments, but the
+    # refusal before that gate is cheaper than asking the owner to catch it.
+    if source.is_dir() and not destination_is_dir:
+        if destination_arg.is_file():
+            raise ToolError(
+                f"destination {destination_arg} is a file, but source {source} is a "
+                "folder; the arguments look reversed — pass a folder as the destination"
+            )
+        if not destination.exists() and _looks_like_file_name(destination_arg.name):
+            raise ToolError(
+                f"destination {destination_arg.name!r} is a file name, but source "
+                f"{source.name!r} is a folder; the arguments look reversed — pass the "
+                "folder as source and the folder it belongs in as destination"
+            )
+
     _refuse_if_exists(destination)
     _require_parent(destination)
 

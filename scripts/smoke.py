@@ -75,7 +75,7 @@ class ScriptedBrain:
     async def health(self):  # noqa: ANN201
         raise NotImplementedError
 
-    async def generate(self, messages, tools=None) -> BrainResponse:  # noqa: ANN001
+    async def generate(self, messages, tools=None, *, temperature=None) -> BrainResponse:  # noqa: ANN001
         return self.responses.pop(0)
 
 
@@ -169,6 +169,13 @@ async def _run(args: argparse.Namespace) -> int:
         target = workspace / "smoke-should-not-exist"
         write_brain = ScriptedBrain(
             [
+                # A write is only reached after a read: the agent refuses a write
+                # whose target nothing has looked at (claireai.agent._execute).
+                BrainResponse(
+                    content="",
+                    model="scripted",
+                    tool_calls=(ToolCall(name="list_folder", arguments={"path": str(workspace)}),),
+                ),
                 BrainResponse(
                     content="",
                     model="scripted",
@@ -187,10 +194,12 @@ async def _run(args: argparse.Namespace) -> int:
         denied_rows = AuditLog(conn).for_task(denied.task_id)
         results.check(
             "write tool is refused without an approval channel",
-            denied.steps[0].status == "skipped"
+            denied.steps[0].tool == "list_folder"
+            and denied.steps[0].status == "done"
+            and denied.steps[-1].status == "skipped"
             and not target.exists()
             and any(entry.action == "approval.decision" for entry in denied_rows),
-            denied.steps[0].summary[:60],
+            denied.steps[-1].summary[:60],
         )
 
         stream = PresenceStream()
@@ -224,7 +233,7 @@ async def _run(args: argparse.Namespace) -> int:
         captured: dict[str, list] = {}
 
         class CapturingBrain(ScriptedBrain):
-            async def generate(self, messages, tools=None):  # noqa: ANN001
+            async def generate(self, messages, tools=None, *, temperature=None):  # noqa: ANN001
                 captured["tools"] = list(tools or [])
                 return await super().generate(messages, tools)
 

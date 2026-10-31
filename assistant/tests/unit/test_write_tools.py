@@ -187,6 +187,51 @@ def test_move_file_needs_an_existing_source(context: ToolContext, root: Path) ->
         move_file(context, MoveFileArgs(source=str(root / "ghost.txt"), destination=str(root / "sub")))
 
 
+def test_move_file_refuses_reversed_arguments(context: ToolContext, root: Path) -> None:
+    # Observed for real with a thin model: {source: "sub",
+    # destination: "report.pdf"}. Reversed, that would rename a whole folder to a
+    # file-shaped path. The refusal must happen before approval, not after.
+    with pytest.raises(ToolError, match="look reversed"):
+        move_file(
+            context,
+            MoveFileArgs(source=str(root / "sub"), destination=str(root / "report.pdf")),
+        )
+    assert (root / "sub").is_dir()
+    assert not (root / "report.pdf").exists()
+
+
+def test_move_file_refuses_a_folder_onto_an_existing_file(
+    context: ToolContext, root: Path
+) -> None:
+    target = root / "report.pdf"
+    target.write_text("pdf", encoding="utf-8")
+
+    with pytest.raises(ToolError, match="look reversed"):
+        move_file(context, MoveFileArgs(source=str(root / "sub"), destination=str(target)))
+
+    assert (root / "sub").is_dir()
+    assert target.read_text(encoding="utf-8") == "pdf"
+
+
+def test_the_reversal_guard_still_allows_a_real_folder_move(
+    context: ToolContext, root: Path
+) -> None:
+    archive = root / "archive"
+    archive.mkdir()
+    move_file(context, MoveFileArgs(source=str(root / "sub"), destination=str(archive)))
+    assert (archive / "sub").is_dir()
+    assert not (root / "sub").exists()
+
+
+def test_the_reversal_guard_still_allows_renaming_a_folder(
+    context: ToolContext, root: Path
+) -> None:
+    # A folder moved to a new path that is not file-shaped is legitimate, even
+    # though the destination does not exist yet.
+    move_file(context, MoveFileArgs(source=str(root / "sub"), destination=str(root / "renamed")))
+    assert (root / "renamed").is_dir()
+
+
 def test_move_to_trash_keeps_the_file_recoverable(context: ToolContext, root: Path, tmp_path: Path) -> None:
     result = move_to_trash(context, MoveToTrashArgs(path=str(root / "note.txt")))
 

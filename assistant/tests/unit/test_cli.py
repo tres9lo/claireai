@@ -31,7 +31,7 @@ class StubBrain:
     async def health(self) -> BrainHealth:
         return BrainHealth(available=True, model_present=True, models=("stub",), detail="ok")
 
-    async def generate(self, messages, tools=None) -> BrainResponse:
+    async def generate(self, messages, tools=None, *, temperature=None) -> BrainResponse:
         self.calls.append(list(messages))
         if self.error:
             raise self.error
@@ -100,8 +100,13 @@ class ScriptedBrain:
 
     name = "scripted"
 
-    def __init__(self, call: ToolCall, answer: str) -> None:
+    def __init__(
+        self, call: ToolCall, answer: str, *, prelude: tuple[ToolCall, ...] = ()
+    ) -> None:
+        # `prelude` runs before `call`: a write needs a read first, so tests that
+        # end in a write start with the read the runtime requires.
         self._responses = [
+            *(BrainResponse(content="", model="scripted", tool_calls=(item,)) for item in prelude),
             BrainResponse(content="", model="scripted", tool_calls=(call,)),
             BrainResponse(content=answer, model="scripted"),
         ]
@@ -110,7 +115,7 @@ class ScriptedBrain:
     async def health(self) -> BrainHealth:
         return BrainHealth(available=True, model_present=True, models=("scripted",))
 
-    async def generate(self, messages, tools=None) -> BrainResponse:
+    async def generate(self, messages, tools=None, *, temperature=None) -> BrainResponse:
         self.tools_seen.append(tools)
         return self._responses.pop(0)
 
@@ -250,7 +255,11 @@ async def test_denied_write_tool_leaves_the_filesystem_alone(
     folder.mkdir()
     settings = settings.model_copy(update={"allowed_folders": [folder]})
     target = folder / "should-not-exist"
-    brain = ScriptedBrain(ToolCall(name="create_folder", arguments={"path": str(target)}), "Not allowed.")
+    brain = ScriptedBrain(
+        ToolCall(name="create_folder", arguments={"path": str(target)}),
+        "Not allowed.",
+        prelude=(ToolCall(name="list_folder", arguments={"path": str(folder)}),),
+    )
 
     await _handle_turn(
         args=_args(),
@@ -266,5 +275,10 @@ async def test_denied_write_tool_leaves_the_filesystem_alone(
     logged = [
         entry for entry in AuditLog(conn).for_task(task.id) if entry.action != "agent.route"
     ]
-    assert [entry.action for entry in logged] == ["approval.decision", "tool.call", "agent.answer"]
-    assert logged[0].status == "skipped"
+    assert [entry.action for entry in logged] == [
+        "tool.call",
+        "approval.decision",
+        "tool.call",
+        "agent.answer",
+    ]
+    assert logged[1].status == "skipped"

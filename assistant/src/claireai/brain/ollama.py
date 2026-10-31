@@ -91,6 +91,8 @@ class OllamaBrain:
         self,
         messages: Sequence[Message],
         tools: Sequence[Mapping[str, Any]] | None = None,
+        *,
+        temperature: float | None = None,
     ) -> BrainResponse:
         payload: dict[str, Any] = {
             "model": self.model,
@@ -99,8 +101,13 @@ class OllamaBrain:
         }
         if tools:
             payload["tools"] = list(tools)
-        if self.options:
-            payload["options"] = self.options
+        # A per-call temperature is merged into a copy: the adapter's own
+        # options must not be rewritten by one caller's choice.
+        options = dict(self.options)
+        if temperature is not None:
+            options["temperature"] = temperature
+        if options:
+            payload["options"] = options
 
         try:
             response = await self._client.post("/api/chat", json=payload)

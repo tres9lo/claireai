@@ -56,6 +56,29 @@ async def test_generate_sends_non_streaming_chat_request() -> None:
     assert response.completion_tokens == 5
 
 
+async def test_a_per_call_temperature_is_sent_without_changing_the_adapter() -> None:
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"role": "assistant", "content": "ok"}})
+
+    client = httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(handler))
+    brain = OllamaBrain(
+        base_url=BASE_URL, model="qwen2.5:1.5b", client=client, options={"num_predict": 40}
+    )
+
+    await brain.generate([Message(role="user", content="hi")], temperature=0.2)
+    await brain.generate([Message(role="user", content="hi")], temperature=0.8)
+    await brain.generate([Message(role="user", content="hi")])
+
+    assert bodies[0]["options"] == {"num_predict": 40, "temperature": 0.2}
+    assert bodies[1]["options"] == {"num_predict": 40, "temperature": 0.8}
+    # No per-call temperature means the adapter's own options, untouched.
+    assert bodies[2]["options"] == {"num_predict": 40}
+    assert brain.options == {"num_predict": 40}
+
+
 async def test_tools_are_forwarded_when_provided() -> None:
     captured: dict = {}
 
