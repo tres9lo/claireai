@@ -1011,3 +1011,21 @@ Either schedule the prune (one APScheduler job next to the summary, using the sa
 machinery) or test a smaller model against the existing 13-case harness — the
 second one moves daily usefulness more, and needs an `ollama pull` the owner has
 to approve.
+
+### Found by CI, fixed: a test that only passed because of the machine's timezone
+
+The first push of this session went red on **windows-latest / python 3.11**, and
+correctly. `test_the_page_uses_local_time` asserted that the page did not contain
+`00:12` — true on this UTC+2 box, false on CI's UTC runner, where 00:12 UTC *is*
+the correct local time. The test was tautological in the wrong direction; the page
+was fine.
+
+`render_today` now takes an optional `timezone`, so the test pins UTC+3 and asserts
+`03:12` is shown and `00:12` is not — deterministic on any machine (verified by
+running the suite under both `TZ=UTC` and `TZ=Europe/Berlin`).
+
+Also caught before pushing: the page built a nested f-string with backslashes
+inside the expression, which is a `SyntaxError` on Python 3.11 (PEP 701 relaxed
+that in 3.12). `ast.parse(..., feature_version=(3, 11))` does **not** catch it, so
+a tokenizer check was written instead and validated against the exact line that
+had been removed before it was trusted.
