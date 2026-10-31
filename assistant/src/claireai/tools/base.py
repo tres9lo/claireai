@@ -35,6 +35,10 @@ class ToolContext:
     # Only used by move_to_trash, which writes inside the assistant's own data
     # directory rather than an allow-listed folder.
     data_dir: Path | None = None
+    # The task's browser state (claireai.tools.browser.BrowserSession), so
+    # get_page_text can read what open_url fetched. None when browsing was not
+    # set up for this run.
+    browser: Any = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,11 @@ class Tool:
     risk: str
     args_model: type[BaseModel]
     handler: Handler
+    # Changes the owner's filesystem (or would, without approval). Risk and
+    # mutation are different questions: a browser fetch to a website needs
+    # approval but changes nothing on disk, and only a real mutation needs the
+    # target to have been read first (claireai.agent).
+    mutates: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():

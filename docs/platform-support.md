@@ -11,7 +11,7 @@ tests green on Ubuntu and Windows runners, CLI tools exercised on Linux only).
 | Text chat with local model | ✅ tested 2026-10-30 with Ollama 0.40.2 + `qwen2.5:1.5b` (online, offline and logged) | ⛔ never run | ⛔ not started (Phase 3) |
 | Local model management | ⛔ not started | ⛔ never run | ⛔ not planned |
 | File tools and allow-list | ✅ tested 2026-10-30/31 on Linux: 5 read-only + 6 approval-gated write tools; allow-list refusal and non-interactive approval refusal verified against the live model; every step logged | 🟨 unit tests pass on `windows-latest`; CLI, approval prompt and trash folder never run by a human there | ⛔ n/a |
-| Browser automation | ⛔ Week 3 | ⛔ never run | ⛔ n/a |
+| Browser tools | ✅ tested 2026-10-31 on Linux against live pages: `open_url`, `get_page_text`, `search_web` (10 results, redirects unwrapped), `download_file` into the sandbox. **HTTP only — no JavaScript**, so a client-rendered page comes back empty; the Playwright engine itself is ⛔ | 🟨 mocked-transport unit tests only | ⛔ n/a |
 | Presence renderer (visual state sync) | 🟨 canvas 2D v0 preview verified over HTTP on Linux (SSE state stream, indicators, 30 fps cap); WebGL scene and Tauri window ⛔ | 🟨 unit tests only; preview never opened there | ⛔ optional mirror later |
 | Camera / screen capture | ⛔ Phase 2, deny-by-default; this machine is **Wayland** and has `/dev/video0`–`/dev/video1` | ⛔ never run | ⛔ Android APIs only |
 | Cursor / keyboard control | ⛔ Phase 2, `dangerous`; on Wayland needs the portal or `ydotool` (neither installed here) — may be unsupported | ⛔ never run | ⛔ not planned |

@@ -99,6 +99,13 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
         "asking to locate files by name",
     ),
     (
+        "browse",
+        r"\b(open|visit|go to|browse|fetch|look up|google|search the web|on the web|download)\b",
+        r"(\b(url|website|site|page|link|web|internet|online)\b|https?://)",
+        ("open_url", "get_page_text", "search_web", "download_file"),
+        "asking to use the web, which needs its own approval",
+    ),
+    (
         "read",
         r"\b(read|open|summar(y|ise|ize)|what does|contents|show me the text)\b",
         r"\b(file|files|text|content|contents|note|notes|document|it)\b",

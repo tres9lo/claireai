@@ -1387,3 +1387,77 @@ local model, not stubs.
 
 Month 1 audit: close whatever the roadmap lists for Month 1 that the code does
 not yet do, then schedule the nightly prune.
+
+---
+
+## 2026-10-31 — Session 10: Month 1 audit, and the browser tools it found missing
+
+**Scope taken:** the owner asked for a full Month 1 pass. This entry is the audit
+against `ROADMAP.md` §"Month 1", plus the one backend gap it found.
+
+### Audit
+
+| Month 1 item | State |
+| --- | --- |
+| Repo layout, Python env, FastAPI/uvicorn/httpx/pydantic/APScheduler | ✅ |
+| SQLite `tasks`, `task_log`, `summaries`, `notes` | ✅ (all four in `0001_initial.sql`) |
+| `Brain` interface + `OllamaBrain`, no API key, no hosted model | ✅ |
+| CLI chat that talks to the brain and logs | ✅ |
+| Tool registry, four safe file tools, agent loop, step limit | ✅ (+ `find_largest_files`) |
+| Permission layer, allow-list | ✅ |
+| Six approval-gated file tools | ✅ |
+| Dry run, CLI approval prompt, per-task approval record with a reference | ✅ (`approval_ref`, same row on both sides; expiry exists as a status) |
+| Browser tools: `open_url`, `get_page_text`, `search_web`, `download_file` | **was missing — built this session** |
+| Daily summary, three sections, no model | ✅ |
+| APScheduler evening job | ✅ |
+| Presence HUD v0 (states, reduce motion, off switch) | ✅ |
+| Tauri window: chat, live log, approve/deny, kill switch, voice, wake-word, summary tab | ⛔ blocked on rustup ≥1.90 + 4 apt packages, both needing `sudo` |
+| Calendar events in the summary | ⛔ deliberately Months 2-3 |
+
+### The browser tools
+
+Four tools in `claireai.tools.browser`, approval-gated and registered, with a
+per-task `BrowserSession` threaded through `ToolContext` so `get_page_text` reads
+what `open_url` fetched and nothing leaks between tasks. They fetch over HTTP
+instead of driving Playwright — a Chromium download on a machine with 842 MiB
+free RAM and no package access was the wrong trade, and the tool names, arguments
+and risk levels are exactly what a Playwright swap would keep.
+
+Limits, all enforced in code and tested: http(s) only, a 2 MB page cap, 4 000
+characters of text, a 20 MB download cap, downloads only inside the sandbox and
+never over an existing file, and a dry run that fetches nothing to disk.
+
+Verified against the live network, not just mocks:
+
+```
+open_url https://example.com/  -> title 'Example Domain', 156 chars, HTTP 200
+get_page_text                  -> 156 chars of the same page
+search_web 'python 3.13 release notes' -> 10 results, 3 shown, real URLs
+```
+
+The search endpoint wraps every hit in its own redirect
+(`//duckduckgo.com/l/?uddg=...`); handing that to the model would cost a turn per
+result, so the target is unwrapped before it is shown.
+
+### A distinction the gate needed
+
+Adding network tools broke an assumption in the read-before-write gate: it keyed
+on `requires_approval(risk)`, and a web fetch needs approval without touching the
+disk. Tools now carry `mutates`, and only a real mutation requires the target to
+have been read first. `download_file` mutates; `open_url` and `search_web` do not.
+
+### Verification
+
+`344 passed`, smoke `14/14`, eval `13/13`, and the live fetches above.
+
+### What is still not Month 1
+
+The Tauri window and everything inside it that needs a control path (approve/deny
+buttons, kill switch) — the security design exists in
+`docs/architecture/approval-from-the-page.md`, the toolchain does not. Calendar
+in the summary is Months 2-3 by the roadmap's own plan.
+
+### Next single task
+
+Schedule the nightly prune, then choose: build the window (needs the toolchain)
+or implement the page-approval design against the existing loopback server.

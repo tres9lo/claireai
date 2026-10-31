@@ -9,6 +9,16 @@ refuses them — that refusal is the point, not a bug.
 from __future__ import annotations
 
 from claireai.tools.base import Tool, ToolContext, ToolError, ToolRegistry, ToolResult, UnknownTool
+from claireai.tools.browser import (
+    DownloadFileArgs,
+    OpenUrlArgs,
+    PageTextArgs,
+    SearchWebArgs,
+    download_file,
+    get_page_text,
+    open_url,
+    search_web,
+)
 from claireai.tools.files import (
     FileInfoArgs,
     LargestFilesArgs,
@@ -82,6 +92,7 @@ WRITE_TOOLS: tuple[Tool, ...] = (
         risk="needs_approval",
         args_model=CreateFolderArgs,
         handler=create_folder,
+        mutates=True,
     ),
     Tool(
         name="create_text_file",
@@ -89,6 +100,7 @@ WRITE_TOOLS: tuple[Tool, ...] = (
         risk="needs_approval",
         args_model=CreateTextFileArgs,
         handler=create_text_file,
+        mutates=True,
     ),
     Tool(
         name="write_to_file",
@@ -96,6 +108,7 @@ WRITE_TOOLS: tuple[Tool, ...] = (
         risk="needs_approval",
         args_model=WriteToFileArgs,
         handler=write_to_file,
+        mutates=True,
     ),
     Tool(
         name="rename_file",
@@ -103,6 +116,7 @@ WRITE_TOOLS: tuple[Tool, ...] = (
         risk="needs_approval",
         args_model=RenameFileArgs,
         handler=rename_file,
+        mutates=True,
     ),
     Tool(
         name="move_file",
@@ -110,6 +124,7 @@ WRITE_TOOLS: tuple[Tool, ...] = (
         risk="needs_approval",
         args_model=MoveFileArgs,
         handler=move_file,
+        mutates=True,
     ),
     Tool(
         name="move_to_trash",
@@ -117,15 +132,50 @@ WRITE_TOOLS: tuple[Tool, ...] = (
         risk="needs_approval",
         args_model=MoveToTrashArgs,
         handler=move_to_trash,
+        mutates=True,
+    ),
+)
+
+
+BROWSER_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="open_url",
+        description="Open an http(s) page and return its readable text.",
+        risk="needs_approval",
+        args_model=OpenUrlArgs,
+        handler=open_url,
+    ),
+    Tool(
+        name="get_page_text",
+        description="The text of the page this task last opened.",
+        risk="safe",
+        args_model=PageTextArgs,
+        handler=get_page_text,
+    ),
+    Tool(
+        name="search_web",
+        description="Search the web and list result titles with their links.",
+        risk="needs_approval",
+        args_model=SearchWebArgs,
+        handler=search_web,
+    ),
+    Tool(
+        name="download_file",
+        description="Download a URL to a new file inside an allowed folder.",
+        risk="needs_approval",
+        args_model=DownloadFileArgs,
+        handler=download_file,
+        mutates=True,
     ),
 )
 
 
 def default_registry() -> ToolRegistry:
-    return ToolRegistry((*FILE_TOOLS, *WRITE_TOOLS))
+    return ToolRegistry((*FILE_TOOLS, *WRITE_TOOLS, *BROWSER_TOOLS))
 
 
 __all__ = [
+    "BROWSER_TOOLS",
     "FILE_TOOLS",
     "LargestFilesArgs",
     "WRITE_TOOLS",

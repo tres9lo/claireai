@@ -52,8 +52,12 @@ Implemented and tested:
 - a model capability harness (`scripts/eval_model.py`) that scores the local
   model against fixed cases before features depend on it.
 
+Browser tools (`open_url`, `get_page_text`, `search_web`, `download_file`) exist
+and are approval-gated, but they fetch over HTTP rather than driving Playwright:
+no JavaScript runs, so a page that builds itself client-side comes back empty.
+
 Not implemented yet (planned for later weeks): the FastAPI service, the Playwright
-browser agent, the Tauri desktop shell (the HUD is a loopback preview, not the
+browser engine, the Tauri desktop shell (the HUD is a loopback preview, not the
 packaged window), mobile clients, the from-scratch model, and machine access —
 camera, screen, cursor and keyboard — which is specified below but has no code.
 

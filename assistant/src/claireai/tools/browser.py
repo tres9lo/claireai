@@ -1,0 +1,303 @@
+"""Browser tools (Month 1, Week 3).
+
+The roadmap names Playwright here. This implements the same four tools —
+``open_url``, ``get_page_text``, ``search_web``, ``download_file`` — over plain
+HTTP, because Playwright means downloading a Chromium build (and its system
+dependencies) onto a machine that has neither the RAM nor the package access
+right now. What that costs, stated plainly: **no JavaScript runs**, so a page
+that renders its content client-side comes back empty. What it buys: no new
+dependency, no browser profile to leak, and a tool surface that is already
+approval-gated, size-capped and testable without a real network.
+
+When Playwright is installed, only this module changes: the tool names, their
+arguments and their risk levels are what the model and the approvals see.
+
+Every fetch is bounded (bytes and characters), only http(s) is accepted, and
+nothing here writes to disk except ``download_file``, which goes through the
+same sandbox as every other write.
+"""
+
+from __future__ import annotations
+
+import html as html_module
+import re
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from typing import Any
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+
+import httpx
+from pydantic import Field
+
+from claireai.tools.base import ToolContext, ToolError, ToolResult
+from claireai.tools.files import _Args
+
+MAX_PAGE_BYTES = 2_000_000
+MAX_TEXT_CHARS = 4000
+MAX_DOWNLOAD_BYTES = 20_000_000
+ALLOWED_SCHEMES = frozenset({"http", "https"})
+USER_AGENT = "ClaireAI/0.1 (local assistant; +https://github.com/tres9lo/claireai)"
+
+
+class _ReadableText(HTMLParser):
+    """Collect readable text: no tags, no scripts, no styles."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.title = ""
+        self._skipping = 0
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # noqa: ANN001
+        if tag in {"script", "style", "noscript"}:
+            self._skipping += 1
+        elif tag == "title":
+            self._in_title = True
+        elif tag in {"p", "br", "li", "div", "tr", "h1", "h2", "h3"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript"} and self._skipping:
+            self._skipping -= 1
+        elif tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        text = " ".join(data.split())
+        if not text:
+            return
+        if self._in_title:
+            self.title = f"{self.title} {text}".strip()
+        elif not self._skipping:
+            self.parts.append(text)
+
+
+def readable_text(html: str, *, limit: int = MAX_TEXT_CHARS) -> tuple[str, str]:
+    """Return ``(title, text)`` from HTML, clipped to ``limit`` characters."""
+    parser = _ReadableText()
+    parser.feed(html)
+    body = re.sub(r"[ \t]+", " ", "".join(
+        part if part == "\n" else f"{part} " for part in parser.parts
+    ))
+    body = re.sub(r"\n\s*\n+", "\n", body).strip()
+    return parser.title, body[:limit]
+
+
+@dataclass
+class BrowserSession:
+    """One task's browsing state: the page last opened, and the client.
+
+    A session per task, not per call: ``get_page_text`` reads what
+    ``open_url`` fetched, and nothing leaks between tasks.
+    """
+
+    timeout: float = 15.0
+    client: httpx.Client | None = None
+    url: str = ""
+    title: str = ""
+    text: str = ""
+    fetched: int = 0
+
+    def http(self) -> httpx.Client:
+        if self.client is None:
+            self.client = httpx.Client(
+                timeout=self.timeout,
+                follow_redirects=True,
+                headers={"User-Agent": USER_AGENT},
+            )
+        return self.client
+
+    def close(self) -> None:
+        if self.client is not None:
+            self.client.close()
+            self.client = None
+
+
+def _session(context: ToolContext) -> BrowserSession:
+    session = getattr(context, "browser", None)
+    if not isinstance(session, BrowserSession):
+        raise ToolError("browsing is not available in this run")
+    return session
+
+
+def _check_url(url: str) -> str:
+    cleaned = url.strip()
+    if not cleaned:
+        raise ToolError("url must not be empty")
+    scheme = cleaned.split(":", 1)[0].lower() if ":" in cleaned else ""
+    if scheme not in ALLOWED_SCHEMES:
+        raise ToolError(f"only http and https URLs are allowed, got {cleaned!r}")
+    return cleaned
+
+
+def _get(session: BrowserSession, url: str, *, limit: int) -> httpx.Response:
+    try:
+        response = session.http().get(url)
+    except httpx.HTTPError as exc:
+        raise ToolError(f"could not fetch {url}: {exc.__class__.__name__}") from exc
+    if response.status_code >= 400:
+        raise ToolError(f"{url} answered HTTP {response.status_code}")
+    if len(response.content) > limit:
+        raise ToolError(
+            f"{url} returned {len(response.content)} bytes; the limit is {limit}"
+        )
+    return response
+
+
+class OpenUrlArgs(_Args):
+    url: str = Field(description="http(s) URL to open.")
+    max_chars: int = Field(default=2000, ge=200, le=MAX_TEXT_CHARS)
+
+
+class PageTextArgs(_Args):
+    max_chars: int = Field(default=MAX_TEXT_CHARS, ge=200, le=MAX_TEXT_CHARS)
+
+
+class SearchWebArgs(_Args):
+    query: str = Field(description="Words to search the web for.")
+    max_results: int = Field(default=5, ge=1, le=10)
+
+
+class DownloadFileArgs(_Args):
+    url: str = Field(description="http(s) URL of the file to download.")
+    path: str = Field(description="Absolute path to write inside an allowed folder.")
+
+
+def open_url(context: ToolContext, arguments: OpenUrlArgs) -> ToolResult:
+    session = _session(context)
+    url = _check_url(arguments.url)
+    response = _get(session, url, limit=MAX_PAGE_BYTES)
+    title, text = readable_text(response.text, limit=MAX_TEXT_CHARS)
+    session.url, session.title, session.text, session.fetched = (
+        str(response.url),
+        title,
+        text,
+        len(text),
+    )
+    if context.dry_run:
+        return ToolResult(
+            text=f"[dry run] would open {session.url}",
+            detail={"url": session.url, "dry_run": True},
+        )
+    heading = f"{session.url}\n{title}".strip()
+    return ToolResult(
+        text=f"{heading}\n\n{text[: arguments.max_chars]}",
+        detail={
+            "url": session.url,
+            "title": title,
+            "chars": len(text),
+            "status": response.status_code,
+        },
+    )
+
+
+def get_page_text(context: ToolContext, arguments: PageTextArgs) -> ToolResult:
+    session = _session(context)
+    if not session.url:
+        raise ToolError("no page is open; call open_url first")
+    return ToolResult(
+        text=session.text[: arguments.max_chars] or "(the page had no readable text)",
+        detail={"url": session.url, "title": session.title, "chars": len(session.text)},
+    )
+
+
+_RESULT_LINK = re.compile(
+    r'<a[^>]+class="result__a"[^>]+href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def result_url(href: str) -> str:
+    """The real destination of a search result link.
+
+    The endpoint returns its own redirect wrapped around the target
+    (``//duckduckgo.com/l/?uddg=<url-encoded target>``). Handing that to the
+    model would cost a turn per result and land it on a redirect page, so the
+    target is unwrapped here.
+    """
+    cleaned = html_module.unescape(href.strip())
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    parsed = urlparse(cleaned)
+    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        if target:
+            return unquote(target)
+    return cleaned
+
+
+def search_web(context: ToolContext, arguments: SearchWebArgs) -> ToolResult:
+    """Search the web and return links. Best-effort: an endpoint can change."""
+    session = _session(context)
+    query = arguments.query.strip()
+    if not query:
+        raise ToolError("query must not be empty")
+
+    url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    if context.dry_run:
+        return ToolResult(text=f"[dry run] would search the web for {query!r}", detail={"dry_run": True})
+
+    response = _get(session, url, limit=MAX_PAGE_BYTES)
+    found = _RESULT_LINK.findall(response.text)
+    if not found:
+        raise ToolError(
+            "the search returned no parseable results; the endpoint may have changed"
+        )
+
+    lines: list[str] = []
+    for title, href in ((t, result_url(h)) for h, t in found):
+        if not href.startswith(("http://", "https://")):
+            continue
+        shown = readable_text(title)[1] or title.strip()
+        lines.append(f"{len(lines) + 1}. {shown}\n   {href}")
+        if len(lines) >= arguments.max_results:
+            break
+    if not lines:
+        raise ToolError("the search returned no usable links")
+    return ToolResult(
+        text="\n".join(lines),
+        detail={"query": query, "results": len(found), "shown": len(lines)},
+    )
+
+
+def download_file(context: ToolContext, arguments: DownloadFileArgs) -> ToolResult:
+    session = _session(context)
+    url = _check_url(arguments.url)
+    target = context.sandbox.resolve(arguments.path)
+    if target.exists():
+        raise ToolError(f"{target} already exists; choose another name")
+    if not target.parent.exists():
+        raise ToolError(f"{target.parent} does not exist")
+
+    if context.dry_run:
+        return ToolResult(
+            text=f"[dry run] would download {url} to {target}",
+            detail={"url": url, "path": str(target), "dry_run": True},
+        )
+
+    response = _get(session, url, limit=MAX_DOWNLOAD_BYTES)
+    target.write_bytes(response.content)
+    return ToolResult(
+        text=f"downloaded {len(response.content)} bytes from {url} to {target}",
+        detail={
+            "url": str(response.url),
+            "path": str(target),
+            "bytes": len(response.content),
+            "content_type": response.headers.get("content-type", "unknown"),
+        },
+    )
+
+
+__all__ = [
+    "BrowserSession",
+    "DownloadFileArgs",
+    "OpenUrlArgs",
+    "PageTextArgs",
+    "SearchWebArgs",
+    "download_file",
+    "get_page_text",
+    "open_url",
+    "readable_text",
+    "search_web",
+]

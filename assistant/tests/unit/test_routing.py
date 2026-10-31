@@ -177,7 +177,7 @@ def test_intent_metadata_is_well_formed() -> None:
 
 
 def test_describe_states_the_saving(registry) -> None:
-    assert describe(route("find every pdf", registry), registry) == "search (1/11 tools)"
+    assert describe(route("find every pdf", registry), registry) == "search (1/15 tools)"
 
 
 def test_route_is_json_serialisable_for_the_audit_detail(registry) -> None:

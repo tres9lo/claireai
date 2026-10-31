@@ -23,30 +23,47 @@ def _tool(name: str = "noop", risk: str = "safe") -> Tool:
     )
 
 
-def test_default_registry_has_five_read_only_and_six_approved_tools() -> None:
+def test_default_registry_has_read_only_and_approval_gated_tools() -> None:
     registry = default_registry()
     assert registry.names() == (
         "create_folder",
         "create_text_file",
+        "download_file",
         "find_largest_files",
         "get_file_info",
+        "get_page_text",
         "list_folder",
         "move_file",
         "move_to_trash",
+        "open_url",
         "read_text_file",
         "rename_file",
         "search_files",
+        "search_web",
         "write_to_file",
     )
     safe = {tool.name for tool in registry if tool.risk == "safe"}
     assert safe == {
         "find_largest_files",
         "get_file_info",
+        "get_page_text",  # reads a page already fetched in this task
         "list_folder",
         "read_text_file",
         "search_files",
     }
     assert all(tool.risk == "needs_approval" for tool in registry if tool.name not in safe)
+    # Risk and mutation are separate: reaching the web needs approval but does
+    # not touch the disk, while every disk mutation also needs approval.
+    mutating = {tool.name for tool in registry if tool.mutates}
+    assert mutating == {
+        "create_folder",
+        "create_text_file",
+        "download_file",
+        "move_file",
+        "move_to_trash",
+        "rename_file",
+        "write_to_file",
+    }
     # No permanent deletion exists in this build.
     assert all(tool.risk != "dangerous" for tool in registry)
 

@@ -179,6 +179,10 @@ async def test_tool_schemas_are_offered_to_the_model(
         "rename_file",
         "move_file",
         "move_to_trash",
+        "open_url",
+        "get_page_text",
+        "search_web",
+        "download_file",
     } == names
 
 
@@ -723,6 +727,7 @@ async def test_a_write_with_nothing_read_is_refused_when_no_listing_is_possible(
                 risk="needs_approval",
                 args_model=NoArgs,
                 handler=writer,
+                mutates=True,
             ),
         ]
     )

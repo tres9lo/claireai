@@ -150,8 +150,13 @@ disables the one bounded retry (identical input, identical reply).
 - **No FastAPI service.** The dependency is installed; nothing serves HTTP except
   the read-only presence server. The desktop window will need an API surface, and
   that shape is not chosen yet.
-- **No browser or machine tools.** Playwright is not installed and camera/screen/
-  cursor have contracts but no code. Both are scheduled, both are privacy-heavy.
+- **Browser tools are HTTP, not Playwright.** `open_url`, `get_page_text`,
+  `search_web` and `download_file` are implemented, approval-gated and tested,
+  but they fetch markup instead of running a browser: no JavaScript, so
+  client-rendered pages come back empty. Swapping in Playwright changes one
+  module; the tool names and risks the model sees stay the same.
+- **No machine tools.** Camera/screen/cursor have contracts but no code. They are
+  scheduled, and they are privacy-heavy.
 - **No packaging.** There is no Tauri shell, no installer, no signed binary.
 - **No hosted inference, ever by default.** Track B's from-scratch model will be
   another `Brain` implementation behind the same protocol.

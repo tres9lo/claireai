@@ -34,6 +34,7 @@ from claireai.routing import Route, route as choose_route, schema_bytes
 from claireai.storage import TaskRepository, transaction
 from claireai.tools import ToolError, ToolRegistry, UnknownTool
 from claireai.tools.base import ToolContext
+from claireai.tools.browser import BrowserSession
 
 SYSTEM_PROMPT = (
     "You are ClaireAI, a local personal assistant on the owner's own computer. "
@@ -194,7 +195,7 @@ async def run_task(
     # gives up. Grounding it up front costs no model call and removes the guess.
     context_note = ""
     if can_verify and plan is not None and any(
-        registry.get(name).risk != "safe" for name in plan.tools
+        registry.get(name).mutates for name in plan.tools
     ):
         listing, read_ok = _discovery(sandbox, registry, {})
         if read_ok:
@@ -206,6 +207,7 @@ async def run_task(
         Message(role="user", content=request),
     ]
     steps: list[AgentStep] = []
+    browser = BrowserSession() if "open_url" in registry else None
     started = time.perf_counter()
 
     try:
@@ -319,6 +321,7 @@ async def run_task(
                     conn=conn,
                     dry_run=dry_run,
                     verified=verified,
+                    browser=browser,
                 )
                 steps.append(step)
                 if step.discovered or (
@@ -365,6 +368,9 @@ async def run_task(
         if presence:
             presence.emit("offline" if "reach" in str(exc).lower() else "error")
         raise
+    finally:
+        if browser is not None:
+            browser.close()
 
 
 def _discovery(
@@ -443,6 +449,7 @@ async def _execute(
     conn: sqlite3.Connection,
     dry_run: bool,
     verified: bool,
+    browser: Any = None,
 ) -> AgentStep:
     """Validate, authorize, run and log one proposed call."""
     started = time.perf_counter()
@@ -450,7 +457,9 @@ async def _execute(
     target = arguments.get("path") if isinstance(arguments.get("path"), str) else None
     if target is None and isinstance(arguments.get("source"), str):
         target = arguments["source"]
-    context = ToolContext(sandbox=sandbox, dry_run=dry_run, data_dir=data_dir)
+    context = ToolContext(
+        sandbox=sandbox, dry_run=dry_run, data_dir=data_dir, browser=browser
+    )
 
     status = "failed"
     approval_ref: str | None = None
@@ -466,7 +475,7 @@ async def _execute(
             status = "skipped"
             text = f"[dry run] would call {tool.name} with {rendered}"
             detail["reason"] = "dry_run"
-        elif requires_approval(tool.risk) and not verified:
+        elif tool.mutates and not verified:
             # Nothing has been read in this task, so this target has never been
             # checked. Offering the read tools was measured not to be enough, so
             # the runtime reads the folder itself and hands back real names.
