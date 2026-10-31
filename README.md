@@ -8,7 +8,7 @@ The project name and the assistant name are both **ClaireAI**. Package names,
 application IDs and visible branding stay provisional until the owner confirms
 them; nothing user-facing has been branded yet.
 
-## Status: Month 1, Week 3 (approval-gated writes)
+## Status: Month 1, Week 4 (daily summary; the desktop window is not built)
 
 Implemented and tested:
 
@@ -31,6 +31,14 @@ Implemented and tested:
   applies the risk policy and the folder allow-list, asks for approval when
   needed, runs it, feeds the result back, and repeats up to 8 steps — logging
   every step;
+- **tool routing** (`claireai.routing`): each request gets only the tools its
+  intent can reach — three schemas instead of eleven for a folder listing — which
+  roughly halves the prompt tokens re-processed on every step. It is keyword
+  based, so it costs no model call, and it only changes what the model is *shown*:
+  validation, the allow-list and approvals still run against the full registry;
+- the **daily summary** (`claireai.summary`): Done / Failed or skipped / Still
+  pending, built from the task log by plain code and saved to the `summaries`
+  table and `<data-dir>/summaries/YYYY-MM-DD.md`, on demand or on a schedule;
 - a **presence renderer v0**: a canvas 2D HUD (no npm, no WebGL dependency) served
   over loopback by the standard library, driven by the `PresenceEvent` stream;
 - `scripts/smoke.py`: an end-to-end check (database, model, tool loop, approval
@@ -39,10 +47,9 @@ Implemented and tested:
   model against fixed cases before features depend on it.
 
 Not implemented yet (planned for later weeks): the FastAPI service, the Playwright
-browser agent, the daily summary scheduler, the Tauri desktop shell (the HUD is
-currently a loopback preview, not the packaged window), mobile clients, the
-from-scratch model, and machine access — camera, screen, cursor and keyboard —
-which is specified below but has no code.
+browser agent, the Tauri desktop shell (the HUD is a loopback preview, not the
+packaged window), mobile clients, the from-scratch model, and machine access —
+camera, screen, cursor and keyboard — which is specified below but has no code.
 
 See `ROADMAP.md` for the full plan and `PROGRESS.md` for the current state,
 verified results, and open blockers.
@@ -121,7 +128,29 @@ reference, so the audit trail names the exact human decision that allowed it.
 
 Useful flags: `--no-tools` for plain chat, `--dry-run` to see which tools would
 be called without running or reading anything, `--presence` to print state
-changes.
+changes, `--no-routing` to offer every tool instead of narrowing per request.
+
+## Daily summary
+
+```bash
+# Today, printed and saved (no model needed — the report is derived from the log)
+assistant/.venv/bin/python -m claireai.cli --summary
+
+# A specific day
+assistant/.venv/bin/python -m claireai.cli --summary 2026-10-31
+
+# Every evening at 18:00 local time, in the foreground
+assistant/.venv/bin/python -m claireai.cli --summary-at 18:00
+
+# Any time, from the interactive prompt
+/summary
+```
+
+The report has three fixed sections — **Done**, **Failed or skipped**, **Still
+pending** — and each task appears exactly once: a task that finished but had a
+write refused is listed under Failed or skipped as "completed, but skipped".
+Nothing is summarised by the model, so a report cannot invent a task. Re-running a
+day replaces that day's report in both places.
 
 ## Presence preview
 
@@ -143,10 +172,11 @@ assistant/.venv/bin/python scripts/smoke.py              # needs Ollama
 assistant/.venv/bin/python scripts/smoke.py --skip-model # no model needed
 ```
 
-Ten checks in one run: settings, migrations, model reachability, a real chat turn,
-the tool loop, a refused write, the presence stream, and that the audit log really
-rejects UPDATE/DELETE. It uses `pathlib` and a temporary directory, so the same
-command works on Windows.
+Twelve checks in one run: settings, migrations, model reachability, a real chat
+turn, the tool loop, routing narrowing the schema set, a refused write, the
+presence stream, the daily summary, and that the audit log really rejects
+UPDATE/DELETE. It uses `pathlib` and a temporary directory, so the same command
+works on Windows.
 
 ## Planned: presence renderer and machine access
 

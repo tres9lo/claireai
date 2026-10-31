@@ -17,7 +17,7 @@ tests green on Ubuntu and Windows runners, CLI tools exercised on Linux only).
 | Cursor / keyboard control | ⛔ Phase 2, `dangerous`; on Wayland needs the portal or `ydotool` (neither installed here) — may be unsupported | ⛔ never run | ⛔ not planned |
 | Push-to-talk voice | ⛔ Phase 2 | ⛔ never run | ⛔ later |
 | Wake-word detection | ⛔ no "Hey Claire" model exists yet; treat as pending | ⛔ never run | ⛔ separate implementation, may not be permitted in background |
-| Daily summary and local log | 🟨 task/audit log works; summary agent ⛔ Week 4 | ⛔ never run | ⛔ client phase |
+| Daily summary and local log | ✅ log, `--summary`, `/summary` and `--summary-at` (no model needed) | ⛔ never run | ⛔ client phase |
 | Installer / package | ⛔ not started | ⛔ not started | ⛔ not started |
 | Local model management (pull/list/health) | ✅ reachability + installed-model checks with `scripts/doctor.py`; no pull-from-app UI | ⛔ never run | ⛔ not planned |
 

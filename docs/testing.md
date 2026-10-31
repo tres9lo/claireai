@@ -50,11 +50,13 @@ assistant/.venv/bin/python scripts/smoke.py              # needs Ollama
 assistant/.venv/bin/python scripts/smoke.py --skip-model # no model needed
 ```
 
-Ten checks over the assembled system: settings, migrations, model reachability,
-a real chat turn, the tool loop, a write refused without an approval channel, the
-presence stream, and an UPDATE on `task_log` being rejected by the append-only
-triggers. It uses `pathlib` and a temporary directory only, so it should run
-unchanged on Windows — that has not been done yet, so treat Windows as unproven.
+Twelve checks over the assembled system: settings, migrations, model
+reachability, a real chat turn, the tool loop, tool routing narrowing the schema
+set, a write refused without an approval channel, the presence stream, the daily
+summary being built and saved, and an UPDATE on `task_log` being rejected by the
+append-only triggers. It uses `pathlib` and a temporary directory only, so it
+should run unchanged on Windows — that has not been done yet, so treat Windows as
+unproven.
 
 ## Presence server
 

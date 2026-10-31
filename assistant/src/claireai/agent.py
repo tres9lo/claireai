@@ -30,6 +30,7 @@ from claireai.brain import Brain, BrainError, Message, ToolCall
 from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox, check_risk, requires_approval
 from claireai.presence import PresenceStream
+from claireai.routing import Route, route as choose_route, schema_bytes
 from claireai.storage import TaskRepository, transaction
 from claireai.tools import ToolError, ToolRegistry, UnknownTool
 from claireai.tools.base import ToolContext
@@ -87,6 +88,7 @@ class AgentOutcome:
     model: str
     steps: tuple[AgentStep, ...] = field(default_factory=tuple)
     duration_ms: int = 0
+    route: str | None = None
 
 
 def _clip(text: str, limit: int = MAX_TOOL_TEXT) -> str:
@@ -125,12 +127,34 @@ async def run_task(
     tasks = TaskRepository(conn)
     audit = AuditLog(conn)
 
+    # Which tools the model is shown. A route never grants or removes
+    # permission: validation and approval still run against the full registry,
+    # so a filtered-out call that arrives anyway simply executes.
+    plan: Route | None = choose_route(request, registry) if settings.tool_routing == "auto" else None
+    schemas = plan.schemas(registry) if plan else registry.schemas()
+
     with transaction(conn):
         task = tasks.create(request=redact(request), kind="agent", device=device)
     with transaction(conn):
         tasks.update_status(task.id, "planning")
     with transaction(conn):
         tasks.update_status(task.id, "running")
+        if plan:
+            audit.record(
+                task_id=task.id,
+                device=device,
+                action="agent.route",
+                status="done",
+                target=plan.intent,
+                detail={
+                    "intent": plan.intent,
+                    "tools": list(plan.tools),
+                    "tools_total": len(registry),
+                    "narrowed": plan.narrowed,
+                    "schema_chars": schema_bytes(schemas),
+                    "schema_chars_all": schema_bytes(registry.schemas()),
+                },
+            )
     if presence:
         presence.emit("thinking", task_id=task.id)
 
@@ -140,7 +164,7 @@ async def run_task(
 
     try:
         for step_number in range(1, step_limit + 1):
-            response = await brain.generate(messages, tools=registry.schemas())
+            response = await brain.generate(messages, tools=schemas)
 
             if not response.tool_calls:
                 if not response.content.strip():
@@ -182,6 +206,7 @@ async def run_task(
                             "prompt_tokens": response.prompt_tokens,
                             "completion_tokens": response.completion_tokens,
                             "dry_run": dry_run,
+                            "route": plan.intent if plan else None,
                         },
                     )
                     tasks.update_status(task.id, "succeeded", current_step=len(steps))
@@ -193,6 +218,7 @@ async def run_task(
                     model=response.model,
                     steps=tuple(steps),
                     duration_ms=duration_ms,
+                    route=plan.intent if plan else None,
                 )
 
             with transaction(conn):

@@ -20,6 +20,7 @@ from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox
 from claireai.presence import PresenceStream
 from claireai.storage import TaskRepository
+from claireai.tools import default_registry
 from claireai.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
 
 
@@ -39,6 +40,16 @@ class ScriptedBrain:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+def trail(logged):  # noqa: ANN001, ANN201
+    """Audit rows after route selection.
+
+    ``agent.route`` records which tools the model was offered, before the task
+    starts. Assertions about what then ran read the trail after that row, so
+    adding routing never weakens them to a substring match.
+    """
+    return [entry for entry in logged if entry.action != "agent.route"]
 
 
 def tool_call(name: str, **arguments) -> BrainResponse:
@@ -110,10 +121,13 @@ async def test_one_tool_call_then_an_answer(
     assert task.current_step == 1
 
     logged = AuditLog(conn).for_task(outcome.task_id)
-    assert [entry.action for entry in logged] == ["tool.call", "agent.answer"]
-    assert logged[0].tool == "list_folder"
-    assert logged[0].status == "done"
-    assert logged[0].target == str(downloads)
+    assert logged[0].action == "agent.route"
+    assert logged[0].target == "list"
+    rows = trail(logged)
+    assert [entry.action for entry in rows] == ["tool.call", "agent.answer"]
+    assert rows[0].tool == "list_folder"
+    assert rows[0].status == "done"
+    assert rows[0].target == str(downloads)
 
 
 async def test_the_tool_result_is_fed_back_to_the_model(
@@ -165,7 +179,7 @@ async def test_unknown_tool_is_refused_and_logged(
 
     assert outcome.steps[0].status == "skipped"
     assert "unknown tool" in outcome.steps[0].result_text
-    logged = AuditLog(conn).for_task(outcome.task_id)
+    logged = trail(AuditLog(conn).for_task(outcome.task_id))
     assert logged[0].status == "skipped"
 
 
@@ -268,7 +282,7 @@ async def test_dry_run_reports_without_executing(
     assert outcome.steps[0].status == "skipped"
     assert outcome.steps[0].result_text.startswith("[dry run] would call list_folder")
     assert "big.iso" not in outcome.steps[0].result_text
-    logged = AuditLog(conn).for_task(outcome.task_id)
+    logged = trail(AuditLog(conn).for_task(outcome.task_id))
     assert logged[0].status == "skipped"
     assert '"dry_run": true' in (logged[0].detail or "")
 
@@ -327,7 +341,7 @@ async def test_step_limit_stops_the_loop_and_fails_the_task(
     assert "step limit" in (task.error or "")
 
     logged = AuditLog(conn).for_task(task_id)
-    assert [entry.action for entry in logged] == [
+    assert [entry.action for entry in trail(logged)] == [
         "tool.call",
         "tool.call",
         "agent.step_limit",
@@ -454,7 +468,7 @@ async def test_a_denied_approval_is_logged_and_the_tool_never_runs(
     assert "did not approve" in outcome.steps[0].result_text
     assert "not this time" in outcome.steps[0].result_text
 
-    logged = AuditLog(conn).for_task(outcome.task_id)
+    logged = trail(AuditLog(conn).for_task(outcome.task_id))
     assert [entry.action for entry in logged] == ["approval.decision", "tool.call", "agent.answer"]
     assert logged[0].status == "skipped"
     assert logged[0].approval_ref == outcome.steps[0].approval_ref
@@ -473,7 +487,7 @@ async def test_an_approved_action_records_the_same_reference_twice(
         settings=agent_settings, conn=conn, brain=brain, request="make x", approvals=broker
     )
 
-    logged = AuditLog(conn).for_task(outcome.task_id)
+    logged = trail(AuditLog(conn).for_task(outcome.task_id))
     decision, tool_row = logged[0], logged[1]
     assert decision.action == "approval.decision" and decision.status == "done"
     assert tool_row.action == "tool.call" and tool_row.status == "done"
@@ -570,3 +584,73 @@ async def test_presence_reports_waiting_for_approval(
         presence=stream,
     )
     assert "awaiting_approval" in seen
+
+
+async def test_routing_hides_tools_but_never_blocks_one(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    """The safety property of routing: it changes what is offered, not what is
+    allowed. A tool filtered out of the route still runs when the model asks."""
+    touched: list[str] = []
+
+    def peek_handler(_context, _args):  # noqa: ANN001, ANN202
+        touched.append("peek")
+        return ToolResult(text="peeked")
+
+    registry = ToolRegistry(
+        [
+            Tool(name="list_folder", description="List", risk="safe", args_model=NoArgs, handler=peek_handler),
+            Tool(name="peek", description="Peek", risk="safe", args_model=NoArgs, handler=peek_handler),
+        ]
+    )
+    # "list files in downloads" routes to list_folder only, so `peek` is hidden.
+    brain = ScriptedBrain([tool_call("peek"), answer("Peeked.")])
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="list the files in downloads",
+        registry=registry,
+    )
+
+    assert outcome.route == "list"
+    assert len(brain.calls[0]["tools"]) == 1  # only list_folder was offered
+    assert touched == ["peek"]  # ...and the hidden tool still ran
+    assert outcome.steps[0].status == "done"
+
+
+async def test_routing_can_be_switched_off(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    settings = agent_settings.model_copy(update={"tool_routing": "off"})
+    brain = ScriptedBrain([answer("Nothing to do.")])
+
+    outcome = await run_task(
+        settings=settings, conn=conn, brain=brain, request="what is in Downloads?"
+    )
+
+    assert outcome.route is None
+    assert len(brain.calls[0]["tools"]) == len(default_registry())
+    assert all(entry.action != "agent.route" for entry in AuditLog(conn).for_task(outcome.task_id))
+
+
+async def test_the_route_row_records_the_prompt_saving(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    import json
+
+    brain = ScriptedBrain([tool_call("find_largest_files", path=str(downloads)), answer("big.iso")])
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="List the biggest files in my Downloads folder",
+    )
+
+    row = AuditLog(conn).for_task(outcome.task_id)[0]
+    assert row.action == "agent.route"
+    assert row.target == "largest"
+    detail = json.loads(row.detail or "{}")
+    assert detail["narrowed"] is True
+    assert detail["tools_total"] == len(default_registry())
+    assert detail["schema_chars"] < detail["schema_chars_all"]

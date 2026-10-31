@@ -39,7 +39,7 @@ from claireai.tools.files_write import (
 FILE_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="list_folder",
-        description="List a folder's entries with sizes. For the biggest, use sort='size', descending=true.",
+        description="List one folder's entries with sizes. Not recursive.",
         risk="safe",
         args_model=ListFolderArgs,
         handler=list_folder,
@@ -67,7 +67,7 @@ FILE_TOOLS: tuple[Tool, ...] = (
     ),
     Tool(
         name="find_largest_files",
-        description="Biggest files under a folder (recursive) with real sizes. Use for any 'biggest files' request.",
+        description="The biggest files under a folder, recursive, with real sizes. Use whenever the owner asks what is biggest, largest, or taking up space.",
         risk="safe",
         args_model=LargestFilesArgs,
         handler=find_largest_files,

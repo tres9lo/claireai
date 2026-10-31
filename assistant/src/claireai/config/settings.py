@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     allowed_folders: list[Path] = Field(default_factory=list)
     agent_max_steps: int = Field(default=8, ge=1, le=24)
 
+    # Tool routing (claireai.routing). `auto` narrows the schemas sent to the
+    # model to the tools its intent can reach; `off` sends all of them. Routing
+    # changes what the model is shown, never what it is allowed to do.
+    tool_routing: Literal["auto", "off"] = "auto"
+
     # Presence renderer (docs/architecture/presence-renderer.md). `auto` means
     # WebGL when the webview supports it and holds the frame budget, else 2D.
     # Cap on generated tokens per model call. Measured on this laptop: an

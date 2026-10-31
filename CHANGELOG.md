@@ -5,6 +5,28 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — Month 1, Week 4: tool routing and the daily summary
+
+- `claireai.routing`: deterministic (keyword, no model call) intent routing that
+  narrows the tool schemas sent on each step, with a fallback to the whole
+  registry when nothing matches. Measured on this laptop: prompt tokens roughly
+  halved (−50% / −46% / −60% on three requests) and no change in tool choice.
+  Routing changes what the model *sees*, never what is *allowed*: a filtered-out
+  tool that is called anyway still passes validation and approval.
+- `CLAIREAI_TOOL_ROUTING=auto|off` and `--no-routing`; each task records an
+  `agent.route` audit row with the intent, the tools shown and the schema bytes
+  saved.
+- `claireai.summary`: the daily report (Done / Failed or skipped / Still pending)
+  built from `tasks` + `task_log` by plain code, upserted into `summaries` and
+  written to `<data-dir>/summaries/YYYY-MM-DD.md`. Times are converted to the
+  owner's local day and printed locally.
+- `claireai.scheduler`: the APScheduler cron job behind `claireai --summary-at
+  HH:MM`; `--summary [DATE]` and the `/summary` command print one day on demand,
+  with no model call.
+- Tool descriptions rewritten so each tool owns one job (`list_folder` no longer
+  advertises itself for "biggest" requests — with fewer schemas competing, it was
+  winning that request and answering non-recursively).
+
 ### Added — Month 1, Week 1 foundations
 
 - `claireai` Python package (src layout) with validated settings, platform-aware

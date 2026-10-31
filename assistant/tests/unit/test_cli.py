@@ -175,7 +175,9 @@ async def test_cli_dry_run_passes_through(
     )
 
     task = TaskRepository(conn).recent(1)[0]
-    logged = AuditLog(conn).for_task(task.id)
+    logged = [
+        entry for entry in AuditLog(conn).for_task(task.id) if entry.action != "agent.route"
+    ]
     assert logged[0].status == "skipped"
     assert "dry run" in capsys.readouterr().out
 
@@ -261,6 +263,8 @@ async def test_denied_write_tool_leaves_the_filesystem_alone(
 
     assert not target.exists()
     task = TaskRepository(conn).recent(1)[0]
-    logged = AuditLog(conn).for_task(task.id)
+    logged = [
+        entry for entry in AuditLog(conn).for_task(task.id) if entry.action != "agent.route"
+    ]
     assert [entry.action for entry in logged] == ["approval.decision", "tool.call", "agent.answer"]
     assert logged[0].status == "skipped"

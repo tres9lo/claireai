@@ -6,9 +6,9 @@
 
 The unit tests prove behaviour with mocked edges; this proves the assembled
 thing: settings, database, migrations, a real model turn (unless skipped), the
-tool loop, the approval refusal, the presence stream and the append-only audit
-log. It uses only the standard library and `pathlib` so it can be run on either
-OS without a shell.
+tool loop, tool routing, the approval refusal, the presence stream, the daily
+summary and the append-only audit log. It uses only the standard library and
+`pathlib` so it can be run on either OS without a shell.
 
 Exit codes: 0 every check passed (skips allowed), 1 a check failed, 2 bad config.
 """
@@ -32,6 +32,7 @@ from claireai.cli import ask
 from claireai.config import Settings
 from claireai.presence import PresenceStream
 from claireai.storage import Database, TaskRepository
+from claireai.tools import default_registry
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -218,6 +219,43 @@ async def _run(args: argparse.Namespace) -> int:
         )
         stream.emit("thinking")
         results.check("presence sequence advances", stream.snapshot().seq == 1)
+
+        captured: dict[str, list] = {}
+
+        class CapturingBrain(ScriptedBrain):
+            async def generate(self, messages, tools=None):  # noqa: ANN001
+                captured["tools"] = list(tools or [])
+                return await super().generate(messages, tools)
+
+        routed = await run_task(
+            settings=settings,
+            conn=conn,
+            brain=CapturingBrain([BrainResponse(content="beta.txt is biggest.", model="scripted")]),
+            request="List the biggest files in my Downloads folder",
+        )
+        shown = captured["tools"]
+        results.check(
+            "tool routing narrows the schema set",
+            routed.route == "largest"
+            and len(shown) == 1
+            and shown[0]["function"]["name"] == "find_largest_files"
+            and len(default_registry()) > 1,
+            f"{len(shown)} of {len(default_registry())} tools, intent={routed.route}",
+        )
+
+        # Imported here so a missing scheduler dependency cannot hide the checks above.
+        from claireai.scheduler import run_once
+
+        summary, summary_path = run_once(conn=conn, settings=settings)
+        report = summary_path.read_text(encoding="utf-8") if summary_path else ""
+        results.check(
+            "daily summary builds and saves",
+            summary_path is not None
+            and summary_path.exists()
+            and summary.lines
+            and all(f"## {heading}" in report for heading in ("Done", "Failed or skipped", "Still pending")),
+            f"{len(summary.lines)} task(s) → {summary_path.name if summary_path else 'no file'}",
+        )
 
         went_read_only = False
         try:

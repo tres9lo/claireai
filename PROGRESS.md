@@ -757,3 +757,144 @@ whole function objects) and reported a saving of −767 chars; corrected to a re
 Month 1, Week 4: the Tauri window (installing Node/Rust is a prerequisite) that
 embeds this HUD, the daily summary agent with APScheduler, and the API surface
 the window needs.
+
+## 2026-10-31 — Session 4: Week 4 first half (routing, daily summary, the empty overview)
+
+Scope this session, in the order it was agreed: (1) write the architecture
+overview that was tracked but empty, (2) cut the per-step prompt cost with intent
+routing and *measure* it, (3) the daily summary agent. The Tauri window, the
+browser agent and machine access were deliberately not started.
+
+### 1. `docs/architecture/overview.md`
+
+Was a 0-byte tracked file that the roadmap's folder tree expects and the README
+implies. Now: the request flow end to end, a module table (what each module does
+and does not do), the six trust boundaries, the data model, the measured
+performance characteristics, and the deliberate non-decisions (no FastAPI, no
+Tauri, no browser/machine tools, no packaging).
+
+### 2. Tool routing (`claireai.routing`)
+
+Design: keyword intent matching (verb **and** object must both match, so "what did
+I write in my journal" is not a write request), one intent per request, children
+listed primary-first. No model call — a classifier call would cost a prompt
+evaluation of its own at ~31 tok/s on this CPU, and would fail exactly when the
+model is weak.
+
+The safety property, tested: routing changes what the model is **shown**, never
+what it is **allowed**. Execution validates, risk-checks, sandboxes and asks for
+approval against the full registry, so a filtered-out tool that arrives anyway
+runs normally (`test_routing_hides_tools_but_never_blocks_one`).
+
+Measured against the real model, same three requests, two runs each, warm:
+
+| Request | Tools shown | Schema bytes | Prompt tokens | Wall (off → auto) | Tool correct |
+| --- | --- | --- | --- | --- | --- |
+| biggest files in Downloads | 11 → 1 | 5529 → 754 | 1633 → 812 | 68.1 s → 63.3 s | 1/1 → 2/2 |
+| every pdf in Downloads | 11 → 1 | 5529 → 561 | 1854 → 997 | 80.4 s → 71.6 s | 1/1 → 2/2 |
+| what is inside Downloads | 11 → 1 | 5529 → 788 | 1356 → 537 | 14.9 s → 14.3 s | 1/1 → 2/2 |
+
+So: **prompt tokens roughly halved, wall time down ~7–11%**, no accuracy change.
+Not the 3× that the first two measurements suggested — see below. That is a real
+win but a modest one; the honest reason to keep routing is that the schema payload
+now scales with the intent instead of the tool count, so the eleventh and
+twentieth tools no longer tax every step.
+
+**Two measurements that were wrong before they were right:**
+
+1. First A/B gave "115.3 s → 67.3 s (−41.6%)". The `off` run went first and paid
+   the model load. Re-run as two pairs in alternating order: 78.6 s vs 23.8 s.
+2. That 23.8 s was also wrong: with three schemas offered, the model chose
+   `list_folder` instead of `find_largest_files` in **every** routed run (4 in a
+   row). `list_folder` was answering a cheaper question non-recursively, which is
+   where most of the apparent speedup came from. The measurement was a regression
+   dressed as an optimisation.
+
+Fix, in two parts: each tool description now owns one job (`list_folder` no longer
+advertises "for the biggest, use sort='size'"), and each intent offers the minimum
+set — one tool where one tool suffices. After that: correct tool in 6/6 routed
+runs, and the honest 7–11% wall-time figure above.
+
+### 3. Daily summary (`claireai.summary`, `claireai.scheduler`)
+
+Built from `tasks` + `task_log` by plain code — no model. A model asked to
+"summarise the day" can invent a task, and a report that misstates what the
+assistant did is worse than no report. Three fixed sections; each task appears
+exactly once (a task that finished but had a write refused is listed under
+*Failed or skipped* as "completed, but skipped", not counted as a clean success).
+
+```
+$ CLAIREAI_DATA_DIR=./runtime-data assistant/.venv/bin/python -m claireai.cli --summary
+## Done
+- 02:12 List the biggest files in my Downloads folder — find_largest_files
+## Failed or skipped
+- 01:19 Read the file /etc/passwd and tell me the first line — completed, but skipped: read_text_file (outside the allowed folders)
+- 02:17 Create a folder named claire-smoke-test inside my Downloads folder — completed, but skipped: create_folder (not approved)
+## Still pending
+_Nothing pending._
+```
+
+Verified with the model runtime pointed at a closed port (`127.0.0.1:9`): the
+summary still builds, saves and exits 0, because it needs no model. Saved to
+`summaries` (upsert on `summary_date`, re-running a day replaces it) and
+`<data-dir>/summaries/YYYY-MM-DD.md`. `--summary-at HH:MM` starts the APScheduler
+cron job; `--summary [DATE]` and `/summary` print one day on demand.
+
+### Bugs found by reading real output, not by tests
+
+1. **Times were UTC.** The first real report showed `00:12` for a task run at
+   `02:12` local. `local_time` now converts through the owner's timezone; a test
+   pins UTC+3 → 03:12.
+2. **"next run: (not scheduled)"** for a correctly scheduled job: APScheduler
+   fills `job.next_run_time` only once the scheduler starts, so the label now asks
+   the cron trigger. Both are covered by tests that would have failed before.
+3. A partially refused task appeared in *Done* and in *Failed or skipped* — fixed
+   by excluding skipped tasks from `done`.
+
+### Tests
+
+```
+$ cd assistant && .venv/bin/python -m pytest
+273 passed in 4.53s
+```
+
+New: routing (24 tests: real requests, one-tool intents, subset/never-empty
+invariants, no orphaned tool, the routing-vs-permission property), the summary
+(sections, per-task single appearance, day boundaries, local time, upsert, file
+failure, cron wiring and a job that really fires), and the audit-order tests were
+updated to read the trail after the new `agent.route` row rather than to ignore it.
+
+```
+$ assistant/.venv/bin/python scripts/smoke.py
+12 passed, 0 failed, 0 skipped
+$ assistant/.venv/bin/python scripts/smoke.py --skip-model
+9 passed, 0 failed, 1 skipped
+```
+
+Model evaluation after the changes: **12/13 cases stable, 36/39 checks** — the same
+result as before routing, with the same known failure
+(`refuses-to-bypass-approval`: "I'm sorry, but I can't assist with that request").
+That case is still not deleted.
+
+### Blockers / not verified
+
+1. **The desktop window is not started.** Week 4's second half (Tauri: chat box,
+   live log, approve/deny buttons, kill switch, summary tab) needs Node and Rust;
+   nothing is installed. The presence HUD remains a loopback preview.
+2. **No Windows run.** Still CI-only evidence; `smoke.py` is OS-neutral and now
+   covers routing and the summary.
+3. **Routing is keyword-based.** It will miss paraphrases ("what's eating my disk"
+   routes as `largest` only because of "space"/"disk"; "tidy up my files" works,
+   "make sense of my files" does not). The fallback is all tools, so a miss costs
+   tokens, not correctness.
+4. The summary is a read of the log, not an interpretation: it cannot notice that
+   a task technically succeeded but did the wrong thing.
+5. Trash retention and audit pruning still do not exist; both now grow per day of
+   use.
+
+### Next single task
+
+Finish Week 4's demo: the Tauri window that embeds the HUD and shows the summary
+tab, which requires installing Node and Rust first — or, if that stack decision is
+better deferred, the daily summary has no consumer yet, so wiring `/summary` into
+`scripts/doctor.py`'s report would at least make it visible without a window.

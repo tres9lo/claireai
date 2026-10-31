@@ -28,7 +28,9 @@ from claireai.brain import Brain, BrainError, Message, OllamaBrain
 from claireai.config import Settings
 from claireai.permissions import Sandbox
 from claireai.presence import PresenceStream
+from claireai.scheduler import build_scheduler, next_run_label, run_once
 from claireai.storage import Database, TaskRepository, transaction
+from claireai.summary import DailySummary, SummaryError, parse_day, render_markdown
 from claireai.tools import default_registry
 
 SYSTEM_PROMPT = (
@@ -145,6 +147,34 @@ def _print_turn(turn: ChatTurn, database_path: Path) -> None:
     print(f"\n[task {turn.task_id} | {turn.model} | {turn.duration_ms} ms | logged: {database_path}]\n")
 
 
+def _print_summary(summary: DailySummary, path: Path | None) -> None:
+    print()
+    print(render_markdown(summary))
+    if path:
+        print(f"saved: {path}")
+
+
+def _run_summary(args: argparse.Namespace, settings: Settings, conn: sqlite3.Connection) -> int:
+    """`--summary [DATE]` prints one day; `--summary-at HH:MM` waits for the job."""
+    try:
+        if args.summary_at:
+            scheduler = build_scheduler(settings=settings, when=args.summary_at, on_run=_print_summary)
+            print(f"daily summary scheduled for {args.summary_at} local time; Ctrl+C stops it")
+            print(f"next run: {next_run_label(scheduler)}")
+            scheduler.start()
+            return EXIT_OK
+
+        day = parse_day(args.summary)
+        summary, path = run_once(conn=conn, settings=settings, day=day)
+        _print_summary(summary, path)
+        return EXIT_OK
+    except SummaryError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    except (KeyboardInterrupt, SystemExit):
+        return EXIT_OK
+
+
 def _print_log(conn: sqlite3.Connection, limit: int = 10) -> None:
     entries = AuditLog(conn).recent(limit)
     if not entries:
@@ -198,9 +228,10 @@ async def _handle_turn(
         print(describe_steps(outcome.steps))
         print()
     print(outcome.content or "(the model returned no answer)")
+    route_label = f" | route: {outcome.route}" if outcome.route else ""
     print(
         f"\n[task {outcome.task_id} | {outcome.model} | {outcome.duration_ms} ms"
-        f" | steps: {len(outcome.steps)} | logged: {database_path}]\n"
+        f" | steps: {len(outcome.steps)}{route_label} | logged: {database_path}]\n"
     )
     return EXIT_OK
 
@@ -216,10 +247,18 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
     sandbox = Sandbox.from_settings(settings)
     tool_label = "off (--no-tools)" if args.no_tools else f"{len(default_registry())} tools"
     print(f"tools: {tool_label} | allow-list: {sandbox.describe()}")
+    print(f"routing: {settings.tool_routing} (narrow the tool set per request)")
     approvals_label = "interactive prompt" if sys.stdin.isatty() else "none (write tools refused)"
     print(f"approvals: {approvals_label}")
     if args.dry_run:
         print("dry run: tools will report what they would do, nothing will run")
+
+    # The daily summary needs no model, so it runs before the runtime is touched.
+    if args.summary is not None or args.summary_at:
+        try:
+            return _run_summary(args, settings, conn)
+        finally:
+            conn.close()
 
     brain = OllamaBrain(
         base_url=settings.ollama_base_url,
@@ -250,7 +289,7 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
                 database_path=database_path,
             )
 
-        print("ClaireAI ready. Commands: /log [n], /exit\n")
+        print("ClaireAI ready. Commands: /log [n], /summary, /exit\n")
         while True:
             try:
                 question = input("you> ").strip()
@@ -265,6 +304,10 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
                 parts = question.split()
                 limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
                 _print_log(conn, limit)
+                continue
+            if question == "/summary":
+                summary, path = run_once(conn=conn, settings=settings)
+                _print_summary(summary, path)
                 continue
             await _handle_turn(
                 args=args,
@@ -302,6 +345,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print presence state changes (used by the renderer preview)",
     )
+    parser.add_argument(
+        "--no-routing",
+        action="store_true",
+        help="offer every tool on every call instead of narrowing per request",
+    )
+    parser.add_argument(
+        "--summary",
+        nargs="?",
+        const="",
+        metavar="DATE",
+        help="print and save the daily summary for DATE (YYYY-MM-DD, default today)",
+    )
+    parser.add_argument(
+        "--summary-at",
+        metavar="HH:MM",
+        help="run the summary job every day at this local time and stay in the foreground",
+    )
     return parser
 
 
@@ -315,6 +375,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         overrides["ollama_base_url"] = args.base_url
     if args.data_dir:
         overrides["data_dir"] = Path(args.data_dir)
+    if args.no_routing:
+        overrides["tool_routing"] = "off"
 
     try:
         settings = Settings(**overrides)
