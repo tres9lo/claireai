@@ -28,8 +28,10 @@ schema safety (foreign keys, append-only audit triggers), task state machine,
 credential redaction, the Ollama adapter via `httpx.MockTransport` (including
 tool-call parsing and malformed-call rejection), CLI task/audit bookkeeping, the
 evaluation checkers/runner, the tool registry, the five read-only file tools, the
-agent loop (refusals, invalid arguments, empty replies, dry run, step limit), and
-a security suite for the folder allow-list in `tests/security/`.
+agent loop (refusals, invalid arguments, empty replies, dry run, step limit), the
+approval flow (brokers, the CLI prompt, non-TTY refusal, denial logging, shared
+`approval_ref`), the six write tools, the presence stream and its HTTP server,
+and a security suite for the folder allow-list in `tests/security/`.
 
 The allow-list tests are the ones to keep strict: they assert that parent
 traversal, absolute paths outside the list, and symlinks that resolve outside it
@@ -40,6 +42,32 @@ shape and error mapping, not that a real runtime answers. The real proof is the
 CLI smoke test in `docs/setup/linux.md`.
 
 No Windows results exist yet; see `docs/platform-support.md`.
+
+## Smoke check
+
+```bash
+assistant/.venv/bin/python scripts/smoke.py              # needs Ollama
+assistant/.venv/bin/python scripts/smoke.py --skip-model # no model needed
+```
+
+Ten checks over the assembled system: settings, migrations, model reachability,
+a real chat turn, the tool loop, a write refused without an approval channel, the
+presence stream, and an UPDATE on `task_log` being rejected by the append-only
+triggers. It uses `pathlib` and a temporary directory only, so it should run
+unchanged on Windows — that has not been done yet, so treat Windows as unproven.
+
+## Presence server
+
+```bash
+assistant/.venv/bin/python scripts/presence_preview.py --demo
+curl -s http://127.0.0.1:8765/state
+curl -s --max-time 2 -N http://127.0.0.1:8765/events
+```
+
+The HTTP tests in `tests/unit/test_presence_server.py` start the server on port 0
+and assert `/`, `/state`, `/events`, `/healthz`, a 404 for unknown paths and the
+loopback-only refusal. If they ever look flaky, remember the stream sends
+`retry:` before the first event — read until a data frame arrives.
 
 ## Model evaluation harness
 

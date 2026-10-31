@@ -5,9 +5,12 @@ shows what ClaireAI is doing and what the machine is doing on its behalf. It is
 inspired by Jarvis-style interfaces, with one hard rule enforced everywhere —
 **the renderer displays state, it never decides anything**.
 
-Status: **planned**. Contract written now, built in Month 1 Week 4 (v0, canvas
-2D) and extended in Months 2–3 (speaking/lip-sync) and Months 6–7 (WebGL
-quality). No renderer code exists in the repository yet.
+Status: **v0 preview available**. `claireai.presence` emits the stream,
+`claireai.presence_server` serves `/state` and `/events` over loopback using only
+the standard library, and `desktop/presence/index.html` is the canvas 2D HUD
+(`scripts/presence_preview.py --demo`). Still ahead: the Tauri window and the
+WebGL scene (no npm/Rust packages are installed yet), the speaking state with
+lip-sync, and the quality pass.
 
 ## Where it runs
 

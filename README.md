@@ -8,7 +8,7 @@ The project name and the assistant name are both **ClaireAI**. Package names,
 application IDs and visible branding stay provisional until the owner confirms
 them; nothing user-facing has been branded yet.
 
-## Status: Month 1, Week 2 (first tools and agent loop)
+## Status: Month 1, Week 3 (approval-gated writes)
 
 Implemented and tested:
 
@@ -21,16 +21,28 @@ Implemented and tested:
 - a tool registry with five **read-only** file tools (`list_folder`,
   `get_file_info`, `read_text_file`, `search_files`, `find_largest_files`), each
   with a name, description, JSON schema and risk level;
+- six **approval-gated** write tools (`create_folder`, `create_text_file`,
+  `write_to_file`, `rename_file`, `move_file`, `move_to_trash`). Nothing deletes
+  permanently: `move_to_trash` relocates into ClaireAI's own recoverable bin;
+- an approval flow: the exact tool, arguments and target are shown to the owner,
+  the decision is logged with a reference, and a non-interactive run refuses
+  instead of self-approving;
 - an agent loop: the model proposes a call, the runtime validates the arguments,
-  applies the risk policy and the folder allow-list, runs it, feeds the result
-  back, and repeats up to 8 steps — logging every step;
+  applies the risk policy and the folder allow-list, asks for approval when
+  needed, runs it, feeds the result back, and repeats up to 8 steps — logging
+  every step;
+- a **presence renderer v0**: a canvas 2D HUD (no npm, no WebGL dependency) served
+  over loopback by the standard library, driven by the `PresenceEvent` stream;
+- `scripts/smoke.py`: an end-to-end check (database, model, tool loop, approval
+  refusal, presence, append-only log) that runs unchanged on Linux and Windows;
 - a model capability harness (`scripts/eval_model.py`) that scores the local
   model against fixed cases before features depend on it.
 
-Not implemented yet (planned for later weeks): approval prompts and any tool that
-mutates files (Week 3), the FastAPI service, the browser agent, the daily summary
-scheduler, desktop and mobile clients, the from-scratch model, and the two
-planned surfaces described below — the presence renderer and machine access.
+Not implemented yet (planned for later weeks): the FastAPI service, the Playwright
+browser agent, the daily summary scheduler, the Tauri desktop shell (the HUD is
+currently a loopback preview, not the packaged window), mobile clients, the
+from-scratch model, and machine access — camera, screen, cursor and keyboard —
+which is specified below but has no code.
 
 See `ROADMAP.md` for the full plan and `PROGRESS.md` for the current state,
 verified results, and open blockers.
@@ -92,8 +104,49 @@ The model chooses a tool and its arguments; the runtime does all of this:
 - stops after `CLAIREAI_AGENT_MAX_STEPS` steps (default 8) and fails the task
   rather than looping forever.
 
+Write tools ask before they act:
+
+```
+ClaireAI wants to run `create_folder` (needs_approval).
+  target: /home/tresor/Downloads/reports
+  arguments: path='/home/tresor/Downloads/reports', parents=True
+  approval reference: 3f9c1e7a55b2
+approve? [y/N]
+```
+
+Only an explicit `y`/`yes` approves. Piping input into the CLI cannot approve
+anything — a non-interactive run refuses every write and says why. Each decision
+is logged as `approval.decision`, and the tool row that follows carries the same
+reference, so the audit trail names the exact human decision that allowed it.
+
 Useful flags: `--no-tools` for plain chat, `--dry-run` to see which tools would
-be called without reading anything.
+be called without running or reading anything, `--presence` to print state
+changes.
+
+## Presence preview
+
+```bash
+assistant/.venv/bin/python scripts/presence_preview.py --demo
+# open http://127.0.0.1:8765/ — cycles idle → listening → thinking → tool_running
+#   → awaiting_approval → speaking, with mic/camera/screen/input indicators
+```
+
+Standard library only: the page is canvas 2D, capped at 30 fps, honours reduced
+motion, and the event stream is the same `PresenceEvent` contract the real UI
+will consume. The server is loopback-only, serves one static file plus read-only
+state, and has no way to invoke a tool.
+
+## Smoke check
+
+```bash
+assistant/.venv/bin/python scripts/smoke.py              # needs Ollama
+assistant/.venv/bin/python scripts/smoke.py --skip-model # no model needed
+```
+
+Ten checks in one run: settings, migrations, model reachability, a real chat turn,
+the tool loop, a refused write, the presence stream, and that the audit log really
+rejects UPDATE/DELETE. It uses `pathlib` and a temporary directory, so the same
+command works on Windows.
 
 ## Planned: presence renderer and machine access
 
@@ -101,11 +154,12 @@ Two features are specified and scheduled but **not built yet**. Their contracts
 are written down first on purpose, because both touch privacy:
 
 - **Presence renderer** (`docs/architecture/presence-renderer.md`) — the
-  assistant's face: a local, state-driven 2D/WebGL scene in the desktop shell
-  showing idle / listening / thinking / tool_running / awaiting_approval /
-  speaking / error, plus indicators for microphone, camera, screen and input.
-  It renders state from the same task log the audit trail uses; it holds no
-  capability and never decides anything. Built as v0 in Month 1 Week 4.
+  assistant's face: a local, state-driven scene showing idle / listening /
+  thinking / tool_running / awaiting_approval / speaking / error, plus indicators
+  for microphone, camera, screen and input. It renders state from the same task
+  log the audit trail uses; it holds no capability and never decides anything. A
+  canvas 2D v0 already runs as a loopback preview; the WebGL scene and the Tauri
+  window follow when the desktop toolchain is installed.
 - **Machine access** (`docs/architecture/machine-access.md`) — camera snapshots,
   screen capture, clipboard, window listing, cursor and keyboard control, all
   denied by default and granted per task with a visible indicator. Perception

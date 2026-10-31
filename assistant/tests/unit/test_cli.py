@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pytest
 
+from claireai.approval import ApprovalRequest
 from claireai.audit import AuditLog
 from claireai.brain import BrainHealth, BrainResponse, BrainUnavailable, ToolCall
-from claireai.cli import _handle_turn, ask
+from claireai.cli import CliApprovalBroker, _handle_turn, ask
 from claireai.config import Settings
 from claireai.storage import TaskRepository
 
@@ -177,3 +178,89 @@ async def test_cli_dry_run_passes_through(
     logged = AuditLog(conn).for_task(task.id)
     assert logged[0].status == "skipped"
     assert "dry run" in capsys.readouterr().out
+
+
+# --- Week 3: the CLI approval prompt -----------------------------------------
+
+
+def _approval_request() -> ApprovalRequest:
+    return ApprovalRequest(
+        ref="abc123def456",
+        task_id="task-1",
+        tool="create_folder",
+        risk="needs_approval",
+        arguments={"path": "/home/tresor/Downloads/reports"},
+        target="/home/tresor/Downloads/reports",
+        preview="would create_folder with {'path': ...}",
+    )
+
+
+async def test_the_prompt_approves_only_on_explicit_yes() -> None:
+    for answer in ["y", "Y", "yes", "YES", " yes "]:
+        broker = CliApprovalBroker(interactive=True, read=lambda _prompt, a=answer: a, write=lambda _line: None)
+        decision = await broker.decide(_approval_request())
+        assert decision.approved is True, answer
+
+    for answer in ["", "n", "no", "later", "yess"]:
+        broker = CliApprovalBroker(interactive=True, read=lambda _prompt, a=answer: a, write=lambda _line: None)
+        decision = await broker.decide(_approval_request())
+        assert decision.approved is False, answer
+
+
+async def test_the_prompt_shows_the_exact_target_and_reference() -> None:
+    printed: list[str] = []
+    broker = CliApprovalBroker(
+        interactive=True, read=lambda _prompt: "n", write=printed.append
+    )
+    await broker.decide(_approval_request())
+    text = "\n".join(printed)
+    assert "create_folder" in text
+    assert "/home/tresor/Downloads/reports" in text
+    assert "abc123def456" in text
+    assert "needs_approval" in text
+
+
+async def test_a_non_interactive_run_cannot_approve_anything() -> None:
+    def explode(_prompt: str) -> str:
+        raise AssertionError("a non-interactive run must not try to prompt")
+
+    broker = CliApprovalBroker(interactive=False, read=explode, write=lambda _line: None)
+    decision = await broker.decide(_approval_request())
+    assert decision.approved is False
+    assert "not an interactive terminal" in decision.reason
+    assert decision.decided_by == "policy"
+
+
+async def test_end_of_input_counts_as_a_refusal() -> None:
+    def eof(_prompt: str) -> str:
+        raise EOFError
+
+    broker = CliApprovalBroker(interactive=True, read=eof, write=lambda _line: None)
+    decision = await broker.decide(_approval_request())
+    assert decision.approved is False
+    assert "no answer" in decision.reason
+
+
+async def test_denied_write_tool_leaves_the_filesystem_alone(
+    conn: sqlite3.Connection, settings: Settings, tmp_path: Path
+) -> None:
+    folder = tmp_path / "Downloads"
+    folder.mkdir()
+    settings = settings.model_copy(update={"allowed_folders": [folder]})
+    target = folder / "should-not-exist"
+    brain = ScriptedBrain(ToolCall(name="create_folder", arguments={"path": str(target)}), "Not allowed.")
+
+    await _handle_turn(
+        args=_args(),
+        settings=settings,
+        conn=conn,
+        brain=brain,
+        question="make a folder",
+        database_path=tmp_path / "db",
+    )
+
+    assert not target.exists()
+    task = TaskRepository(conn).recent(1)[0]
+    logged = AuditLog(conn).for_task(task.id)
+    assert [entry.action for entry in logged] == ["approval.decision", "tool.call", "agent.answer"]
+    assert logged[0].status == "skipped"

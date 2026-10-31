@@ -11,6 +11,7 @@ sees them, so a model cannot smuggle unexpected keys or wrong types into a tool.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from pydantic import BaseModel, ValidationError
@@ -31,6 +32,9 @@ class ToolContext:
 
     sandbox: Sandbox
     dry_run: bool = False
+    # Only used by move_to_trash, which writes inside the assistant's own data
+    # directory rather than an allow-listed folder.
+    data_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -60,7 +64,11 @@ class Tool:
 
     @property
     def parameters(self) -> dict[str, Any]:
-        return self.args_model.model_json_schema()
+        # Strip pydantic's ``title`` noise: the model does not need it, and on a
+        # CPU every schema token is re-processed on every step. Measured on this
+        # laptop: prompt processing runs at ~31 tokens/s, so 300 saved tokens is
+        # roughly 10 s per model call.
+        return _strip_titles(self.args_model.model_json_schema())
 
     def schema(self) -> dict[str, Any]:
         """The wire shape Ollama expects in ``tools``."""
@@ -87,6 +95,14 @@ class Tool:
             return self.args_model.model_validate(cleaned)
         except ValidationError as exc:
             raise ToolError(f"invalid arguments for {self.name!r}: {exc}") from exc
+
+
+def _strip_titles(node: Any) -> Any:
+    if isinstance(node, dict):
+        return {key: _strip_titles(value) for key, value in node.items() if key != "title"}
+    if isinstance(node, list):
+        return [_strip_titles(item) for item in node]
+    return node
 
 
 class ToolRegistry:

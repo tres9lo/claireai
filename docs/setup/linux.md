@@ -97,3 +97,35 @@ cd assistant && .venv/bin/python -m pytest
 The suite runs without Ollama: the adapter tests use `httpx.MockTransport`
 (mocked, not proof that a real runtime answers). The real check is the CLI smoke
 test in step 4.
+
+## Checking the install end to end
+
+```bash
+assistant/.venv/bin/python scripts/smoke.py              # needs Ollama running
+assistant/.venv/bin/python scripts/smoke.py --skip-model # runtime only
+```
+
+Ten checks: settings, migrations, model reachability, a real chat turn, the tool
+loop, a refused write, the presence stream and the append-only audit log. Exit
+code 0 means everything passed.
+
+## Writing files (approval prompt)
+
+```bash
+CLAIREAI_ALLOWED_FOLDERS='["~/Downloads"]' \
+  assistant/.venv/bin/python -m claireai.cli --once "Create a folder called reports in my Downloads"
+```
+
+ClaireAI prints the exact tool, arguments, target and approval reference, then
+asks `approve? [y/N]`. Only `y`/`yes` runs it. Piped input, cron jobs and
+non-interactive shells are refused by design.
+
+## Presence HUD preview
+
+```bash
+assistant/.venv/bin/python scripts/presence_preview.py --demo
+# then open http://127.0.0.1:8765/
+```
+
+Standard library only, loopback only. Without `--demo` it shows `idle` until
+something feeds the stream (the desktop window does that in Week 4).

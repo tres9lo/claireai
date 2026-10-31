@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from claireai.config import Settings
-from claireai.permissions import PermissionDenied, Sandbox, check_risk
+from claireai.permissions import PermissionDenied, Sandbox, check_risk, requires_approval
 
 
 @pytest.fixture()
@@ -115,14 +115,10 @@ def test_settings_reject_empty_allow_list_entries() -> None:
         Settings(_env_file=None, allowed_folders=[" "])
 
 
-def test_safe_tools_run_but_risky_ones_are_refused() -> None:
-    check_risk("safe")
-    with pytest.raises(PermissionDenied, match="no approval flow"):
-        check_risk("needs_approval")
-    with pytest.raises(PermissionDenied, match="no approval flow"):
-        check_risk("dangerous")
-    # Week 3 flips this flag once approvals exist; the policy is already written.
-    check_risk("needs_approval", approval_available=True)
+def test_risk_levels_decide_whether_a_human_is_asked() -> None:
+    assert requires_approval("safe") is False
+    assert requires_approval("needs_approval") is True
+    assert requires_approval("dangerous") is True
 
 
 def test_unknown_risk_level_is_refused() -> None:

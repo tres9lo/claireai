@@ -64,6 +64,10 @@ class Settings(BaseSettings):
 
     # Presence renderer (docs/architecture/presence-renderer.md). `auto` means
     # WebGL when the webview supports it and holds the frame budget, else 2D.
+    # Cap on generated tokens per model call. Measured on this laptop: an
+    # unbounded answer cost 126 s; a tool-using reply needs far less than 400.
+    max_output_tokens: int = Field(default=400, ge=32, le=4096)
+
     presence_mode: Literal["off", "auto", "2d", "webgl"] = "auto"
     presence_fps_cap: int = Field(default=30, ge=5, le=60)
     presence_reduce_motion: bool = False

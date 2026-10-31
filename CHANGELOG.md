@@ -36,6 +36,34 @@ nothing has been released yet.
 - `OllamaBrain` accepts decoding `options`; `docs/testing.md` documents the
   suite and the harness.
 
+### Added — Month 1, Week 3: approval-gated writes, presence v0, smoke check
+
+- `claireai.approval`: approval requests carrying tool, risk, validated
+  arguments, target and a reference; `DenyAll` as the default for programmatic
+  runs (there is deliberately no auto-approve broker in the product).
+- Six mutating file tools, all `needs_approval`: `create_folder`,
+  `create_text_file`, `write_to_file`, `rename_file`, `move_file`,
+  `move_to_trash`. Nothing deletes permanently — trash is a recoverable folder in
+  the app data directory. Existing files are never silently overwritten.
+- Agent loop: validates before asking, shows the exact target, logs
+  `approval.decision` plus the `tool.call` row sharing one `approval_ref`, feeds a
+  denial back to the model, and never runs a denied action.
+- CLI approval prompt; refuses when stdin is not an interactive terminal.
+- `claireai.presence` + `claireai.presence_server`: the `PresenceEvent` stream, a
+  loopback-only standard-library server (`/state`, `/events` SSE, `/healthz`) and
+  a canvas 2D HUD in `desktop/presence/index.html`; `scripts/presence_preview.py`
+  serves it with `--demo`. No npm or WebGL dependency.
+- `scripts/smoke.py`: ten end-to-end checks that run on Linux and Windows,
+  including a refused write and an append-only audit assertion.
+- Performance: `CLAIREAI_MAX_OUTPUT_TOKENS` (default 400), compacted tool schemas
+  (pydantic `title` keys stripped, −17% parameter bytes), and shorter tool
+  descriptions. The "biggest files" turn went from 126.8 s to 71.7 s on this
+  laptop; the remaining cost is CPU prompt-processing, measured at ~31 tok/s.
+- Model evaluation grew to 13 cases (three tool-selection cases added); the
+  shipped model scores 12/13 stable, 36/39 checks.
+- `docs/architecture/threat-model.md` written: trust boundaries, 16 threats with
+  controls, assumptions, residual risks and a verification checklist.
+
 ### Planned and specified — presence renderer and machine access
 
 Documentation and configuration only; no renderer, camera or input code exists

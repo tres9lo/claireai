@@ -15,17 +15,19 @@ import asyncio
 import sqlite3
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from pydantic import ValidationError
 
 from claireai.agent import AgentError, describe_steps, run_task
+from claireai.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest, DenyAll
 from claireai.audit import AuditLog, redact
 from claireai.brain import Brain, BrainError, Message, OllamaBrain
 from claireai.config import Settings
 from claireai.permissions import Sandbox
+from claireai.presence import PresenceStream
 from claireai.storage import Database, TaskRepository, transaction
 from claireai.tools import default_registry
 
@@ -39,6 +41,39 @@ EXIT_OK = 0
 EXIT_TASK_FAILED = 1
 EXIT_CONFIG = 2
 EXIT_RUNTIME = 3
+
+
+@dataclass
+class CliApprovalBroker:
+    """Ask the person at the terminal before a write happens.
+
+    A non-interactive stdin refuses instead of blocking: piping a question into
+    the CLI must never be a way to auto-approve a file write.
+    """
+
+    name: str = "cli"
+    interactive: bool = field(default_factory=lambda: sys.stdin.isatty())
+    read: Callable[[str], str] = field(default_factory=lambda: input)
+    write: Callable[[str], None] = field(default_factory=lambda: print)
+
+    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
+        if not self.interactive:
+            return ApprovalDecision(
+                approved=False,
+                reason=(
+                    "stdin is not an interactive terminal, so approval cannot be asked; "
+                    "run claireai in a terminal to approve write actions"
+                ),
+                decided_by="policy",
+            )
+        self.write("\n" + request.describe())
+        try:
+            answer = self.read("approve? [y/N] ").strip().lower()
+        except EOFError:
+            return ApprovalDecision(approved=False, reason="no answer given (end of input)")
+        if answer in {"y", "yes"}:
+            return ApprovalDecision(approved=True)
+        return ApprovalDecision(approved=False, reason="denied at the prompt")
 
 
 @dataclass(frozen=True)
@@ -139,12 +174,15 @@ async def _handle_turn(
         _print_turn(turn, database_path)
         return EXIT_OK
 
+    approvals: ApprovalBroker = CliApprovalBroker()
     try:
         outcome = await run_task(
             settings=settings,
             conn=conn,
             brain=brain,
             request=question,
+            approvals=approvals,
+            presence=getattr(args, "presence", None),
             device=args.device,
             dry_run=args.dry_run,
         )
@@ -176,15 +214,19 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
     print(f"database: {database_path}")
     print(f"brain: {'ollama'} @ {settings.ollama_base_url} model={settings.ollama_model}")
     sandbox = Sandbox.from_settings(settings)
-    tool_label = "off (--no-tools)" if args.no_tools else f"{len(default_registry())} read-only"
+    tool_label = "off (--no-tools)" if args.no_tools else f"{len(default_registry())} tools"
     print(f"tools: {tool_label} | allow-list: {sandbox.describe()}")
+    approvals_label = "interactive prompt" if sys.stdin.isatty() else "none (write tools refused)"
+    print(f"approvals: {approvals_label}")
     if args.dry_run:
-        print("dry run: tools will report what they would do, nothing will be read")
+        print("dry run: tools will report what they would do, nothing will run")
 
     brain = OllamaBrain(
         base_url=settings.ollama_base_url,
         model=settings.ollama_model,
         timeout=settings.ollama_timeout_seconds,
+        # Bounded decoding: an unbounded reply took 126 s on this 4-thread CPU.
+        options={"num_predict": settings.max_output_tokens},
     )
     try:
         health = await brain.health()
@@ -255,6 +297,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="show which tools would be called without running them",
     )
+    parser.add_argument(
+        "--presence",
+        action="store_true",
+        help="print presence state changes (used by the renderer preview)",
+    )
     return parser
 
 
@@ -279,6 +326,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             label = f"{field}: " if field else ""
             print(f"  {label}{error['msg']}", file=sys.stderr)
         return EXIT_CONFIG
+
+    if args.presence:
+        args.presence = PresenceStream(
+            reporter=lambda event: print(f"[presence] {event.state} seq={event.seq}")
+        )
+    else:
+        args.presence = None
 
     database_path = Path(args.db).expanduser() if args.db else settings.database_path
     try:

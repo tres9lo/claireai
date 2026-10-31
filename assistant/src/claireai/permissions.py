@@ -5,9 +5,11 @@ Two separate questions, deliberately kept apart:
 * **Where may a tool touch?** :class:`Sandbox` answers this. It resolves a path,
   follows symlinks, and refuses anything that is not inside an allow-listed
   folder. This is code, never a model decision (roadmap 7.2).
-* **May this tool run at all?** :func:`check_risk` answers this. Week 2 ships
-  only read-only ``safe`` tools; anything needing approval is refused until the
-  approval flow exists (roadmap 7.1).
+* **May this tool run at all?** :func:`requires_approval` answers whether a
+  human decision is needed, and :func:`check_risk` rejects nonsense levels.
+  ``safe`` tools run freely; everything else goes through
+  :mod:`claireai.approval`, and a run with no approval channel refuses
+  (roadmap 7.1).
 
 Nothing here reads model output for permission decisions: the model proposes
 arguments, this module decides whether they are allowed.
@@ -29,23 +31,21 @@ class PermissionDenied(Exception):
     """A path or tool the owner's policy does not allow."""
 
 
-def check_risk(risk: str, *, approval_available: bool = False) -> None:
-    """Refuse tools that are not safe yet.
-
-    ``approval_available`` exists so Week 3 can pass ``True`` once the approval
-    prompt is real. Until then every non-safe tool is refused rather than
-    silently run: an unimplemented approval flow must never mean "allowed".
-    """
+def check_risk(risk: str) -> None:
+    """Reject a risk level that is not part of the policy."""
     if risk not in RISK_LEVELS:
         raise PermissionDenied(f"unknown risk level {risk!r}")
-    if risk == "safe":
-        return
-    if risk == "needs_approval" and approval_available:
-        return
-    raise PermissionDenied(
-        f"{risk} tools are not available yet: this build has no approval flow, "
-        "so the action was refused rather than run unapproved"
-    )
+
+
+def requires_approval(risk: str) -> bool:
+    """True when a human must approve before the tool runs.
+
+    ``dangerous`` and ``needs_approval`` both need a decision. They differ in
+    how often: trust may later be granted for named ``needs_approval`` actions,
+    while ``dangerous`` always asks (roadmap 7.1).
+    """
+    check_risk(risk)
+    return risk != "safe"
 
 
 def check_capability(capability: str, allowed: Iterable[str]) -> None:

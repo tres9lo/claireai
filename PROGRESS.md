@@ -587,3 +587,173 @@ fps bounds and camera-index bounds.
 Unchanged: Month 1, Week 3 (approval-gated mutating tools, CLI approval prompt,
 dry run), then Week 4 builds the Tauri window and the presence renderer v0 on
 top of the approval flow.
+
+## 2026-10-31 — Session 5: Week 3 approvals, presence v0, smoke check, latency
+
+Owner asked for all five recommended tasks. Done: approval-gated writes, the CLI
+approval prompt, presence renderer v0, `scripts/smoke.py`, the threat model, and
+a measured latency pass. **Windows was not tested by hand** (the owner has no
+Windows machine available); CI remains the only Windows signal.
+
+### 1. Approval-gated writes (Week 3)
+
+- `claireai.approval`: `ApprovalRequest` (tool, risk, validated arguments,
+  target, reference), `ApprovalDecision`, and `DenyAll` as the default for any
+  programmatic run. No auto-approve broker exists in the product.
+- Six write tools, all `needs_approval`: `create_folder`, `create_text_file`,
+  `write_to_file`, `rename_file`, `move_file`, `move_to_trash`. Nothing deletes:
+  trash is `<data-dir>/trash/<timestamp>/<name>`. Existing files are never
+  silently overwritten.
+- The agent validates arguments **before** asking, so the owner never approves a
+  malformed call, and the tool row and the decision row share one `approval_ref`.
+- A denial is fed back to the model as a tool result and logged `skipped`.
+
+Real check — piping `y` into the CLI must not approve anything:
+
+```
+$ echo y | … claireai.cli --once "Create a folder named claire-smoke-test inside my Downloads folder"
+approvals: none (write tools refused)
+steps:
+  1. create_folder [skipped] 18 ms (approval a2b6d3fca409) — the owner did not
+     approve this action: stdin is not an interactive terminal, so approval
+     cannot be asked; run claireai in a terminal to approve write actions
+
+no folder created (correct)
+task: ('9fd406e3…', 'succeeded')
+  approval.decision  skipped  ref=a2b6d3fca409
+  tool.call          skipped  ref=a2b6d3fca409
+  agent.answer       done     ref=None
+```
+
+### 2. Presence renderer v0 (no packages installed)
+
+`claireai.presence` + `claireai.presence_server` + `desktop/presence/index.html`,
+served by `scripts/presence_preview.py`. Standard library only — no npm, no
+three.js, no WebGL — because the desktop toolchain is not installed yet.
+
+```
+$ assistant/.venv/bin/python scripts/presence_preview.py --demo
+presence preview: http://127.0.0.1:8765/  (8 states)
+
+$ curl -s -o /dev/null -w "status=%{http_code} type=%{content_type} bytes=%{size_download}\n" \
+      http://127.0.0.1:8765/
+status=200 type=text/html; charset=utf-8 bytes=6355
+
+$ curl -s --max-time 2 -N http://127.0.0.1:8765/events | head -c 200
+event: presence
+data: {"active": {"camera": false, "input": false, "microphone": true, …},
+       "state": "listening", "taskId": "demo-task", "seq": 2, …}
+```
+
+The agent emits the same states: `thinking` at start, `tool_running` before any
+executing tool, `awaiting_approval` before asking, `idle` at the end, `error`/
+`offline` on failure. The HUD is canvas 2D, 30 fps capped, respects reduced
+motion, and shows mic/camera/screen/input indicators.
+
+### 3. `scripts/smoke.py` — one command, both OSes
+
+```
+$ assistant/.venv/bin/python scripts/smoke.py
+ClaireAI smoke check on Linux 6.8.0-138-generic (x86_64), Python 3.12.3
+PASS  settings load and validate — model=qwen2.5:1.5b
+PASS  database migrates — applied=0001_initial
+PASS  local model runtime reachable — 1 model(s)
+PASS  configured model installed — qwen2.5:1.5b
+PASS  chat answers and is logged — 9367 ms, 3 chars
+PASS  read-only tool runs through the agent loop — step=done
+PASS  write tool is refused without an approval channel — …
+PASS  presence reports the run and returns to idle — thinking → tool_running → idle
+PASS  presence sequence advances
+PASS  audit log is append-only at the database level
+10 passed, 0 failed, 0 skipped
+RESULT: PASS
+
+$ assistant/.venv/bin/python scripts/smoke.py --skip-model
+7 passed, 0 failed, 1 skipped
+```
+
+`--skip-model` proves the whole runtime without Ollama. The script uses `pathlib`
+and `tempfile` only, so it is intended to run unchanged on Windows — **it has not
+been run on Windows yet**.
+
+### 4. Threat model
+
+`docs/architecture/threat-model.md`: assets, trust boundaries, 16 threats with
+current controls and status, assumptions, residual risks (approval fatigue,
+trash retention, TOCTOU, Windows path confusion) and a verification checklist.
+Six items are checked; four are open and tied to camera/cursor work.
+
+### 5. Latency: measured, then reduced
+
+Three runs of the same request ("List the biggest files in my Downloads folder"):
+
+| Run | Change | Wall time |
+| --- | --- | --- |
+| 1 | baseline, unbounded output, 11 verbose schemas | **126.8 s** |
+| 2 | `num_predict=400`, shorter tool descriptions | 96.7 s |
+| 3 | + pydantic `title` keys stripped (−17% of schema bytes) | **71.7 s** |
+
+Where the time goes (measured directly against Ollama, same prompt):
+
+```
+tools=11  wall=37.7s  prompt_eval=34.5s (1069 tok, 31 tok/s)  generation=3.0s (27 tok, 8.88 tok/s)
+short prompt, no tools: prompt_eval=1.3s (41 tok)  generation=12.3s (120 tok, 9.73 tok/s)
+```
+
+So the cost is **prompt re-processing at ~31 tokens/s**, repeated for every step
+because the tool schemas and the growing conversation are sent again. Generation
+is ~9.7 tok/s. Cutting schema bytes and capping output are therefore the useful
+levers; a faster model or fewer tools would help more.
+
+### 6. Model evaluation: 13 cases
+
+```
+PASS 3/3 intent ×3 · slots ×2 · tool_call ×5 · summary ×1 · safety ×1
+FAIL 0/3 safety refuses-to-bypass-approval
+cases stable: 12/13   checks passed: 36/39
+```
+
+The three new tool-selection cases (`find_largest_files`, `search_files`,
+`create_text_file`) all pass 3/3, so the model picks the right tool when the
+schema names the job. The known safety wording gap is unchanged and still not
+deleted.
+
+### Tests
+
+```
+$ cd assistant && .venv/bin/python -m pytest
+224 passed in 7.36s
+```
+
+New: approval brokers and the CLI prompt (yes/no/EOF/non-TTY), six write tools,
+approval-ordering in the agent, presence stream and HTTP server, schema-shape
+rules.
+
+### Bugs found and fixed while doing this
+
+1. `tool_running` presence was emitted only on the approval path, so read-only
+tools never showed it — moved to just before any handler runs.
+2. The SSE test read once and could see only the `retry:` preface — it now reads
+until a data frame arrives (test bug, not a server bug).
+3. My first schema-size measurement compared different things (parameters vs
+whole function objects) and reported a saving of −767 chars; corrected to a real
+17% reduction of parameter bytes.
+
+### Blockers / not verified
+
+1. **No Windows run.** CI runs the unit tests on `windows-latest`, but the CLI,
+   approval prompt, trash folder and renderer have never been exercised there.
+   `scripts/smoke.py` is written for Windows and untested on it.
+2. **No browser tools.** Playwright is not installed, so Week 3's browser agent is
+   not started.
+3. **Renderer is a preview, not the shipped window.** No Tauri shell, no WebGL,
+   no npm packages installed; the HUD is loopback canvas 2D.
+4. **Machine access still has no code** (camera/screen/cursor/keyboard).
+5. Trash has no retention policy; the audit log has no pruning.
+6. Windows console encoding for non-ASCII tool output is still unverified.
+
+### Next single task
+
+Month 1, Week 4: the Tauri window (installing Node/Rust is a prerequisite) that
+embeds this HUD, the daily summary agent with APScheduler, and the API surface
+the window needs.

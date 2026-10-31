@@ -1,8 +1,9 @@
 """The registered tool set.
 
-Week 2 ships only read-only file tools. Adding a mutating tool means adding a
-non-``safe`` risk level, and :func:`claireai.permissions.check_risk` will refuse
-it until an approval flow exists — that refusal is the point, not a bug.
+Read-only tools are ``safe`` and run freely. Every mutating tool is
+``needs_approval``, so the agent asks the owner with the exact target and effect
+before it runs (:mod:`claireai.approval`). A run without an approval channel
+refuses them — that refusal is the point, not a bug.
 """
 
 from __future__ import annotations
@@ -20,46 +21,53 @@ from claireai.tools.files import (
     read_text_file,
     search_files,
 )
+from claireai.tools.files_write import (
+    CreateFolderArgs,
+    CreateTextFileArgs,
+    MoveFileArgs,
+    MoveToTrashArgs,
+    RenameFileArgs,
+    WriteToFileArgs,
+    create_folder,
+    create_text_file,
+    move_file,
+    move_to_trash,
+    rename_file,
+    write_to_file,
+)
 
 FILE_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="list_folder",
-        description=(
-            "List the entries of one folder. Use sort='size' with descending=true "
-            "to find the biggest files in a folder."
-        ),
+        description="List a folder's entries with sizes. For the biggest, use sort='size', descending=true.",
         risk="safe",
         args_model=ListFolderArgs,
         handler=list_folder,
     ),
     Tool(
         name="get_file_info",
-        description="Report the type, size and modification time of one file or folder.",
+        description="Type, size and modified time of one path.",
         risk="safe",
         args_model=FileInfoArgs,
         handler=get_file_info,
     ),
     Tool(
         name="read_text_file",
-        description="Read a UTF-8 text file and return its contents, truncated to a byte budget.",
+        description="Read a UTF-8 text file, truncated to a byte budget.",
         risk="safe",
         args_model=ReadTextFileArgs,
         handler=read_text_file,
     ),
     Tool(
         name="search_files",
-        description="Search a folder tree for files whose name matches a glob pattern.",
+        description="Find files by name glob under a folder.",
         risk="safe",
         args_model=SearchFilesArgs,
         handler=search_files,
     ),
     Tool(
         name="find_largest_files",
-        description=(
-            "Find the biggest files inside a folder, including its subfolders, "
-            "sorted biggest first with their real sizes. Use this for any request "
-            "about the largest or biggest files; do not sort a listing yourself."
-        ),
+        description="Biggest files under a folder (recursive) with real sizes. Use for any 'biggest files' request.",
         risk="safe",
         args_model=LargestFilesArgs,
         handler=find_largest_files,
@@ -67,13 +75,60 @@ FILE_TOOLS: tuple[Tool, ...] = (
 )
 
 
+WRITE_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="create_folder",
+        description="Create a folder.",
+        risk="needs_approval",
+        args_model=CreateFolderArgs,
+        handler=create_folder,
+    ),
+    Tool(
+        name="create_text_file",
+        description="Create a new UTF-8 text file.",
+        risk="needs_approval",
+        args_model=CreateTextFileArgs,
+        handler=create_text_file,
+    ),
+    Tool(
+        name="write_to_file",
+        description="Overwrite or append to an existing text file.",
+        risk="needs_approval",
+        args_model=WriteToFileArgs,
+        handler=write_to_file,
+    ),
+    Tool(
+        name="rename_file",
+        description="Rename a file or folder in place.",
+        risk="needs_approval",
+        args_model=RenameFileArgs,
+        handler=rename_file,
+    ),
+    Tool(
+        name="move_file",
+        description="Move a file or folder; never overwrites.",
+        risk="needs_approval",
+        args_model=MoveFileArgs,
+        handler=move_file,
+    ),
+    Tool(
+        name="move_to_trash",
+        description="Move to a recoverable trash folder; nothing is deleted permanently.",
+        risk="needs_approval",
+        args_model=MoveToTrashArgs,
+        handler=move_to_trash,
+    ),
+)
+
+
 def default_registry() -> ToolRegistry:
-    return ToolRegistry(FILE_TOOLS)
+    return ToolRegistry((*FILE_TOOLS, *WRITE_TOOLS))
 
 
 __all__ = [
     "FILE_TOOLS",
     "LargestFilesArgs",
+    "WRITE_TOOLS",
     "Tool",
     "ToolContext",
     "ToolError",

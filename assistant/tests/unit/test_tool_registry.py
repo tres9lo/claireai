@@ -23,16 +23,32 @@ def _tool(name: str = "noop", risk: str = "safe") -> Tool:
     )
 
 
-def test_default_registry_has_the_read_only_tools() -> None:
+def test_default_registry_has_five_read_only_and_six_approved_tools() -> None:
     registry = default_registry()
     assert registry.names() == (
+        "create_folder",
+        "create_text_file",
+        "find_largest_files",
+        "get_file_info",
+        "list_folder",
+        "move_file",
+        "move_to_trash",
+        "read_text_file",
+        "rename_file",
+        "search_files",
+        "write_to_file",
+    )
+    safe = {tool.name for tool in registry if tool.risk == "safe"}
+    assert safe == {
         "find_largest_files",
         "get_file_info",
         "list_folder",
         "read_text_file",
         "search_files",
-    )
-    assert all(tool.risk == "safe" for tool in registry)
+    }
+    assert all(tool.risk == "needs_approval" for tool in registry if tool.name not in safe)
+    # No permanent deletion exists in this build.
+    assert all(tool.risk != "dangerous" for tool in registry)
 
 
 def test_schemas_are_function_shaped_for_ollama() -> None:
@@ -43,6 +59,15 @@ def test_schemas_are_function_shaped_for_ollama() -> None:
     assert function["parameters"]["type"] == "object"
     assert "path" in function["parameters"]["required"]
     assert "description" in function
+
+
+def test_schemas_carry_no_pydantic_titles() -> None:
+    # Every schema token is re-processed on every model call on CPU.
+    import json
+
+    for tool in default_registry():
+        rendered = json.dumps(tool.parameters)
+        assert '"title"' not in rendered, tool.name
 
 
 def test_duplicate_names_are_rejected() -> None:

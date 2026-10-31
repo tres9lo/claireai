@@ -13,10 +13,12 @@ import pytest
 from pydantic import BaseModel
 
 from claireai.agent import AgentEmptyReply, AgentStepLimit, run_task, system_message
+from claireai.approval import ApprovalDecision
 from claireai.audit import AuditLog
 from claireai.brain import BrainResponse, BrainUnavailable, ToolCall
 from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox
+from claireai.presence import PresenceStream
 from claireai.storage import TaskRepository
 from claireai.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
 
@@ -65,10 +67,25 @@ class NoArgs(BaseModel):
     pass
 
 
+class FixedBroker:
+    """Stand-in for the human: records the request and answers the same way."""
+
+    name = "fixed"
+
+    def __init__(self, approved: bool, reason: str = "") -> None:
+        self.approved = approved
+        self.reason = reason
+        self.requests = []
+
+    async def decide(self, request):  # noqa: ANN001, ANN201
+        self.requests.append(request)
+        return ApprovalDecision(approved=self.approved, reason=self.reason, decided_by="test")
+
+
 def test_system_message_names_the_allowed_folders(downloads: Path) -> None:
     message = system_message(Sandbox(roots=(downloads,)))
     assert str(downloads) in message.content
-    assert "no write tools" in message.content
+    assert "approval" in message.content
 
 
 async def test_one_tool_call_then_an_answer(
@@ -124,13 +141,19 @@ async def test_tool_schemas_are_offered_to_the_model(
 
     tools = brain.calls[0]["tools"]
     names = {tool["function"]["name"] for tool in tools}
-    assert names == {
+    assert {
         "list_folder",
         "get_file_info",
         "read_text_file",
         "search_files",
         "find_largest_files",
-    }
+        "create_folder",
+        "create_text_file",
+        "write_to_file",
+        "rename_file",
+        "move_file",
+        "move_to_trash",
+    } == names
 
 
 async def test_unknown_tool_is_refused_and_logged(
@@ -196,10 +219,10 @@ async def test_a_dangerous_tool_is_refused_without_running_it(
 
     assert calls == []
     assert outcome.steps[0].status == "skipped"
-    assert "no approval flow" in outcome.steps[0].result_text
+    assert "no approval channel" in outcome.steps[0].result_text
 
 
-async def test_a_needs_approval_tool_runs_when_approval_exists(
+async def test_a_needs_approval_tool_runs_after_an_approving_broker(
     conn: sqlite3.Connection, agent_settings: Settings
 ) -> None:
     def handler(context: ToolContext, arguments: NoArgs) -> ToolResult:
@@ -216,6 +239,7 @@ async def test_a_needs_approval_tool_runs_when_approval_exists(
             )
         ]
     )
+    broker = FixedBroker(approved=True)
     brain = ScriptedBrain([tool_call("move_file"), answer("Moved.")])
 
     outcome = await run_task(
@@ -224,9 +248,12 @@ async def test_a_needs_approval_tool_runs_when_approval_exists(
         brain=brain,
         request="move it",
         registry=registry,
-        approval_available=True,
+        approvals=broker,
     )
     assert outcome.steps[0].status == "done"
+    assert len(broker.requests) == 1
+    assert broker.requests[0].tool == "move_file"
+    assert broker.requests[0].ref == outcome.steps[0].approval_ref
 
 
 async def test_dry_run_reports_without_executing(
@@ -378,3 +405,168 @@ async def test_empty_allow_list_refuses_file_access(
 def test_sandbox_and_permission_denied_are_exported_where_expected() -> None:
     # Guards against a future refactor moving the permission type silently.
     assert PermissionDenied.__module__ == "claireai.permissions"
+
+
+# --- Week 3: approvals --------------------------------------------------------
+
+
+async def test_an_approval_request_carries_the_exact_target(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    new_folder = downloads / "reports"
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain([tool_call("create_folder", path=str(new_folder)), answer("Created.")])
+
+    outcome = await run_task(
+        settings=agent_settings, conn=conn, brain=brain, request="make a folder", approvals=broker
+    )
+
+    assert outcome.steps[0].status == "done"
+    assert new_folder.is_dir()
+    request = broker.requests[0]
+    assert request.target == str(new_folder)
+    assert request.arguments["path"] == str(new_folder)
+    assert request.risk == "needs_approval"
+    assert request.task_id == outcome.task_id
+
+
+async def test_a_denied_approval_is_logged_and_the_tool_never_runs(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    calls: list[str] = []
+
+    def handler(context: ToolContext, arguments: NoArgs) -> ToolResult:
+        calls.append("ran")
+        return ToolResult(text="should not happen")
+
+    registry = ToolRegistry(
+        [Tool(name="wipe", description="Pretend", risk="needs_approval", args_model=NoArgs, handler=handler)]
+    )
+    broker = FixedBroker(approved=False, reason="not this time")
+    brain = ScriptedBrain([tool_call("wipe"), answer("Understood, I will not.")])
+
+    outcome = await run_task(
+        settings=agent_settings, conn=conn, brain=brain, request="wipe it", registry=registry, approvals=broker
+    )
+
+    assert calls == []
+    assert outcome.steps[0].status == "skipped"
+    assert "did not approve" in outcome.steps[0].result_text
+    assert "not this time" in outcome.steps[0].result_text
+
+    logged = AuditLog(conn).for_task(outcome.task_id)
+    assert [entry.action for entry in logged] == ["approval.decision", "tool.call", "agent.answer"]
+    assert logged[0].status == "skipped"
+    assert logged[0].approval_ref == outcome.steps[0].approval_ref
+    assert logged[1].approval_ref == logged[0].approval_ref
+    assert logged[1].status == "skipped"
+
+
+async def test_an_approved_action_records_the_same_reference_twice(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain(
+        [tool_call("create_folder", path=str(downloads / "x")), answer("Done.")]
+    )
+    outcome = await run_task(
+        settings=agent_settings, conn=conn, brain=brain, request="make x", approvals=broker
+    )
+
+    logged = AuditLog(conn).for_task(outcome.task_id)
+    decision, tool_row = logged[0], logged[1]
+    assert decision.action == "approval.decision" and decision.status == "done"
+    assert tool_row.action == "tool.call" and tool_row.status == "done"
+    assert decision.approval_ref == tool_row.approval_ref
+    assert '"approved": true' in (decision.detail or "")
+
+
+async def test_validation_happens_before_asking_a_human(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain([tool_call("create_folder"), answer("Need a path.")])
+
+    outcome = await run_task(
+        settings=agent_settings, conn=conn, brain=brain, request="make it", approvals=broker
+    )
+
+    assert broker.requests == []  # nobody is asked to approve a malformed call
+    assert outcome.steps[0].status == "failed"
+
+
+async def test_dry_run_never_asks_for_approval(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    broker = FixedBroker(approved=True)
+    target = downloads / "dry-run-folder"
+    brain = ScriptedBrain([tool_call("create_folder", path=str(target)), answer("Plan only.")])
+
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="make a folder",
+        approvals=broker,
+        dry_run=True,
+    )
+
+    assert broker.requests == []
+    assert outcome.steps[0].status == "skipped"
+    assert outcome.steps[0].result_text.startswith("[dry run]")
+    assert not target.exists()
+
+
+async def test_the_denial_is_fed_back_to_the_model(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    broker = FixedBroker(approved=False, reason="no")
+    brain = ScriptedBrain(
+        [tool_call("create_folder", path=str(downloads / "y")), answer("Not approved.")]
+    )
+    await run_task(
+        settings=agent_settings, conn=conn, brain=brain, request="make y", approvals=broker
+    )
+
+    fed_back = brain.calls[1]["messages"][-1]
+    assert fed_back.role == "tool"
+    assert "did not approve" in fed_back.content
+
+
+async def test_presence_follows_the_run_and_ends_idle(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    stream = PresenceStream()
+    seen: list[str] = []
+    brain = ScriptedBrain([tool_call("list_folder", path=str(downloads)), answer("Two files.")])
+
+    # PresenceStream has no subscription API: poll seq between runs is enough to
+    # assert ordering, and the reporter hook records every state change.
+    stream = PresenceStream(reporter=lambda event: seen.append(event.state))
+    await run_task(
+        settings=agent_settings, conn=conn, brain=brain, request="list", presence=stream
+    )
+
+    assert seen[0] == "thinking"
+    assert "tool_running" in seen
+    assert seen[-1] == "idle"
+    assert stream.snapshot().seq >= 3
+
+
+async def test_presence_reports_waiting_for_approval(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    seen: list[str] = []
+    stream = PresenceStream(reporter=lambda event: seen.append(event.state))
+    brain = ScriptedBrain(
+        [tool_call("create_folder", path=str(downloads / "z")), answer("Done.")]
+    )
+    await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="make z",
+        approvals=FixedBroker(approved=True),
+        presence=stream,
+    )
+    assert "awaiting_approval" in seen

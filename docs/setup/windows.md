@@ -94,3 +94,33 @@ Three allow-list tests create symlinks, which Windows only permits with
 as skipped with that reason — a skip there is an environment limit, not a
 passing security check, so run the suite once on a Windows machine where
 symlinks work before claiming Windows coverage.
+
+## 8. Checking the install end to end
+
+```powershell
+.\assistant\.venv\Scripts\python.exe scripts\smoke.py
+.\assistant\.venv\Scripts\python.exe scripts\smoke.py --skip-model
+```
+
+Ten checks covering database, model, tool loop, approval refusal, presence stream
+and the append-only audit log. This script uses only `pathlib` and `tempfile`, so
+it is the first thing to run on a real Windows machine; its result belongs in
+`docs/platform-support.md`.
+
+## 9. Writing files and the approval prompt
+
+```powershell
+$env:CLAIREAI_ALLOWED_FOLDERS = '["C:/Users/tresor/Downloads"]'
+.\assistant\.venv\Scripts\python.exe -m claireai.cli --once "Create a folder called reports in my Downloads"
+```
+
+ClaireAI prints the tool, arguments, target and approval reference, then asks
+`approve? [y/N]`. Non-interactive runs refuse every write. A moved file goes to
+`%LOCALAPPDATA%\ClaireAI\ClaireAI\trash\<timestamp>\`, never to permanent deletion.
+
+## 10. Presence HUD preview
+
+```powershell
+.\assistant\.venv\Scripts\python.exe scripts\presence_preview.py --demo
+Start-Process http://127.0.0.1:8765/
+```
