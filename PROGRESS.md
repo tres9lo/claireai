@@ -898,3 +898,116 @@ Finish Week 4's demo: the Tauri window that embeds the HUD and shows the summary
 tab, which requires installing Node and Rust first — or, if that stack decision is
 better deferred, the daily summary has no consumer yet, so wiring `/summary` into
 `scripts/doctor.py`'s report would at least make it visible without a window.
+
+## 2026-10-31 — Session 5: a reader for the summary, and retention
+
+Chosen next step: make the daily summary readable without a terminal, and keep
+the assistant's own data bounded. The Tauri window was **not** started, for
+concrete reasons checked first rather than assumed:
+
+| Requirement | This machine |
+| --- | --- |
+| Node / npm | present (24.20.0 / 11.19.0) |
+| Rust | **1.75.0**, no rustup — Tauri 2.12's MSRV is **1.90** |
+| webkit2gtk-4.1, gtk+-3.0, libsoup-3.0, javascriptcoregtk-4.1 | all **missing** (need `sudo apt`) |
+| Free RAM for a cold cargo build | 842 MiB free / 1.7 GiB available |
+| Passwordless sudo | no |
+
+So the window is currently a toolchain-installation task that needs a password
+and a Rust upgrade, on a box with little memory to spare. Deferred, with the page
+below written so that the shell work later becomes "point a webview at this URL".
+
+### 1. The read-only today page (`claireai.today`, `/today`)
+
+Served by the server that already serves the HUD. It shows the stored summary and
+the day's tasks, and is deliberately the least capable surface in the project:
+
+- SQLite opened with `mode=ro`, so a handler bug still cannot write;
+- `default-src 'none'` CSP, `nosniff`, **no JavaScript, no form, no button**;
+- every string from storage escaped; the summary is shown inside `<pre>`;
+- no POST handler anywhere on the server (tested: POST → 501).
+
+Verified over real HTTP against the real database:
+
+```
+$ scripts/presence_preview.py --db runtime-data/db/claireai.sqlite3 --port 8899
+today (read-only): http://127.0.0.1:8899/today  ← runtime-data/db/claireai.sqlite3
+
+$ curl -s -D - http://127.0.0.1:8899/today | head -6
+HTTP/1.0 200 OK
+Content-Type: text/html; charset=utf-8
+Content-Length: 6237
+Cache-Control: no-store
+(6237 bytes; 0 occurrences of <script, <form or <button)
+counts rendered: 15 done · 2 failed or skipped · 0 pending
+```
+
+**No approve/deny buttons, on purpose.** Approving a file write over loopback HTTP
+needs a per-run token, POST-only routing, a nonce per request and a same-origin
+check; without those, any local process — or a page doing a cross-origin POST —
+could approve on the owner's behalf. That contradicts T5/T8 in the threat model,
+so it stays unbuilt until it has its own design.
+
+### 2. Retention (`claireai.retention`, `--prune`)
+
+Prunes `trash/<stamp>/` batches and `summaries` (files + rows) older than the
+window (default 30 days). `--prune` is a dry run; `--prune --apply` removes and
+logs. Refusals, all tested: symlinked trash batches, folder names that are not
+timestamps, paths outside the data directory, and a window below one day.
+
+```
+$ claireai --prune --days 30
+retention: keep 30 day(s); cutoff 2026-10-01T01:30:09+00:00
+trash batches kept: 1 | summaries kept: 1
+would remove 2 item(s), 244.2 KiB:
+  - trash_batch: .../trash/20260101T090000Z (244.1 KiB), 302 day(s) old
+  - summary_file: .../summaries/2026-01-01.md (13 B), 303 day(s) old
+audit log kept: 0 row(s), ~0 B — task_log is append-only by database triggers; pruning it would remove that guarantee, so it is reported and left alone
+dry run: nothing was removed (add --apply to remove these items)
+
+$ claireai --prune --days 30 --apply
+removed 2 item(s), freed 244.2 KiB        # fresh batch + today's summary survived
+```
+
+**The audit log is not pruned.** `task_log` rejects DELETE by trigger; deleting
+rows would mean dropping that trigger, and the append-only guarantee (threat T15)
+is worth more than a few kilobytes. The plan reports its row count and size so the
+growth stays visible, and threat T13 is now recorded as *accepted by design* for
+the log and *implemented* for trash and summaries.
+
+### Tests
+
+```
+$ cd assistant && .venv/bin/python -m pytest
+297 passed in 5.58s
+
+$ assistant/.venv/bin/python scripts/smoke.py
+14 passed, 0 failed, 0 skipped
+$ assistant/.venv/bin/python scripts/smoke.py --skip-model
+11 passed, 0 failed, 1 skipped
+```
+
+New: the today page (escaping incl. a `<script>` inside a file name, no
+script/form/button, truncation, unavailable page, `mode=ro` refusing a write), the
+page over HTTP (renders, writes nothing, POST → 501, CSP), and retention (plan vs
+apply, each refusal, the audit log never being named, dry runs deleting nothing).
+
+### Blockers / not verified
+
+1. **Tauri window**: see the table above — needs rustup ≥1.90 and the apt system
+   libraries before a single line of shell code is worth writing.
+2. **No approve/deny over HTTP** — a capability path, not a page feature (above).
+3. **No Windows run.** CI covers the unit tests; a human has still never opened
+   the CLI, the approval prompt, the trash folder, `/today` or the HUD there.
+4. The page is a snapshot on load: no live updates (no JavaScript), so it needs a
+   refresh. Live state is still the HUD's job.
+5. `--prune` has no schedule. It is a command the owner runs, not a cron job; a
+   nightly prune is the obvious next increment.
+6. Turn latency remains ~63 s with routing and 11 tools at 1.5B parameters.
+
+### Next single task
+
+Either schedule the prune (one APScheduler job next to the summary, using the same
+machinery) or test a smaller model against the existing 13-case harness — the
+second one moves daily usefulness more, and needs an `ollama pull` the owner has
+to approve.

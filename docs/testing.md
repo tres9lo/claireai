@@ -50,13 +50,14 @@ assistant/.venv/bin/python scripts/smoke.py              # needs Ollama
 assistant/.venv/bin/python scripts/smoke.py --skip-model # no model needed
 ```
 
-Twelve checks over the assembled system: settings, migrations, model
+Fourteen checks over the assembled system: settings, migrations, model
 reachability, a real chat turn, the tool loop, tool routing narrowing the schema
 set, a write refused without an approval channel, the presence stream, the daily
-summary being built and saved, and an UPDATE on `task_log` being rejected by the
-append-only triggers. It uses `pathlib` and a temporary directory only, so it
-should run unchanged on Windows — that has not been done yet, so treat Windows as
-unproven.
+summary being built and saved, the read-only `/today` page rendering with no
+script or form, retention removing only a stale trash batch, and an UPDATE on
+`task_log` being rejected by the append-only triggers. It uses `pathlib` and a
+temporary directory only, so it should run unchanged on Windows — that has not
+been done yet, so treat Windows as unproven.
 
 ## Presence server
 
@@ -67,9 +68,22 @@ curl -s --max-time 2 -N http://127.0.0.1:8765/events
 ```
 
 The HTTP tests in `tests/unit/test_presence_server.py` start the server on port 0
-and assert `/`, `/state`, `/events`, `/healthz`, a 404 for unknown paths and the
-loopback-only refusal. If they ever look flaky, remember the stream sends
-`retry:` before the first event — read until a data frame arrives.
+and assert `/`, `/state`, `/events`, `/healthz`, `/today`, a 404 for unknown
+paths and the loopback-only refusal. If they ever look flaky, remember the stream
+sends `retry:` before the first event — read until a data frame arrives.
+
+The `/today` tests are the security-relevant ones: they assert the page writes
+nothing (the database file's mtime is unchanged after repeated requests), that no
+POST is implemented on any path (501), and that the CSP header is present.
+`tests/unit/test_today.py` adds that a request containing `<script>` comes back
+escaped, and that `open_read_only` raises on a write attempt.
+
+## Retention
+
+`tests/unit/test_retention.py` builds dated trash batches and summary files and
+asserts what is planned, what is kept, and that planning alone deletes nothing.
+It covers the refusals (symlinked batch, folder name that is not a timestamp, a
+window below one day) and that `task_log` is never named for removal.
 
 ## Model evaluation harness
 

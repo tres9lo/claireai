@@ -7,8 +7,9 @@
 The unit tests prove behaviour with mocked edges; this proves the assembled
 thing: settings, database, migrations, a real model turn (unless skipped), the
 tool loop, tool routing, the approval refusal, the presence stream, the daily
-summary and the append-only audit log. It uses only the standard library and
-`pathlib` so it can be run on either OS without a shell.
+summary, the read-only today page, retention and the append-only audit log. It
+uses only the standard library and `pathlib` so it can be run on either OS
+without a shell.
 
 Exit codes: 0 every check passed (skips allowed), 1 a check failed, 2 bad config.
 """
@@ -255,6 +256,33 @@ async def _run(args: argparse.Namespace) -> int:
             and summary.lines
             and all(f"## {heading}" in report for heading in ("Done", "Failed or skipped", "Still pending")),
             f"{len(summary.lines)} task(s) → {summary_path.name if summary_path else 'no file'}",
+        )
+
+        from claireai.retention import apply as prune_apply, plan as prune_plan
+        from claireai.today import render_today
+
+        page = render_today(conn)
+        results.check(
+            "the read-only today page renders",
+            "Daily summary" in page
+            and "list_folder" in page
+            and "<script" not in page.lower()
+            and "<form" not in page.lower(),
+            f"{len(page)} bytes, no script or form",
+        )
+
+        stale = data_dir / "trash" / "20200101T000000Z"
+        stale.mkdir(parents=True, exist_ok=True)
+        (stale / "old.txt").write_text("stale", encoding="utf-8")
+        fresh_batch = data_dir / "trash" / "29990101T000000Z"
+        fresh_batch.mkdir(parents=True, exist_ok=True)
+        (fresh_batch / "keep.txt").write_text("keep", encoding="utf-8")
+        prune = prune_plan(conn=conn, data_dir=data_dir, days=30)
+        report_prune = prune_apply(prune, conn=conn, data_dir=data_dir)
+        results.check(
+            "retention removes only what is old",
+            not stale.exists() and fresh_batch.exists() and report_prune.removed_count == 1,
+            f"removed {report_prune.removed_count}, kept the recent batch",
         )
 
         went_read_only = False

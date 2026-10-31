@@ -47,12 +47,12 @@ Two rules hold the design together:
 | T5 | A piped/automated run self-approves | `CliApprovalBroker` refuses when stdin is not a TTY; `DenyAll` is the default for any programmatic run; there is no "always approve" broker in the product. | **Implemented** |
 | T6 | Typed secrets or file contents end up in the log | `redact()` on request text, targets and details; tool results are previewed (160 chars) rather than stored whole; typed text is to be logged by key name only. | Partial (**implemented** for file tools; **required** for keyboard) |
 | T7 | A malicious file name injects markup into the renderer | Renderer treats every label as text, never HTML; length caps; no remote assets. | **Implemented** in the v0 HUD (`textContent` only) |
-| T8 | The renderer or its HTTP server becomes a control path | Server serves one static file + read-only state; no POST handler; binds loopback only and refuses a non-loopback host; no tool invocation path. | **Implemented** (tested) |
+| T8 | The renderer or its HTTP server becomes a control path | Server serves one static file, one generated page and read-only state; no POST handler (every POST answers 501); binds loopback only and refuses a non-loopback host; no tool invocation path. The `/today` page opens SQLite with `mode=ro`, sends a `default-src 'none'` CSP, contains no JavaScript, no form and no button, and escapes every stored string. There are deliberately no approve/deny controls on it. | **Implemented** (tested) |
 | T9 | The presence server is exposed to the LAN | `build_server` raises unless the host is loopback; no CORS headers; no auth token (a loopback-only reviewer). | **Implemented** |
 | T10 | An agent loops forever or burns the CPU | `agent_max_steps` (default 8) fails the task and logs `agent.step_limit`; step counter is explicit. | **Implemented** |
 | T11 | Symlink or a path trick escapes the allow-list | Every path is resolved (symlinks followed) then contained in a root; a link inside the allow-list pointing out is refused; relative names must match a root. | **Implemented** (security tests) |
 | T12 | TOCTOU: the path is swapped between check and write | Paths are resolved once and used; the window is small but real on a shared machine. No openat/O_NOFOLLOW equivalent yet. | **Accepted residual risk** |
-| T13 | Trash grows until the disk fills | Trash lives in the app data dir with per-run timestamps; nothing prunes it yet. | **Open** (needs retention policy) |
+| T13 | Trash and summaries grow until the disk fills | Trash lives in the app data dir with per-run timestamps. `claireai --prune` plans removals and `--prune --apply` carries them out, refusing symlinked batches, unparseable names and any path outside the data dir. The audit log is reported (rows and bytes) and deliberately not pruned — dropping its triggers to allow deletion would remove the append-only guarantee. | **Implemented** for trash and summaries; audit log growth **accepted by design** |
 | T14 | The model claims an action it did not perform | System prompt forbids it; every action has a log row; the final answer is not treated as evidence. No automatic cross-check yet. | Partial |
 | T15 | The audit log is edited afterwards | Append-only triggers reject UPDATE/DELETE; the smoke check verifies it. | **Implemented** |
 | T16 | Overwriting a file the owner wanted to keep | Writes require approval; `create_text_file` refuses existing files; `move_file` never overwrites; `rename_file` refuses a taken name. | **Implemented** |
@@ -74,7 +74,9 @@ Two rules hold the design together:
    `dangerous` tools.
 2. **Screenshot exfiltration by a future model.** Today nothing captures; when it
    does, image data must never enter a prompt sent anywhere but loopback.
-3. **Trash retention** (T13) and **log growth** — both need pruning rules.
+3. **Audit-log growth** (T13). Trash and summaries are pruned; `task_log` is not,
+   because the append-only triggers are worth more than the kilobytes. It grows a
+   few rows per task, forever.
 4. **TOCTOU** (T12) on a machine where another process mutates the same folder.
 5. **Windows-specific paths** are unit-tested in CI but not exercised by a human;
    path confusion bugs would most likely appear there.
@@ -87,6 +89,11 @@ Two rules hold the design together:
       present and sharing one reference.
 - [x] A non-interactive run cannot approve anything.
 - [x] The audit log rejects UPDATE and DELETE (checked by `scripts/smoke.py`).
+- [x] The generated page cannot write: SQLite is opened `mode=ro`, a write
+      attempt raises, and the file's mtime is unchanged after repeated requests.
+- [x] No HTTP path grants a capability: POST to any path answers 501.
+- [x] Retention deletes only what is old, keeps recent batches, and refuses
+      symlinked or unrecognised trash folders.
 - [ ] Camera/screen indicators appear only while capture is active.
 - [ ] Kill switch aborts a cursor sequence and logs `cancelled`.
 - [ ] Typed-secret redaction verified against a real keyboard tool.

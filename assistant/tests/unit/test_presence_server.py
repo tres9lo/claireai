@@ -106,3 +106,80 @@ def test_a_health_check_exists(server) -> None:  # noqa: ANN001
 def test_the_server_refuses_a_non_loopback_bind() -> None:
     with pytest.raises(ValueError, match="loopback only"):
         build_server(PresenceStream(), html_path=HTML, host="0.0.0.0", port=0)
+
+
+# --- the read-only /today page ------------------------------------------------
+
+
+@pytest.fixture()
+def data_server(tmp_path: Path):
+    from claireai.audit import AuditLog
+    from claireai.storage import Database, TaskRepository, transaction
+    from claireai.summary import build, save
+
+    database = Database(tmp_path / "db" / "claireai.sqlite3")
+    database.migrate()
+    conn = database.connect()
+    tasks = TaskRepository(conn)
+    with transaction(conn):
+        task = tasks.create(request="List the biggest files in my Downloads folder", kind="agent")
+        tasks.update_status(task.id, "running")
+        tasks.update_status(task.id, "succeeded")
+    with transaction(conn):
+        AuditLog(conn).record(task_id=task.id, tool="find_largest_files", action="tool.call", status="done", detail={})
+        save(conn, build(conn), data_dir=tmp_path)
+    conn.close()
+
+    stream = PresenceStream()
+    instance = build_server(stream, html_path=HTML, port=0, database_path=database.path)
+    thread = threading.Thread(target=instance.serve_forever, args=(0.05,), daemon=True)
+    thread.start()
+    try:
+        yield database.path, instance
+    finally:
+        instance.shutdown()
+        instance.server_close()
+        thread.join(timeout=2)
+
+
+def test_today_renders_the_summary_and_the_log(data_server) -> None:  # noqa: ANN001
+    _, instance = data_server
+    status, headers, body = _get(instance, "/today")
+    text = body.decode("utf-8")
+
+    assert status == 200
+    assert headers["Content-Type"].startswith("text/html")
+    assert headers["Content-Security-Policy"].startswith("default-src 'none'")
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    assert "biggest files" in text
+    assert "find_largest_files" in text
+
+
+def test_today_cannot_write_to_the_database(data_server) -> None:  # noqa: ANN001
+    path, instance = data_server
+    before = path.stat().st_mtime_ns
+    _get(instance, "/today")
+    _get(instance, "/today")
+    assert path.stat().st_mtime_ns == before
+
+
+def test_there_is_no_way_to_post_an_approval(data_server) -> None:  # noqa: ANN001
+    _, instance = data_server
+    host, port = instance.server_address[:2]
+    connection = http.client.HTTPConnection(host, port, timeout=3)
+    try:
+        for path in ("/approve", "/today", "/run"):
+            connection.request("POST", path, body=b"approve=1")
+            response = connection.getresponse()
+            response.read()
+            # 501 = the handler implements no POST at all.
+            assert response.status == 501
+    finally:
+        connection.close()
+
+
+def test_today_without_a_database_explains_itself(server) -> None:  # noqa: ANN001
+    _, instance = server
+    status, _, body = _get(instance, "/today")
+    assert status == 200
+    assert "No task log is configured" in body.decode("utf-8")

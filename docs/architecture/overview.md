@@ -60,7 +60,9 @@ constraints rather than cosmetics.
 | `agent.py` | The loop: validate, authorize, run, log, feed back | Trust model output |
 | `routing.py` | Narrow the tool set per request (deterministic, no model call) | Remove the fallback to all tools |
 | `presence.py` | `PresenceEvent` stream (idle, thinking, tool_running, …) | Hold any capability |
-| `presence_server.py` | Loopback stdlib HTTP server: `/state`, `/events` (SSE), one static page | Invoke a tool |
+| `presence_server.py` | Loopback stdlib HTTP server: `/state`, `/events` (SSE), the static HUD and the generated `/today` page | Invoke a tool, accept a POST, or write anything |
+| `today.py` | The read-only page: summary plus the day's tasks, fully escaped, `mode=ro` | Act, approve, or render stored strings as HTML |
+| `retention.py` | Plans and applies removal of old trash batches and summaries | Delete inside the audit log, or outside the data dir |
 | `summary.py` | Daily report from `tasks` + `task_log`, saved to `summaries` and markdown | Invent an event |
 | `scheduler.py` | APScheduler job that builds the summary each evening | Need a running app |
 | `evaluation.py` | Fixed cases, deterministic scoring, report rendering | Grade creativity |

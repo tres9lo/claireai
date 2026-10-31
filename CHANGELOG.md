@@ -5,6 +5,24 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — Month 1, Week 4: read-only today page and retention
+
+- `claireai.today` and a `/today` route on the existing loopback server: the
+  daily summary plus the day's tasks, for reading without a terminal and as the
+  page the desktop shell will wrap. SQLite is opened `mode=ro`, responses carry
+  `default-src 'none'` CSP and `nosniff`, every stored string is escaped, and the
+  page contains no JavaScript, form or button. Approve/deny controls are
+  deliberately absent: granting a capability over loopback HTTP needs a per-run
+  token and a nonce, not a page feature.
+- `claireai.retention` plus `claireai --prune [--days N] [--apply]`: plans the
+  removal of trash batches and summaries older than the window, then applies it
+  and records `retention.prune`. Symlinked batches, non-timestamp folder names
+  and paths outside the data directory are refused. The audit log is reported and
+  left alone — pruning it would mean giving up the append-only triggers.
+- `presence_preview.py --db PATH` enables the today page; the HUD footer links to it.
+- Smoke check asserts the page renders without script/form and that retention
+  removes only stale batches (now 14 checks).
+
 ### Added — Month 1, Week 4: tool routing and the daily summary
 
 - `claireai.routing`: deterministic (keyword, no model call) intent routing that

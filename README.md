@@ -39,6 +39,12 @@ Implemented and tested:
 - the **daily summary** (`claireai.summary`): Done / Failed or skipped / Still
   pending, built from the task log by plain code and saved to the `summaries`
   table and `<data-dir>/summaries/YYYY-MM-DD.md`, on demand or on a schedule;
+- a **read-only today page** (`claireai.today`): the summary and the day's tasks
+  served by the existing loopback server at `/today` — no JavaScript, no forms,
+  no buttons, SQLite opened `mode=ro` with a `default-src 'none'` CSP;
+- **retention** (`claireai.retention`): `--prune` plans the removal of old trash
+  batches and summaries, `--prune --apply` carries it out and logs the run. The
+  audit log is reported but never pruned; see below for why;
 - a **presence renderer v0**: a canvas 2D HUD (no npm, no WebGL dependency) served
   over loopback by the standard library, driven by the `PresenceEvent` stream;
 - `scripts/smoke.py`: an end-to-end check (database, model, tool loop, approval
@@ -155,15 +161,45 @@ day replaces that day's report in both places.
 ## Presence preview
 
 ```bash
-assistant/.venv/bin/python scripts/presence_preview.py --demo
+assistant/.venv/bin/python scripts/presence_preview.py --demo --db ./runtime-data/db/claireai.sqlite3
 # open http://127.0.0.1:8765/ — cycles idle → listening → thinking → tool_running
 #   → awaiting_approval → speaking, with mic/camera/screen/input indicators
+# http://127.0.0.1:8765/today — today's summary and task list, read-only
 ```
 
 Standard library only: the page is canvas 2D, capped at 30 fps, honours reduced
 motion, and the event stream is the same `PresenceEvent` contract the real UI
 will consume. The server is loopback-only, serves one static file plus read-only
 state, and has no way to invoke a tool.
+
+The `/today` page is the summary's first real consumer and the page the Tauri
+window will wrap. It is deliberately the least capable surface in the project:
+`mode=ro` SQLite, a strict CSP, no JavaScript, and no POST handler at all. There
+are **no approve/deny buttons** — approving a write over loopback HTTP needs a
+per-run token, POST-only routing and a nonce per request, or any local process
+could approve on the owner's behalf. That is a design task, not a page feature.
+
+## Retention
+
+```bash
+# What is older than 30 days? Prints the plan and deletes nothing.
+assistant/.venv/bin/python -m claireai.cli --prune
+
+# Remove it, and record the run in the audit log
+assistant/.venv/bin/python -m claireai.cli --prune --apply
+
+# A different window
+assistant/.venv/bin/python -m claireai.cli --prune --days 7 --apply
+```
+
+This prunes `trash/<stamp>/` batches and `summaries/` (files and rows). It
+refuses symlinked batches, folder names that are not timestamps, and any path
+outside the data directory.
+
+**The audit log is not pruned, on purpose.** `task_log` is append-only by
+database trigger; deleting rows would mean dropping those triggers, and that
+guarantee is worth more than a few kilobytes of text. The plan reports the log's
+row count and size instead, so the growth stays visible.
 
 ## Smoke check
 
@@ -172,11 +208,11 @@ assistant/.venv/bin/python scripts/smoke.py              # needs Ollama
 assistant/.venv/bin/python scripts/smoke.py --skip-model # no model needed
 ```
 
-Twelve checks in one run: settings, migrations, model reachability, a real chat
+Fourteen checks in one run: settings, migrations, model reachability, a real chat
 turn, the tool loop, routing narrowing the schema set, a refused write, the
-presence stream, the daily summary, and that the audit log really rejects
-UPDATE/DELETE. It uses `pathlib` and a temporary directory, so the same command
-works on Windows.
+presence stream, the daily summary, the read-only page, retention keeping recent
+batches, and that the audit log really rejects UPDATE/DELETE. It uses `pathlib`
+and a temporary directory, so the same command works on Windows.
 
 ## Planned: presence renderer and machine access
 

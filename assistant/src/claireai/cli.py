@@ -28,6 +28,12 @@ from claireai.brain import Brain, BrainError, Message, OllamaBrain
 from claireai.config import Settings
 from claireai.permissions import Sandbox
 from claireai.presence import PresenceStream
+from claireai.retention import (
+    DEFAULT_RETENTION_DAYS,
+    apply as apply_prune,
+    describe as describe_prune,
+    plan as plan_prune,
+)
 from claireai.scheduler import build_scheduler, next_run_label, run_once
 from claireai.storage import Database, TaskRepository, transaction
 from claireai.summary import DailySummary, SummaryError, parse_day, render_markdown
@@ -154,6 +160,31 @@ def _print_summary(summary: DailySummary, path: Path | None) -> None:
         print(f"saved: {path}")
 
 
+def _run_prune(args: argparse.Namespace, settings: Settings, conn: sqlite3.Connection) -> int:
+    """`--prune` shows what is old; `--prune --apply` removes it."""
+    from claireai.retention import RetentionError, human_size
+
+    try:
+        plan = plan_prune(conn=conn, data_dir=settings.resolved_data_dir, days=args.days)
+    except RetentionError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+
+    print(describe_prune(plan))
+    if not args.apply:
+        print("dry run: nothing was removed (add --apply to remove these items)")
+        return EXIT_OK
+
+    report = apply_prune(plan, conn=conn, data_dir=settings.resolved_data_dir, device=args.device)
+    print(f"removed {report.removed_count} item(s), freed {human_size(report.freed_bytes)}")
+    for error in report.errors:
+        print(f"  ! {error}", file=sys.stderr)
+    if report.errors:
+        print("the run was logged as failed; the items listed above were not removed", file=sys.stderr)
+        return EXIT_TASK_FAILED
+    return EXIT_OK
+
+
 def _run_summary(args: argparse.Namespace, settings: Settings, conn: sqlite3.Connection) -> int:
     """`--summary [DATE]` prints one day; `--summary-at HH:MM` waits for the job."""
     try:
@@ -253,10 +284,16 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
     if args.dry_run:
         print("dry run: tools will report what they would do, nothing will run")
 
-    # The daily summary needs no model, so it runs before the runtime is touched.
+    # The daily summary and retention need no model, so they run before the
+    # runtime is touched.
     if args.summary is not None or args.summary_at:
         try:
             return _run_summary(args, settings, conn)
+        finally:
+            conn.close()
+    if args.prune:
+        try:
+            return _run_prune(args, settings, conn)
         finally:
             conn.close()
 
@@ -361,6 +398,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--summary-at",
         metavar="HH:MM",
         help="run the summary job every day at this local time and stay in the foreground",
+    )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="show trash batches and summaries older than --days (dry run unless --apply)",
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_RETENTION_DAYS,
+        metavar="N",
+        help=f"retention window in days for --prune (default {DEFAULT_RETENTION_DAYS})",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="with --prune, actually remove the planned items and log the run",
     )
     return parser
 

@@ -45,6 +45,7 @@
       ul.indicators li.on { color: var(--ink); border-color: #34405c; }
       ul.indicators li.on .dot { background: #ff4d6d; box-shadow: 0 0 10px #ff4d6d; }
       footer { margin-top: 22px; font-size: 12px; color: var(--muted); }
+      footer a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
       code { color: #9fb3d9; }
       @media (prefers-reduced-motion: reduce) { canvas { transition: none; } }
     </style>
@@ -61,7 +62,7 @@
         <li data-key="screen"><span class="dot"></span>screen</li>
         <li data-key="input"><span class="dot"></span>input</li>
       </ul>
-      <footer>seq <span id="seq">0</span> · task <code id="task">—</code> · this view has no control over ClaireAI</footer>
+      <footer>seq <span id="seq">0</span> · task <code id="task">—</code> · this view has no control over ClaireAI · <a href="/today">today's log</a></footer>
     </main>
     <script>
       const COLORS = {
