@@ -36,7 +36,10 @@ TRACKED_PACKAGES = (
     "pytest",
 )
 
-EXPECTED_TABLES = {"tasks", "task_log", "summaries", "notes", "schema_migrations"}
+EXPECTED_TABLES = {
+    "tasks", "task_log", "summaries", "notes", "schema_migrations",
+    "conversations", "conversation_messages", "user_directives", "user_preferences",
+}
 
 OK = "ok"
 WARN = "warn"

@@ -32,7 +32,13 @@ from claireai.permissions import PermissionDenied, Sandbox, check_risk, requires
 from claireai.presence import PresenceStream
 from claireai.routing import Route, route as choose_route, schema_bytes
 from claireai.runtime_control import RuntimeControl
-from claireai.storage import TaskRepository, transaction
+from claireai.storage import (
+    ConversationRepository,
+    DirectiveRepository,
+    TaskRepository,
+    apply_preferences,
+    transaction,
+)
 from claireai.tools import ToolError, ToolRegistry, UnknownTool
 from claireai.tools.base import ToolContext
 from claireai.tools.browser import BrowserSession
@@ -128,8 +134,28 @@ def _clip(text: str, limit: int = MAX_TOOL_TEXT) -> str:
     return text[:limit] + f"\n[... truncated, {len(text) - limit} characters omitted]"
 
 
-def system_message(sandbox: Sandbox, owner_name: str = "Bikorimana Ange Tresor") -> Message:
-    prompt = SYSTEM_PROMPT.format(owner_name=owner_name)
+def system_message(
+    sandbox: Sandbox,
+    owner_name: str = "Bikorimana Ange Tresor",
+    *,
+    response_style: str = "balanced",
+    directives: Sequence[str] = (),
+) -> Message:
+    styles = {
+        "concise": "Prefer concise answers unless the owner asks for detail.",
+        "balanced": "Use a balanced level of detail for the request.",
+        "detailed": "Give well-structured detail and explain relevant steps.",
+        "playful": "Use a warm, playful tone when it fits; keep serious reports clear.",
+    }
+    prompt = SYSTEM_PROMPT.format(owner_name=owner_name) + " " + styles.get(
+        response_style, styles["balanced"]
+    )
+    if directives:
+        prompt += (
+            "\nOwner-authored preferences (apply only when compatible with the "
+            "tool permissions and safety rules above):\n"
+            + "\n".join(f"- {item}" for item in directives)[:4000]
+        )
     return Message(role="system", content=f"{prompt} Allowed folders: {sandbox.describe()}.")
 
 
@@ -146,10 +172,12 @@ async def run_task(
     device: str = "desktop",
     dry_run: bool = False,
     max_steps: int | None = None,
+    conversation_id: str | None = None,
 ) -> AgentOutcome:
     """Run one request to completion, logging every step."""
     from claireai.tools import default_registry  # local import keeps import graph flat
 
+    settings = apply_preferences(settings, conn)
     controls = RuntimeControl(settings.control_state_path)
     control_state = controls.read()
     if control_state["shutdown"]:
@@ -162,6 +190,7 @@ async def run_task(
 
     tasks = TaskRepository(conn)
     audit = AuditLog(conn)
+    conversations = ConversationRepository(conn)
 
     # Which tools the model is shown. A route never grants or removes
     # permission: validation and approval still run against the full registry,
@@ -170,7 +199,12 @@ async def run_task(
     schemas = plan.schemas(registry) if plan else registry.schemas()
 
     with transaction(conn):
+        if conversation_id is None:
+            conversation_id = conversations.create()
+        elif not conversations.exists(conversation_id):
+            raise ValueError("conversation does not exist")
         task = tasks.create(request=redact(request), kind="agent", device=device)
+        conversations.add_message(conversation_id, role="user", content=request, task_id=task.id)
     with transaction(conn):
         tasks.update_status(task.id, "planning")
     with transaction(conn):
@@ -211,10 +245,19 @@ async def run_task(
             context_note = f"\n\nWhat those folders contain right now:\n{listing}"
             verified = True
 
+    directives = [item["content"] for item in DirectiveRepository(conn).list(enabled_only=True)]
+    previous_messages = conversations.messages(conversation_id, limit=10)[:-1]
     messages: list[Message] = [
-        Message(role="system", content=system_message(sandbox, settings.owner_name).content + context_note),
+        system_message(
+            sandbox,
+            settings.owner_name,
+            response_style=settings.response_style,
+            directives=directives,
+        ),
+        *[Message(role=item.role, content=item.content) for item in previous_messages],
         Message(role="user", content=request),
     ]
+    messages[0] = Message(role="system", content=messages[0].content + context_note)
     steps: list[AgentStep] = []
     browser = BrowserSession() if "open_url" in registry else None
     started = time.perf_counter()
@@ -300,6 +343,12 @@ async def run_task(
                         },
                     )
                     tasks.update_status(task.id, "succeeded", current_step=len(steps))
+                    conversations.add_message(
+                        conversation_id,
+                        role="assistant",
+                        content=response.content.strip(),
+                        task_id=task.id,
+                    )
                 if presence:
                     presence.emit("idle", task_id=task.id)
                 return AgentOutcome(

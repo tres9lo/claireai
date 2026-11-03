@@ -7,6 +7,7 @@ directory is worse than one that refuses to start.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
     # model pinned at 0 emitted a malformed tool call on every single attempt.
     temperature: float = Field(default=0.8, ge=0.0, le=2.0)
     temperature_tools: float = Field(default=0.2, ge=0.0, le=2.0)
+    response_style: Literal["concise", "balanced", "detailed", "playful"] = "balanced"
 
     presence_mode: Literal["off", "auto", "2d", "webgl"] = "auto"
     presence_fps_cap: int = Field(default=30, ge=5, le=60)
@@ -68,6 +70,11 @@ class Settings(BaseSettings):
     # Machine access is deny-by-default, like the folder allow-list.
     allowed_capabilities: list[str] = Field(default_factory=list)
     camera_device: int = Field(default=0, ge=0)
+
+    # Offline voice output is opt-in; pitch/rate map to the local eSpeak voice.
+    voice_enabled: bool = False
+    voice_pitch: int = Field(default=50, ge=0, le=99)
+    voice_rate: int = Field(default=175, ge=80, le=450)
 
     # Development override. Production data belongs in the OS application-data
     # directory resolved by ``default_data_dir``.
@@ -140,3 +147,8 @@ class Settings(BaseSettings):
     def ensure_directories(self) -> None:
         for directory in (self.database_path.parent, self.log_dir):
             directory.mkdir(parents=True, exist_ok=True)
+            if os.name != "nt":
+                try:
+                    directory.chmod(0o700)
+                except OSError:
+                    pass

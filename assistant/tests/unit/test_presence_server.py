@@ -13,6 +13,8 @@ import pytest
 from claireai.presence import PresenceStream
 from claireai.presence_server import build_server
 from claireai.improvements import ImprovementLedger
+from claireai.brain import BrainHealth, BrainResponse
+from claireai.storage import ConversationRepository, Database, TaskRepository, transaction
 
 HTML = Path(__file__).resolve().parents[3] / "desktop" / "presence" / "index.html"
 
@@ -132,7 +134,13 @@ def data_server(tmp_path: Path):
     conn.close()
 
     stream = PresenceStream()
-    instance = build_server(stream, html_path=HTML, port=0, database_path=database.path)
+    instance = build_server(
+        stream,
+        html_path=HTML,
+        port=0,
+        database_path=database.path,
+        control_path=tmp_path / "data" / "runtime-control.json",
+    )
     thread = threading.Thread(target=instance.serve_forever, args=(0.05,), daemon=True)
     thread.start()
     try:
@@ -162,6 +170,107 @@ def test_today_cannot_write_to_the_database(data_server) -> None:  # noqa: ANN00
     _get(instance, "/today")
     _get(instance, "/today")
     assert path.stat().st_mtime_ns == before
+
+
+def test_local_ui_saves_directives_preferences_and_conversation_history(data_server) -> None:  # noqa: ANN001
+    path, instance = data_server
+    host, port = instance.server_address[:2]
+    origin = f"http://{host}:{port}"
+    connection = http.client.HTTPConnection(host, port, timeout=3)
+    headers = {"Origin": origin, "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"}
+    try:
+        connection.request(
+            "POST", "/api/directives",
+            body=json.dumps({"title": "Formatting", "content": "Use clear headings."}),
+            headers=headers,
+        )
+        response = connection.getresponse()
+        directives = json.loads(response.read())
+        assert response.status == 200 and directives[0]["content"] == "Use clear headings."
+
+        connection.request(
+            "POST", "/api/preferences",
+            body=json.dumps({"owner_name": "Ange", "response_style": "detailed", "voice_pitch": 66}),
+            headers=headers,
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 200
+
+        database = Database(path)
+        conn = database.connect()
+        try:
+            with transaction(conn):
+                conversation_id = ConversationRepository(conn).create()
+                task = TaskRepository(conn).create(request="redacted request", kind="chat")
+                ConversationRepository(conn).add_message(
+                    conversation_id, role="user", content="private local question", task_id=task.id
+                )
+                ConversationRepository(conn).add_message(
+                    conversation_id, role="assistant", content="private local answer", task_id=task.id
+                )
+        finally:
+            conn.close()
+
+        connection.request("GET", f"/api/conversations?id={conversation_id}")
+        response = connection.getresponse()
+        messages = json.loads(response.read())
+        assert response.status == 200
+        assert [row["content"] for row in messages] == ["private local question", "private local answer"]
+
+        connection.request(
+            "GET", "/api/preferences",
+            headers={"Origin": "http://attacker.invalid", "Sec-Fetch-Site": "cross-site"},
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 403
+    finally:
+        connection.close()
+
+
+def test_web_chat_uses_local_brain_and_persists_both_sides(data_server, monkeypatch) -> None:  # noqa: ANN001
+    path, instance = data_server
+    host, port = instance.server_address[:2]
+    origin = f"http://{host}:{port}"
+    observed = {}
+
+    class StubBrain:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            self.max_output_tokens = kwargs["max_output_tokens"]
+
+        async def health(self):
+            return BrainHealth(True, True, detail="test")
+
+        async def generate(self, messages, tools=None, *, temperature=None):  # noqa: ANN001
+            observed["messages"] = list(messages)
+            observed["temperature"] = temperature
+            return BrainResponse(content="local answer", model="test-scratch")
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr("claireai.presence_server.ScratchBrain", StubBrain)
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        connection.request(
+            "POST", "/api/chat", body=json.dumps({"message": "hello"}),
+            headers={"Origin": origin, "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"},
+        )
+        response = connection.getresponse()
+        result = json.loads(response.read())
+        assert response.status == 200
+        assert result["content"] == "local answer"
+        assert result["conversation_id"]
+        assert observed["messages"][-1].content == "hello"
+
+        connection.request("GET", f"/api/conversations?id={result['conversation_id']}")
+        response = connection.getresponse()
+        messages = json.loads(response.read())
+        assert [row["role"] for row in messages] == ["user", "assistant"]
+        assert [row["content"] for row in messages] == ["hello", "local answer"]
+    finally:
+        connection.close()
 
 
 def test_there_is_no_way_to_post_an_approval(data_server) -> None:  # noqa: ANN001

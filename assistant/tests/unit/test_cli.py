@@ -16,7 +16,7 @@ import pytest
 from claireai.approval import ApprovalRequest
 from claireai.audit import AuditLog
 from claireai.brain import BrainHealth, BrainResponse, BrainUnavailable, ToolCall
-from claireai.cli import CliApprovalBroker, _handle_turn, _read_input_or_stop, ask
+from claireai.cli import CliApprovalBroker, _handle_turn, _read_input_or_stop, _speak_answer, ask
 from claireai.runtime_control import RuntimeControl
 from claireai.config import Settings
 from claireai.storage import TaskRepository
@@ -80,6 +80,31 @@ async def test_successful_turn_creates_task_and_audit_row(
     assert entries[0].status == "done"
     assert entries[0].target == "stub-model"
     assert '"completion_tokens": 2' in (entries[0].detail or "")
+
+
+async def test_voice_audit_records_settings_without_storing_spoken_answer(
+    conn: sqlite3.Connection, settings: Settings, monkeypatch
+) -> None:
+    turn = await ask(settings=settings, conn=conn, brain=StubBrain(content="private answer"), question="hi")
+    monkeypatch.setattr(
+        "claireai.voice.speak_text",
+        lambda text, *, pitch, rate, should_stop: "eSpeak NG",
+    )
+
+    _speak_answer(
+        args=Namespace(device="desktop", voice=True, voice_pitch=62, voice_rate=188),
+        settings=settings,
+        conn=conn,
+        task_id=turn.task_id,
+        text=turn.content,
+    )
+
+    entries = AuditLog(conn).for_task(turn.task_id)
+    voice_entry = entries[-1]
+    assert voice_entry.action == "voice.output" and voice_entry.status == "done"
+    assert voice_entry.target == "eSpeak NG"
+    assert "private answer" not in (voice_entry.detail or "")
+    assert '"pitch": 62' in (voice_entry.detail or "")
 
 
 async def test_turn_sends_system_prompt_then_question(

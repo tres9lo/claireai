@@ -121,6 +121,16 @@ non-interactive shells are refused by design.
 
 ## Presence HUD preview
 
+Optional speech output uses the host's eSpeak NG package and an installed audio
+player. On Ubuntu-based systems, one-time install:
+
+```bash
+sudo apt install espeak-ng pulseaudio-utils
+```
+
+Then enable speech, adjust pitch/rate, and use Preview from the HUD settings.
+If eSpeak NG is missing, the UI reports that speech is unavailable.
+
 ```bash
 assistant/.venv/bin/python scripts/presence_preview.py --demo
 # then open http://127.0.0.1:8765/

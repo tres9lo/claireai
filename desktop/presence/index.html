@@ -56,6 +56,19 @@
       .control-row button.danger { border-color: #a23d4c; background: #351720; }
       .control-row button:disabled { opacity: .5; cursor: wait; }
       #control-status { min-height: 1.5em; color: var(--muted); }
+      .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+      .field { display: grid; gap: 5px; margin: 8px 0; }
+      .field label { color: var(--muted); font-size: 12px; }
+      .field input, .field select, .field textarea { width: 100%; border: 1px solid #34405c; border-radius: 8px; background: #080d16; color: var(--ink); padding: 9px 10px; font: inherit; }
+      .field textarea { min-height: 78px; resize: vertical; }
+      .check-field { display: flex; gap: 9px; align-items: center; margin: 12px 0; }
+      .check-field input { accent-color: #4f8cff; }
+      .wide { grid-column: 1 / -1; }
+      .list-row { border-top: 1px solid var(--line); padding: 10px 0; text-align: left; }
+      .list-row button { min-height: 36px; border: 1px solid #465673; border-radius: 7px; background: #172238; color: var(--ink); padding: 5px 10px; cursor: pointer; margin: 6px 6px 0 0; }
+      .history-layout { display: grid; grid-template-columns: minmax(150px, .7fr) 1.3fr; gap: 14px; }
+      #conversation-list, #conversation-view, #directive-list { max-height: 360px; overflow: auto; }
+      #conversation-view { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 8px; background: #080d16; padding: 12px; text-align: left; }
       #improvement-log { list-style: none; padding: 0; margin: 8px 0; text-align: left; }
       #improvement-log li { border-top: 1px solid var(--line); padding: 10px 0; }
       #improvement-log button { margin: 8px 6px 0 0; min-height: 36px; border: 1px solid #465673; border-radius: 7px; background: #172238; color: var(--ink); padding: 5px 10px; cursor: pointer; }
@@ -75,6 +88,53 @@
         <li data-key="screen"><span class="dot"></span>screen</li>
         <li data-key="input"><span class="dot"></span>input</li>
       </ul>
+      <section class="controls" aria-labelledby="customization-title">
+        <h2 id="customization-title">ClaireAI customization</h2>
+        <p>These preferences and directives are stored in the local ClaireAI database and apply to future turns.</p>
+        <form id="preferences-form">
+          <div class="form-grid">
+            <div class="field"><label for="owner-name">Your name</label><input id="owner-name" maxlength="100" /></div>
+            <div class="field"><label for="response-style">Response style</label><select id="response-style"><option value="concise">Concise</option><option value="balanced">Balanced</option><option value="detailed">Detailed</option><option value="playful">Playful</option></select></div>
+            <div class="field"><label for="temperature">Response variation (0–2)</label><input id="temperature" type="number" min="0" max="2" step="0.1" /></div>
+            <div class="field"><label for="temperature-tools">Tool choice variation (0–2)</label><input id="temperature-tools" type="number" min="0" max="2" step="0.1" /></div>
+            <div class="field"><label for="max-output-tokens">Maximum response tokens (8–1024)</label><input id="max-output-tokens" type="number" min="8" max="1024" step="1" /></div>
+            <div class="field"><label for="agent-max-steps">Maximum tool steps (1–24)</label><input id="agent-max-steps" type="number" min="1" max="24" step="1" /></div>
+            <div class="field"><label for="tool-routing">Tool routing</label><select id="tool-routing"><option value="auto">Automatic (narrow tool list)</option><option value="off">All available tools</option></select></div>
+            <div class="field wide"><label for="allowed-folders">Allowed folders (one absolute path per line)</label><textarea id="allowed-folders" spellcheck="false"></textarea></div>
+          </div>
+          <div class="check-field"><input id="voice-enabled" type="checkbox" /><label for="voice-enabled">Speak ClaireAI's answers with offline voice</label></div>
+          <div class="form-grid">
+            <div class="field"><label for="voice-pitch">Voice pitch: <output id="pitch-value">50</output></label><input id="voice-pitch" type="range" min="0" max="99" /></div>
+            <div class="field"><label for="voice-rate">Voice rate: <output id="rate-value">175</output> words/min</label><input id="voice-rate" type="range" min="80" max="450" /></div>
+          </div>
+          <button type="submit">Save customization</button>
+          <button id="voice-preview" type="button">Preview voice</button>
+        </form>
+        <p id="preferences-status" role="status" aria-live="polite">Loading preferences…</p>
+      </section>
+      <section class="controls" aria-labelledby="directives-title">
+        <h2 id="directives-title">Owner directives</h2>
+        <p>ClaireAI will use enabled directives as preferences. Tool permissions and approval rules still apply.</p>
+        <form id="directive-form">
+          <input id="directive-id" type="hidden" />
+          <div class="field"><label for="directive-title">Title</label><input id="directive-title" maxlength="120" required /></div>
+          <div class="field"><label for="directive-content">Directive</label><textarea id="directive-content" maxlength="4000" required placeholder="For example: Use metric units and organize reports with headings."></textarea></div>
+          <div class="check-field"><input id="directive-enabled" type="checkbox" checked /><label for="directive-enabled">Enabled</label></div>
+          <button type="submit">Save directive</button><button id="directive-new" type="button">New directive</button>
+        </form>
+        <div id="directive-list" aria-live="polite">Loading directives…</div>
+        <p id="directives-status" role="status" aria-live="polite"></p>
+      </section>
+      <section class="controls" aria-labelledby="history-title">
+        <h2 id="history-title">Local conversation history</h2>
+        <p>Conversation text stays in ClaireAI's local database. This UI chat uses the local text model; computer actions still use the separately gated agent flow.</p>
+        <div class="field"><label for="chat-message">Message ClaireAI</label><textarea id="chat-message" maxlength="6000" placeholder="Ask ClaireAI something…"></textarea></div>
+        <button id="chat-send" type="button">Send message</button><button id="new-conversation" type="button">New conversation</button>
+        <p id="chat-status" role="status" aria-live="polite"></p>
+        <p>Select a conversation to continue it, review its messages, or delete it.</p>
+        <div class="history-layout"><div id="conversation-list" aria-live="polite">Loading history…</div><div id="conversation-view">Select a conversation.</div></div>
+        <p id="history-status" role="status" aria-live="polite"></p>
+      </section>
       <section class="controls" aria-labelledby="controls-title">
         <h2 id="controls-title">Runtime controls</h2>
         <p>Controls apply to ClaireAI using this local data directory. The local control panel stays available while the assistant is stopped.</p>
@@ -119,6 +179,17 @@
       const improvementToggle = document.getElementById("improvement-toggle");
       const improvementState = document.getElementById("improvement-state");
       const improvementLog = document.getElementById("improvement-log");
+      const preferencesForm = document.getElementById("preferences-form");
+      const preferencesStatus = document.getElementById("preferences-status");
+      const directiveForm = document.getElementById("directive-form");
+      const directiveList = document.getElementById("directive-list");
+      const directivesStatus = document.getElementById("directives-status");
+      const conversationList = document.getElementById("conversation-list");
+      const conversationView = document.getElementById("conversation-view");
+      const historyStatus = document.getElementById("history-status");
+      const chatMessage = document.getElementById("chat-message");
+      const chatStatus = document.getElementById("chat-status");
+      let activeConversationId = null;
       let controls = { shutdown: false, browser: false, self_improvement: false };
 
       let current = { state: "idle", taskId: null, detail: {}, active: {}, seq: 0 };
@@ -284,6 +355,168 @@
         row.append(button);
       }
 
+      async function api(path, method = "GET", body = undefined) {
+        const options = { method, cache: "no-store", headers: {} };
+        if (body !== undefined) {
+          options.headers["Content-Type"] = "application/json";
+          options.body = JSON.stringify(body);
+        }
+        const response = await fetch(path, options);
+        if (!response.ok) throw new Error((await response.text()).slice(0, 300));
+        return response.json();
+      }
+
+      async function loadPreferences() {
+        try {
+          const values = await api("/api/preferences");
+          document.getElementById("owner-name").value = values.owner_name ?? "";
+          document.getElementById("response-style").value = values.response_style ?? "balanced";
+          document.getElementById("temperature").value = values.temperature ?? 0.8;
+          document.getElementById("temperature-tools").value = values.temperature_tools ?? 0.2;
+          document.getElementById("max-output-tokens").value = values.max_output_tokens ?? 128;
+          document.getElementById("agent-max-steps").value = values.agent_max_steps ?? 8;
+          document.getElementById("tool-routing").value = values.tool_routing ?? "auto";
+          document.getElementById("allowed-folders").value = (values.allowed_folders ?? []).join("\n");
+          document.getElementById("voice-enabled").checked = Boolean(values.voice_enabled);
+          document.getElementById("voice-pitch").value = values.voice_pitch ?? 50;
+          document.getElementById("voice-rate").value = values.voice_rate ?? 175;
+          document.getElementById("pitch-value").value = values.voice_pitch ?? 50;
+          document.getElementById("rate-value").value = values.voice_rate ?? 175;
+          preferencesStatus.textContent = "Loaded from the local ClaireAI database. Changes apply to future turns.";
+        } catch (error) { preferencesStatus.textContent = `Could not load preferences: ${error.message}`; }
+      }
+
+      preferencesForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        preferencesStatus.textContent = "Saving locally…";
+        const folders = document.getElementById("allowed-folders").value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
+        const body = {
+          owner_name: document.getElementById("owner-name").value,
+          response_style: document.getElementById("response-style").value,
+          temperature: Number(document.getElementById("temperature").value),
+          temperature_tools: Number(document.getElementById("temperature-tools").value),
+          max_output_tokens: Number(document.getElementById("max-output-tokens").value),
+          agent_max_steps: Number(document.getElementById("agent-max-steps").value),
+          tool_routing: document.getElementById("tool-routing").value,
+          allowed_folders: folders,
+          voice_enabled: document.getElementById("voice-enabled").checked,
+          voice_pitch: Number(document.getElementById("voice-pitch").value),
+          voice_rate: Number(document.getElementById("voice-rate").value),
+        };
+        try { await api("/api/preferences", "POST", body); preferencesStatus.textContent = "Saved locally. Future turns will use these settings."; }
+        catch (error) { preferencesStatus.textContent = `Could not save preferences: ${error.message}`; }
+      });
+
+      document.getElementById("voice-pitch").addEventListener("input", (event) => document.getElementById("pitch-value").value = event.target.value);
+      document.getElementById("voice-rate").addEventListener("input", (event) => document.getElementById("rate-value").value = event.target.value);
+      document.getElementById("voice-preview").addEventListener("click", async () => {
+        preferencesStatus.textContent = "Speaking a local voice preview…";
+        try { const result = await api("/api/voice-preview", "POST", { preview: true }); preferencesStatus.textContent = `Preview spoken with ${result.engine}.`; }
+        catch (error) { preferencesStatus.textContent = `Voice preview unavailable: ${error.message}`; }
+      });
+
+      function resetDirectiveForm() {
+        document.getElementById("directive-id").value = "";
+        document.getElementById("directive-title").value = "";
+        document.getElementById("directive-content").value = "";
+        document.getElementById("directive-enabled").checked = true;
+      }
+      document.getElementById("directive-new").addEventListener("click", resetDirectiveForm);
+      async function loadDirectives() {
+        try {
+          const entries = await api("/api/directives");
+          directiveList.replaceChildren();
+          if (!entries.length) { directiveList.textContent = "No owner directives saved."; return; }
+          for (const entry of entries) {
+            const row = document.createElement("div"); row.className = "list-row";
+            const title = document.createElement("strong"); title.textContent = `${entry.title} · ${entry.enabled ? "enabled" : "disabled"}`; row.append(title);
+            const content = document.createElement("p"); content.textContent = entry.content; row.append(content);
+            const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "Edit";
+            edit.addEventListener("click", () => {
+              document.getElementById("directive-id").value = entry.id;
+              document.getElementById("directive-title").value = entry.title;
+              document.getElementById("directive-content").value = entry.content;
+              document.getElementById("directive-enabled").checked = entry.enabled;
+              document.getElementById("directive-title").focus();
+            }); row.append(edit);
+            const toggle = document.createElement("button"); toggle.type = "button"; toggle.textContent = entry.enabled ? "Disable" : "Enable";
+            toggle.addEventListener("click", async () => {
+              try { await api("/api/directives", "POST", { id: entry.id, title: entry.title, content: entry.content, enabled: !entry.enabled }); await loadDirectives(); directivesStatus.textContent = "Directive updated."; }
+              catch (error) { directivesStatus.textContent = `Could not update directive: ${error.message}`; }
+            }); row.append(toggle);
+            const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Delete";
+            remove.addEventListener("click", async () => {
+              if (!window.confirm(`Delete directive “${entry.title}”?`)) return;
+              try { await api("/api/directives", "POST", { action: "delete", id: entry.id }); await loadDirectives(); directivesStatus.textContent = "Directive deleted."; }
+              catch (error) { directivesStatus.textContent = `Could not delete directive: ${error.message}`; }
+            }); row.append(remove); directiveList.append(row);
+          }
+        } catch (error) { directiveList.textContent = `Directives unavailable: ${error.message}`; }
+      }
+      directiveForm.addEventListener("submit", async (event) => {
+        event.preventDefault(); directivesStatus.textContent = "Saving directive…";
+        const id = document.getElementById("directive-id").value;
+        const body = { title: document.getElementById("directive-title").value, content: document.getElementById("directive-content").value, enabled: document.getElementById("directive-enabled").checked };
+        if (id) body.id = id;
+        try { await api("/api/directives", "POST", body); resetDirectiveForm(); await loadDirectives(); directivesStatus.textContent = "Directive saved locally."; }
+        catch (error) { directivesStatus.textContent = `Could not save directive: ${error.message}`; }
+      });
+
+      async function showConversation(id) {
+        try {
+          activeConversationId = id;
+          const messages = await api(`/api/conversations?id=${encodeURIComponent(id)}`);
+          conversationView.replaceChildren();
+          for (const message of messages) {
+            const block = document.createElement("p");
+            const role = document.createElement("strong"); role.textContent = `${message.role}: `; block.append(role);
+            block.append(document.createTextNode(message.content)); conversationView.append(block);
+          }
+          historyStatus.textContent = `Showing ${messages.length} locally stored messages.`;
+        } catch (error) { historyStatus.textContent = `Could not load conversation: ${error.message}`; }
+      }
+      document.getElementById("new-conversation").addEventListener("click", () => {
+        activeConversationId = null;
+        conversationView.textContent = "New local conversation. Send a message to begin.";
+        chatMessage.focus();
+      });
+      document.getElementById("chat-send").addEventListener("click", async () => {
+        const message = chatMessage.value.trim();
+        if (!message) { chatStatus.textContent = "Enter a message first."; return; }
+        chatStatus.textContent = "ClaireAI is thinking…";
+        document.getElementById("chat-send").disabled = true;
+        try {
+          const result = await api("/api/chat", "POST", { message, conversation_id: activeConversationId });
+          activeConversationId = result.conversation_id;
+          chatMessage.value = "";
+          await showConversation(activeConversationId);
+          await loadConversations();
+          chatStatus.textContent = `Answered with ${result.model}; saved locally.`;
+        } catch (error) { chatStatus.textContent = `Chat unavailable: ${error.message}`; }
+        finally { document.getElementById("chat-send").disabled = false; }
+      });
+      chatMessage.addEventListener("keydown", (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") document.getElementById("chat-send").click();
+      });
+      async function loadConversations() {
+        try {
+          const entries = await api("/api/conversations");
+          conversationList.replaceChildren();
+          if (!entries.length) { conversationList.textContent = "No conversations stored yet."; return; }
+          for (const entry of entries) {
+            const row = document.createElement("div"); row.className = "list-row";
+            const view = document.createElement("button"); view.type = "button"; view.textContent = entry.title || "Conversation";
+            view.addEventListener("click", () => showConversation(entry.id)); row.append(view);
+            const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Delete";
+            remove.addEventListener("click", async () => {
+              if (!window.confirm("Delete this conversation and its locally stored messages?")) return;
+              try { await api("/api/conversations", "POST", { id: entry.id }); conversationView.textContent = "Select a conversation."; await loadConversations(); historyStatus.textContent = "Conversation deleted from local storage."; }
+              catch (error) { historyStatus.textContent = `Could not delete conversation: ${error.message}`; }
+            }); row.append(remove); conversationList.append(row);
+          }
+        } catch (error) { conversationList.textContent = `Conversation history unavailable: ${error.message}`; }
+      }
+
       browserToggle.addEventListener("click", () => {
         const enable = !controls.browser;
         if (enable && !window.confirm("Allow ClaireAI to make browser requests? Each browser action still needs approval.")) return;
@@ -301,6 +534,9 @@
       });
       loadControls();
       loadImprovements();
+      loadPreferences();
+      loadDirectives();
+      loadConversations();
       setInterval(loadImprovements, 10000);
       connect();
     </script>

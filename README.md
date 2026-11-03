@@ -43,10 +43,12 @@ The result is an assistant you can actually point at real folders, because the b
 | Presence HUD (canvas 2D, loopback preview) | ✅ |
 | Browser tools, disabled until enabled in the local control panel | ✅ |
 | Runtime stop switch and browser access control panel | ✅ first version |
+| Local web chat, stored conversation history, owner directives and UI preferences | ✅ first version |
+| Optional offline speech output with UI pitch/rate controls | ✅ eSpeak NG required |
 | OS family detection (Linux/Windows first targets) | ✅ detection only |
 | Reproducible MIT synthetic task corpus + split-aware text training | ✅ starter data |
 | Random-init visual-grounding prototype using attributed online synthetic images | 🧪 research only; not integrated |
-| Licensed corpus, trained capable assistant, TTS voice controls | 🚧 not included yet |
+| Capable scratch-trained assistant; speech recognition and custom trained voice | 🚧 not included yet |
 | FastAPI service · Playwright engine · Tauri desktop shell | 🚧 planned |
 | Camera, screen, cursor and keyboard control | 🚧 specified, not built |
 
@@ -89,7 +91,7 @@ This is the part worth reviewing before you run it.
 - **Writes ask first.** The exact tool, arguments and target are printed, and only an explicit `y`/`yes` approves. Piping input into the CLI cannot approve anything — a non-interactive run refuses and says why.
 - **The audit log is append-only at the database level.** Triggers reject `UPDATE` and `DELETE`; retention reports the log instead of pruning it.
 - **Nothing is deleted permanently.** `move_to_trash` relocates into ClaireAI's own recoverable bin.
-- **Secrets are redacted and long text truncated** before storage.
+- **Task and audit logs redact secrets.** Full user and assistant messages are retained verbatim in the local conversation database so ClaireAI can show history and continue chats. The owner can review or delete conversations from the UI; the database is owner-readable only on POSIX systems.
 - **Inference is local.** ClaireAI loads its own checkpoint and does not call a hosted model API.
 - **Capabilities are opt-in.** Browser access starts disabled. The local HUD can enable it; browser actions still use the existing approval path. Stop ends model generation between tokens, lets a current bounded tool action finish, prevents subsequent model/tool calls, and exits the interactive CLI even while it is waiting for input. The HUD remains available; after allowing the runtime again, start ClaireAI from the CLI.
 
@@ -109,10 +111,15 @@ uv pip install --python assistant/.venv/bin/python --index-url https://download.
 uv pip install --python assistant/.venv/bin/python -e "assistant[dev,model]"
 uv pip install --python assistant/.venv/bin/python -e ./brain-lab
 
+# Optional offline speech output (OS package, not bundled with ClaireAI)
+sudo apt install espeak-ng pulseaudio-utils
+
 # 2. Train on the included synthetic starter corpus (pipeline demo, not enough
 #    data for useful capability). Add licensed corpora for serious experiments.
 export CLAIREAI_DATA_DIR=./runtime-data
 assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text --steps 1000
+# Start the local UI/control panel (local chat, history, preferences, directives)
+assistant/.venv/bin/python scripts/presence_preview.py
 
 # 3. Ask one question; the turn is logged to SQLite
 CLAIREAI_DATA_DIR=./runtime-data \

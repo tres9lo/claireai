@@ -9,7 +9,10 @@ import pytest
 from claireai.storage import Database, MigrationError
 from claireai.storage.database import MIGRATIONS_DIR, split_statements
 
-EXPECTED_TABLES = {"tasks", "task_log", "summaries", "notes", "schema_migrations"}
+EXPECTED_TABLES = {
+    "tasks", "task_log", "summaries", "notes", "schema_migrations",
+    "conversations", "conversation_messages", "user_directives", "user_preferences",
+}
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
@@ -22,7 +25,7 @@ def test_migration_creates_expected_tables(database: Database) -> None:
     try:
         assert EXPECTED_TABLES <= _table_names(conn)
         applied = conn.execute("SELECT version FROM schema_migrations").fetchall()
-        assert [row["version"] for row in applied] == ["0001_initial"]
+        assert [row["version"] for row in applied] == ["0001_initial", "0002_conversations_directives_preferences"]
     finally:
         conn.close()
 

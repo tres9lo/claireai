@@ -12,11 +12,20 @@ initialized randomly and must be trained on owner-supplied data. Its tokenizer
 and checkpoint inherit the licences and permitted uses of that training data;
 track each source in `brain-lab/data/manifests/`.
 
-## Speech and wake word (Phase 2)
+## Optional speech output
 
-Not yet selected. faster-whisper model weights, Piper voices and any
-openWakeWord or custom "Hey Claire" model each need their own entry here before
-use, including whether redistribution is permitted.
+ClaireAI can call a separately installed eSpeak NG executable for offline text
+to speech. This repository does not bundle its executable or voice data, so the
+version is the host package version rather than a pinned dependency. Upstream
+identifies GPL-3.0 among the project licences. The app sends text through stdin
+and receives WAV data through stdout before passing it to the system audio
+player. See the [upstream project](https://github.com/espeak-ng/espeak-ng) and
+[command-line documentation](https://github.com/espeak-ng/espeak-ng/blob/master/src/espeak-ng.1.ronn).
+
+If eSpeak NG or a compatible system audio player is absent, speech preview
+reports that condition; text chat remains available. This is basic synthetic
+speech, not a custom-trained voice. Speech recognition and wake-word support
+remain unselected.
 
 ## Training data (`brain-lab/`)
 

@@ -46,6 +46,7 @@ constraints rather than cosmetics.
 | --- | --- | --- |
 | `config/settings.py` | Validated `CLAIREAI_*` configuration, loopback enforcement, path resolution | Read the network, create files |
 | `storage/database.py` | SQLite connection, `BEGIN IMMEDIATE` transactions, checksummed migration runner | Know about tasks or tools |
+| `storage/user_data.py` | Local conversation history, owner directives and editable UI preferences | Send stored content over the network or grant tools |
 | `storage/tasks.py` | Task rows and the explicit status state machine | Run anything |
 | `audit/audit_log.py` | Append-only `task_log` writes, redacted detail | Update or delete (triggers reject it) |
 | `audit/redaction.py` | Pattern-based secret redaction, length truncation | Guarantee that no secret is ever stored |
@@ -59,7 +60,7 @@ constraints rather than cosmetics.
 | `agent.py` | The loop: validate, authorize, run, log, feed back | Trust model output |
 | `routing.py` | Narrow the tool set per request (deterministic, no model call) | Remove the fallback to all tools |
 | `presence.py` | `PresenceEvent` stream (idle, thinking, tool_running, …) | Hold any capability |
-| `presence_server.py` | Loopback stdlib HTTP server: `/state`, `/events` (SSE), the static HUD and the generated `/today` page | Invoke a tool, accept a POST, or write anything |
+| `presence_server.py` | Loopback stdlib HTTP server: state/events, HUD, read-only `/today`, same-origin local chat/history/directive/preference APIs and gated controls | Let web chat invoke tools or accept cross-origin writes |
 | `today.py` | The read-only page: summary plus the day's tasks, fully escaped, `mode=ro` | Act, approve, or render stored strings as HTML |
 | `retention.py` | Plans and applies removal of old trash batches and summaries | Delete inside the audit log, or outside the data dir |
 | `summary.py` | Daily report from `tasks` + `task_log`, saved to `summaries` and markdown | Invent an event |
@@ -99,7 +100,7 @@ risks, including the open camera/screen/cursor scope),
 
 ## Data model
 
-`0001_initial.sql` is the only migration so far.
+`0001_initial.sql` creates the task/audit schema; `0002_conversations_directives_preferences.sql` adds user-managed local data.
 
 - `tasks` — one row per request: `id`, timestamps, `device`, `actor`, `kind`,
   sanitized `request`, `status` (constrained), `current_step`, `error`.
@@ -109,6 +110,8 @@ risks, including the open camera/screen/cursor scope),
   allowed.
 - `summaries` — `summary_date` (unique, `YYYY-MM-DD`), `content_md`.
 - `notes` — reserved; no code writes it yet.
+- `conversations`, `conversation_messages` — verbatim local user/assistant chat history; conversation messages are deletable from the UI and are not copied into the redacted audit log.
+- `user_directives`, `user_preferences` — owner-authored directives and UI settings used in later CLI agent turns and local chat.
 - `schema_migrations` — created by the runner: version, applied_at, checksum.
 
 The daily summary is derived from `tasks` + `task_log` alone. That is deliberate:

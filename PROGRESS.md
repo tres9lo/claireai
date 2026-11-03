@@ -1597,3 +1597,23 @@ in the summary is Months 2-3 by the roadmap's own plan.
 
 Schedule the nightly prune, then choose: build the window (needs the toolchain)
 or implement the page-approval design against the existing loopback server.
+
+## 2026-11-03 — Local conversations and UI customization
+
+- Added SQLite-backed conversation history, editable owner directives, and UI
+  preferences. New chat turns are stored verbatim locally and can be reviewed or
+  deleted in the HUD; enabled directives and preferences also apply to future
+  CLI agent turns. Existing audit/task logs continue to redact their text.
+- Added a local HUD chat endpoint. It supports text conversation and history but
+  does not invoke tools; tool-enabled tasks remain on the separately gated agent
+  path. Same-origin checks protect local API writes.
+- Added optional offline eSpeak NG speech output with enable, pitch, rate, and
+  preview controls in the UI. No voice executable or audio assets are bundled;
+  the current machine does not have eSpeak NG installed, so actual playback
+  remains unverified here. Its upstream identifies GPL-3.0 among project
+  licences; installation and source are documented in
+  `docs/model-and-data-licenses.md`.
+- POSIX storage requests private directory/file modes. Conversation history is
+  available only for turns created after this feature; earlier prompts were not
+  stored as full transcripts. Details and retention boundaries are in
+  `docs/architecture/local-conversations.md`.

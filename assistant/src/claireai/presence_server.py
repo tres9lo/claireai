@@ -27,12 +27,20 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from claireai.presence import STATES, PresenceStream, sse_frame
 from claireai.runtime_control import RuntimeControl
 from claireai.improvements import ImprovementError, ImprovementLedger
 from claireai.today import open_read_only, render_today, render_unavailable
+from claireai.config import Settings
+from claireai.brain import BrainError, BrainStopped, ScratchBrain
+from claireai.storage import (
+    ConversationRepository,
+    Database,
+    DirectiveRepository,
+    PreferenceRepository,
+)
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 POLL_SECONDS = 0.2
@@ -86,12 +94,23 @@ def _handler_factory(
                 ledger = ImprovementLedger(control_path.parent)
                 payload = json.dumps(ledger.list(), sort_keys=True).encode()
                 self._send(HTTPStatus.OK, "application/json", payload)
+            elif path.startswith("/api/"):
+                if not self._same_origin_api():
+                    self._send(HTTPStatus.FORBIDDEN, "text/plain; charset=utf-8", b"same-origin access required\n")
+                elif database_path is None:
+                    self._send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain; charset=utf-8", b"local database unavailable\n")
+                else:
+                    self._api_get(path, urlparse(self.path).query)
             else:
                 self._send(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n")
 
         def do_POST(self) -> None:  # noqa: N802
             request_path = urlparse(self.path).path
-            if request_path not in {"/control", "/improvements"} or control_path is None:
+            allowed_posts = {
+                "/control", "/improvements", "/api/directives",
+                "/api/preferences", "/api/conversations", "/api/voice-preview", "/api/chat",
+            }
+            if request_path not in allowed_posts or control_path is None:
                 self._send(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n")
                 return
             host = self.headers.get("Host", "")
@@ -106,14 +125,15 @@ def _handler_factory(
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 1 <= length <= 1024:
+                body_limit = 65536 if request_path.startswith("/api/") else 1024
+                if not 1 <= length <= body_limit:
                     raise ValueError("invalid body size")
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
                 if request_path == "/control":
                     result = RuntimeControl(control_path).update(body)
-                else:
+                elif request_path == "/improvements":
                     action = body.get("action")
                     candidate_id = body.get("id")
                     if not isinstance(candidate_id, str) or action not in {"approve", "reject", "promote"}:
@@ -125,10 +145,167 @@ def _handler_factory(
                     else:
                         ledger.decide(candidate_id, "approved" if action == "approve" else "rejected")
                     result = ledger.list()
-            except (ValueError, OSError, ImprovementError) as exc:
+                elif database_path is not None:
+                    result = self._api_post(request_path, body)
+                else:
+                    raise ValueError("local database unavailable")
+            except (ValueError, OSError, sqlite3.Error, ImprovementError) as exc:
                 self._send(HTTPStatus.BAD_REQUEST, "text/plain; charset=utf-8", str(exc).encode()[:512])
                 return
+            except BrainStopped as exc:
+                self._send(HTTPStatus.CONFLICT, "text/plain; charset=utf-8", str(exc).encode()[:512])
+                return
+            except BrainError as exc:
+                self._send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain; charset=utf-8", str(exc).encode()[:512])
+                return
             self._send(HTTPStatus.OK, "application/json", json.dumps(result, sort_keys=True).encode())
+
+        def _same_origin_api(self) -> bool:
+            host = self.headers.get("Host", "")
+            if not _is_loopback_host_header(host):
+                return False
+            origin = self.headers.get("Origin")
+            if origin is not None and origin != f"http://{host}":
+                return False
+            return self.headers.get("Sec-Fetch-Site", "same-origin") in {"same-origin", "none"}
+
+        def _api_get(self, path: str, query: str) -> None:
+            assert database_path is not None
+            conn = open_read_only(database_path)
+            if conn is None:
+                self._send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain; charset=utf-8", b"local database unavailable\n")
+                return
+            try:
+                if path == "/api/conversations":
+                    params = parse_qs(query)
+                    conversation_id = params.get("id", [None])[0]
+                    repository = ConversationRepository(conn)
+                    payload = (
+                        [message.__dict__ for message in repository.messages(conversation_id)]
+                        if conversation_id
+                        else repository.recent()
+                    )
+                elif path == "/api/directives":
+                    payload = DirectiveRepository(conn).list()
+                elif path == "/api/preferences":
+                    data_dir = control_path.parent if control_path is not None else Path(database_path).parent.parent
+                    payload = PreferenceRepository(conn).effective(Settings(data_dir=data_dir))
+                else:
+                    self._send(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n")
+                    return
+                self._send(HTTPStatus.OK, "application/json", json.dumps(payload, sort_keys=True).encode())
+            except ValueError as exc:
+                self._send(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", str(exc).encode()[:512])
+            finally:
+                conn.close()
+
+        def _api_post(self, path: str, body: dict[str, Any]) -> Any:
+            assert database_path is not None
+            database = Database(database_path)
+            conn = database.connect()
+            try:
+                if path == "/api/chat":
+                    message = body.get("message")
+                    conversation_id = body.get("conversation_id")
+                    if not isinstance(message, str) or not message.strip() or len(message) > 6000:
+                        raise ValueError("message must contain 1–6000 characters")
+                    if conversation_id is not None and not isinstance(conversation_id, str):
+                        raise ValueError("conversation id must be a string")
+                    data_dir = Path(control_path).parent if control_path is not None else Path(database_path).parent.parent
+                    if RuntimeControl(data_dir / "runtime-control.json").read()["shutdown"]:
+                        raise BrainStopped("ClaireAI is stopped in the local control panel.")
+                    settings = PreferenceRepository(conn).effective(Settings(data_dir=data_dir))
+                    settings = Settings(_env_file=None, data_dir=data_dir, **settings)
+                    brain = ScratchBrain(
+                        checkpoint=settings.resolved_model_checkpoint,
+                        max_output_tokens=settings.max_output_tokens,
+                        control_path=settings.control_state_path,
+                    )
+
+                    async def run_chat():
+                        health = await brain.health()
+                        if not health.available or not health.model_present:
+                            raise BrainError(health.detail or "local scratch model is unavailable")
+                        try:
+                            from claireai.cli import ask, _speak_answer
+                            turn = await ask(
+                                settings=settings,
+                                conn=conn,
+                                brain=brain,
+                                question=message.strip(),
+                                device="local-ui",
+                                conversation_id=conversation_id,
+                            )
+                            if settings.voice_enabled:
+                                from argparse import Namespace
+                                _speak_answer(
+                                    args=Namespace(device="local-ui", voice=None, voice_pitch=None, voice_rate=None),
+                                    settings=settings,
+                                    conn=conn,
+                                    task_id=turn.task_id,
+                                    text=turn.content,
+                                )
+                            return {
+                                "conversation_id": turn.conversation_id,
+                                "task_id": turn.task_id,
+                                "model": turn.model,
+                                "content": turn.content,
+                            }
+                        finally:
+                            await brain.aclose()
+
+                    import asyncio
+                    return asyncio.run(run_chat())
+                if path == "/api/preferences":
+                    return PreferenceRepository(conn).update(body)
+                if path == "/api/voice-preview":
+                    preferences = PreferenceRepository(conn).effective(
+                        Settings(data_dir=Path(database_path).parent.parent)
+                    )
+                    from claireai.voice import VoiceUnavailable, speak_text
+                    try:
+                        engine = speak_text(
+                            "Hello Ange. This is a local ClaireAI voice preview.",
+                            pitch=preferences["voice_pitch"],
+                            rate=preferences["voice_rate"],
+                        )
+                    except VoiceUnavailable as exc:
+                        raise ValueError(str(exc)) from exc
+                    return {"engine": engine, "previewed": True}
+                if path == "/api/directives":
+                    repository = DirectiveRepository(conn)
+                    action = body.get("action", "save")
+                    if action == "delete":
+                        directive_id = body.get("id")
+                        if not isinstance(directive_id, str) or not repository.delete(directive_id):
+                            raise ValueError("directive does not exist")
+                    elif action == "save":
+                        title, content = body.get("title"), body.get("content")
+                        if not isinstance(title, str) or not isinstance(content, str):
+                            raise ValueError("directive title and content are required")
+                        directive_id = body.get("id")
+                        if directive_id is not None and not isinstance(directive_id, str):
+                            raise ValueError("directive id must be a string")
+                        enabled = body.get("enabled", True)
+                        repository.save(
+                            directive_id=directive_id,
+                            title=title,
+                            content=content,
+                            enabled=enabled,
+                        )
+                    else:
+                        raise ValueError("directive action must be save or delete")
+                    return repository.list()
+                if path == "/api/conversations":
+                    conversation_id = body.get("id")
+                    if not isinstance(conversation_id, str):
+                        raise ValueError("conversation id is required")
+                    if not ConversationRepository(conn).delete(conversation_id):
+                        raise ValueError("conversation does not exist")
+                    return ConversationRepository(conn).recent()
+                raise ValueError("unsupported local API action")
+            finally:
+                conn.close()
 
         def _send(
             self,
@@ -267,12 +444,10 @@ def main(argv: list[str] | None = None) -> int:
     from claireai.config import Settings
 
     settings = Settings(data_dir=Path(args.data_dir).expanduser() if args.data_dir else None)
+    settings.ensure_directories()
+    database_path = Path(args.db).expanduser() if args.db else settings.database_path
+    Database(database_path).migrate()
     control_path = settings.control_state_path
-    if args.db:
-        database_path: Path | None = Path(args.db).expanduser()
-    else:
-        candidate = settings.database_path
-        database_path = candidate if candidate.exists() else None
 
     stream = PresenceStream()
     stop = threading.Event()

@@ -1,8 +1,8 @@
 # Threat model
 
 Scope: the ClaireAI desktop assistant on the owner's own machine — the agent
-loop, the tool registry, file access, the presence renderer, and the planned
-camera/screen/cursor capabilities. Updated 2026-10-31. Not yet in scope: the
+loop, the tool registry, file access, the presence renderer, local chat and the planned
+camera/screen/cursor capabilities. Updated 2026-11-03. Not yet in scope: the
 phone client, LAN sync, email/calendar, and packaging.
 
 This is a working document, not a claim of completeness. Every row says what is
@@ -45,10 +45,10 @@ Two rules hold the design together:
 | T3 | A cursor/keyboard action clicks something destructive | `dangerous` risk, per-action approval, dry run, step cap, kill switch, no permanent delete tool. | **Required when built** |
 | T4 | Approval is granted for one action but a different action runs | Approval request carries the validated arguments and target; the tool row stores the same `approval_ref`; validation happens *before* asking. Tests assert both rows share the reference. | **Implemented** |
 | T5 | A piped/automated run self-approves | `CliApprovalBroker` refuses when stdin is not a TTY; `DenyAll` is the default for any programmatic run; there is no "always approve" broker in the product. | **Implemented** |
-| T6 | Typed secrets or file contents end up in the log | `redact()` on request text, targets and details; tool results are previewed (160 chars) rather than stored whole; typed text is to be logged by key name only. | Partial (**implemented** for file tools; **required** for keyboard) |
+| T6 | Typed secrets or file contents end up in a log | Task/audit logs redact request text, targets and details; tool results are previewed rather than stored whole. Separately, chat messages are intentionally retained verbatim in local conversation tables for history and context; the owner can review/delete them in the UI. | Partial; transcript storage is explicit and local |
 | T7 | A malicious file name injects markup into the renderer | Renderer treats every label as text, never HTML; length caps; no remote assets. | **Implemented** in the v0 HUD (`textContent` only) |
-| T8 | The renderer or its HTTP server becomes a control path | Server serves one static file, one generated page and read-only state; no POST handler (every POST answers 501); binds loopback only and refuses a non-loopback host; no tool invocation path. The `/today` page opens SQLite with `mode=ro`, sends a `default-src 'none'` CSP, contains no JavaScript, no form and no button, and escapes every stored string. There are deliberately no approve/deny controls on it. | **Implemented** (tested) |
-| T9 | The presence server is exposed to the LAN | `build_server` raises unless the host is loopback; no CORS headers; no auth token (a loopback-only reviewer). | **Implemented** |
+| T8 | The renderer or its HTTP server becomes an unintended control path | `/today` remains read-only and opens SQLite with `mode=ro`. The HUD has same-origin JSON APIs for runtime/browser controls, chat history, directives, preferences and text-only chat. Chat does not invoke tools; computer tasks still use the separately gated agent path. API writes require loopback Host, same-origin checks and JSON; there are no CORS headers. UI renders stored text with `textContent`. | **Implemented** (tested) |
+| T9 | The presence server is exposed to the LAN or cross-origin writes are induced | `build_server` raises unless the host is loopback; JSON APIs verify loopback Host, Origin and Fetch Metadata and accept no cross-origin requests; no CORS headers. The same-user account remains the trust boundary. | **Implemented** |
 | T10 | An agent loops forever or burns the CPU | `agent_max_steps` (default 8) fails the task and logs `agent.step_limit`; step counter is explicit. An empty reply triggers **exactly one** further model attempt, gated on tokens actually having been generated and on the decoding not being pinned to temperature 0, and is logged as `agent.retry` — a retry that cannot succeed is refused rather than looped. | **Implemented** |
 | T11 | Symlink or a path trick escapes the allow-list | Every path is resolved (symlinks followed) then contained in a root; a link inside the allow-list pointing out is refused; relative names must match a root. | **Implemented** (security tests) |
 | T12 | TOCTOU: the path is swapped between check and write | Paths are resolved once and used; the window is small but real on a shared machine. No openat/O_NOFOLLOW equivalent yet. | **Accepted residual risk** |
@@ -91,7 +91,7 @@ Two rules hold the design together:
 - [x] The audit log rejects UPDATE and DELETE (checked by `scripts/smoke.py`).
 - [x] The generated page cannot write: SQLite is opened `mode=ro`, a write
       attempt raises, and the file's mtime is unchanged after repeated requests.
-- [x] No HTTP path grants a capability: POST to any path answers 501.
+- [x] Chat API stores and returns local conversation turns but does not invoke tools; cross-origin API requests are rejected.
 - [x] Retention deletes only what is old, keeps recent batches, and refuses
       symlinked or unrecognised trash folders.
 - [ ] Camera/screen indicators appear only while capture is active.
