@@ -77,7 +77,7 @@
       </ul>
       <section class="controls" aria-labelledby="controls-title">
         <h2 id="controls-title">Runtime controls</h2>
-        <p>Controls apply to ClaireAI using this local data directory.</p>
+        <p>Controls apply to ClaireAI using this local data directory. The local control panel stays available while the assistant is stopped.</p>
         <div class="control-row">
           <div><strong>Browser access</strong><br /><span id="browser-state">Off</span></div>
           <button id="browser-toggle" type="button" aria-pressed="false">Enable browser access</button>
@@ -199,8 +199,8 @@
         browserToggle.setAttribute("aria-pressed", String(controls.browser));
         browserToggle.textContent = controls.browser ? "Disable browser access" : "Enable browser access";
         browserState.textContent = controls.browser ? "Enabled · browser actions still need approval" : "Off";
-        runtimeState.textContent = controls.shutdown ? "Stopped · new model and tool steps are blocked" : "Running";
-        shutdownButton.textContent = controls.shutdown ? "Resume ClaireAI" : "Stop ClaireAI";
+        runtimeState.textContent = controls.shutdown ? "Stopped · active operation is ending" : "Allowed · start from CLI";
+        shutdownButton.textContent = controls.shutdown ? "Allow ClaireAI to run" : "Stop ClaireAI";
         shutdownButton.classList.toggle("danger", !controls.shutdown);
         improvementToggle.setAttribute("aria-pressed", String(controls.self_improvement));
         improvementToggle.textContent = controls.self_improvement ? "Disable self-improvement" : "Enable self-improvement";
@@ -212,7 +212,7 @@
           const response = await fetch("/control-state", { cache: "no-store" });
           if (!response.ok) throw new Error("control endpoint unavailable");
           renderControls(await response.json());
-          controlStatus.textContent = "Changes apply before the next model or tool step.";
+          controlStatus.textContent = "Stop takes effect between model tokens and before the next tool. A current approved tool operation may finish; restart from the CLI after allowing it again.";
         } catch (_) {
           controlStatus.textContent = "Controls unavailable. Start the local presence preview to enable them.";
           browserToggle.disabled = true;
@@ -291,7 +291,7 @@
       });
       shutdownButton.addEventListener("click", () => {
         const stop = !controls.shutdown;
-        if (stop && !window.confirm("Stop ClaireAI? It will finish its current model call, then block new model and tool steps.")) return;
+        if (stop && !window.confirm("Stop ClaireAI? Model generation stops at the next token. A current tool operation may finish; no later model or tool step will start.")) return;
         updateControls({ shutdown: stop });
       });
       improvementToggle.addEventListener("click", () => {

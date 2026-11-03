@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from claireai.brain.base import (
-    BrainHealth, BrainResponse, BrainResponseError, BrainUnavailable, Message, ToolCall,
+    BrainHealth, BrainResponse, BrainResponseError, BrainStopped, BrainUnavailable, Message, ToolCall,
 )
+from claireai.runtime_control import RuntimeControl
 
 
 class ScratchBrain:
@@ -18,13 +19,23 @@ class ScratchBrain:
     _tool_open = "<tool_call>"
     _tool_close = "</tool_call>"
 
-    def __init__(self, checkpoint: Path, *, max_output_tokens: int = 128) -> None:
+    def __init__(
+        self,
+        checkpoint: Path,
+        *,
+        max_output_tokens: int = 128,
+        control_path: Path | None = None,
+    ) -> None:
         self.checkpoint = Path(checkpoint).expanduser()
         self.max_output_tokens = max_output_tokens
+        self.control_path = Path(control_path) if control_path is not None else None
         self._model = None
         self._torch = None
         self._tokenizer = None
         self._manifest: dict[str, Any] = {}
+
+    def _stop_requested(self) -> bool:
+        return bool(self.control_path and RuntimeControl(self.control_path).read()["shutdown"])
 
     async def health(self) -> BrainHealth:
         if not self.checkpoint.is_file():
@@ -95,9 +106,12 @@ class ScratchBrain:
                 input_ids,
                 max_new_tokens=self.max_output_tokens,
                 temperature=0.0 if temperature is None else max(0.0, temperature),
+                should_stop=self._stop_requested if self.control_path else None,
             )[0].tolist()[len(tokens):]
         except (RuntimeError, ValueError) as exc:
             raise BrainResponseError(f"scratch model inference failed: {exc}") from exc
+        if self._stop_requested():
+            raise BrainStopped("ClaireAI was stopped from the local control panel.")
         output = self._tokenizer.decode(result).rstrip("\ufffd").strip()
         call = self._parse_tool_call(output)
         if call:

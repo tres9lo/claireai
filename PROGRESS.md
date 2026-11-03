@@ -1,5 +1,21 @@
 # Progress log
 
+## 2026-11-03 — Owner stop interrupts generation and exits the CLI
+
+- The HUD Stop control is now checked between autoregressive model tokens, so
+  an in-progress response is discarded at the next token boundary. The agent
+  still lets a currently running bounded tool operation finish, then refuses to
+  start another model or tool step.
+- A stop marks the current task `cancelled` and records a skipped audit entry.
+  The interactive CLI now exits when stopped, including while it is idle at the
+  input prompt; a stopped startup does not load the model. The loopback HUD stays
+  available to re-allow the runtime, after which the owner starts the CLI again.
+- Verification: focused agent/CLI/brain tests passed (56 tests); Python
+  compilation and `git diff --check` passed.
+- Limit: this stops the ClaireAI CLI runtime at safe boundaries; an already
+  executing tool operation is not forcibly interrupted, and the control/HUD
+  process remains available by design.
+
 ## 2026-11-03 — First locally authored and licensed computer-use corpus
 
 - Generated and committed 320 MIT-licensed synthetic examples: read-only tool

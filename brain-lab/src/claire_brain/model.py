@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 try:
     import torch
     from torch import nn
@@ -75,8 +77,20 @@ class ScratchTransformer(nn.Module):
         return logits, loss
 
     @torch.inference_mode()
-    def generate(self, tokens, *, max_new_tokens: int = 160, temperature: float = 0.8):
+    def generate(
+        self,
+        tokens,
+        *,
+        max_new_tokens: int = 160,
+        temperature: float = 0.8,
+        should_stop: Callable[[], bool] | None = None,
+    ):
         for _ in range(max_new_tokens):
+            # The owner stop flag is checked between autoregressive tokens. A
+            # tool already executing is allowed to finish its bounded operation;
+            # the agent checks the flag again before any later tool or model call.
+            if should_stop is not None and should_stop():
+                break
             logits, _ = self(tokens[:, -self.context:])
             next_logits = logits[:, -1, :]
             next_logits[:, PAD] = float("-inf")

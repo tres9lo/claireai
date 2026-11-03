@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from claireai.agent import AgentEmptyReply, AgentStepLimit, run_task, system_message
 from claireai.approval import ApprovalDecision
 from claireai.audit import AuditLog
-from claireai.brain import BrainResponse, BrainUnavailable, ToolCall
+from claireai.brain import BrainResponse, BrainStopped, BrainUnavailable, ToolCall
 from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox
 from claireai.presence import PresenceStream
@@ -98,6 +98,27 @@ def test_system_message_names_the_allowed_folders(downloads: Path) -> None:
     message = system_message(Sandbox(roots=(downloads,)))
     assert str(downloads) in message.content
     assert "approval" in message.content
+
+
+@pytest.mark.asyncio
+async def test_owner_stop_cancels_the_task_and_logs_it_as_skipped(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    brain = ScriptedBrain([BrainStopped("stopped by owner")])
+
+    with pytest.raises(BrainStopped, match="stopped by owner"):
+        await run_task(
+            settings=agent_settings,
+            conn=conn,
+            brain=brain,
+            request="List my files",
+        )
+
+    task = TaskRepository(conn).recent(1)[0]
+    assert task.status == "cancelled"
+    rows = AuditLog(conn).for_task(task.id)
+    assert rows[-1].action == "agent.run"
+    assert rows[-1].status == "skipped"
 
 
 def test_the_system_prompt_tells_the_model_to_check_paths_before_writing(

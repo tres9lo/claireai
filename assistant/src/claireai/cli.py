@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import queue
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -124,12 +126,13 @@ async def ask(
     except BrainError as exc:
         duration_ms = int((time.perf_counter() - started) * 1000)
         with transaction(conn):
-            tasks.update_status(task.id, "failed", error=str(exc))
+            stopped = isinstance(exc, BrainStopped)
+            tasks.update_status(task.id, "cancelled" if stopped else "failed", error=str(exc))
             audit.record(
                 task_id=task.id,
                 device=device,
                 action="brain.generate",
-                status="failed",
+                status="skipped" if stopped else "failed",
                 target=str(settings.resolved_model_checkpoint),
                 detail={"model": str(settings.resolved_model_checkpoint), "duration_ms": duration_ms, "error": str(exc)},
             )
@@ -223,6 +226,36 @@ def _print_log(conn: sqlite3.Connection, limit: int = 10) -> None:
         print(f"{entry.created_at}  {entry.status:<7} {entry.action:<16} task={task}  {entry.detail or ''}")
 
 
+def _read_input_or_stop(controls: RuntimeControl, prompt: str = "you> ") -> str | None:
+    """Wait for terminal input while letting the local stop button end the CLI.
+
+    ``input`` is blocking and cannot be interrupted portably. A daemon reader
+    lets the foreground loop poll the cross-process stop flag; on shutdown the
+    CLI returns and the abandoned input thread cannot keep the process alive.
+    """
+    result: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def read() -> None:
+        try:
+            result.put((True, input(prompt)))
+        except BaseException as exc:  # deliver terminal exceptions to the main thread
+            result.put((False, exc))
+
+    threading.Thread(target=read, name="claireai-terminal-input", daemon=True).start()
+    while True:
+        try:
+            succeeded, value = result.get(timeout=0.2)
+        except queue.Empty:
+            if controls.read()["shutdown"]:
+                return None
+            continue
+        if controls.read()["shutdown"]:
+            return None
+        if succeeded:
+            return str(value)
+        raise value  # type: ignore[misc]
+
+
 async def _handle_turn(
     *,
     args: argparse.Namespace,
@@ -236,6 +269,9 @@ async def _handle_turn(
     if args.no_tools:
         try:
             turn = await ask(settings=settings, conn=conn, brain=brain, question=question, device=args.device)
+        except BrainStopped:
+            print("ClaireAI stopped by the local control panel.")
+            return EXIT_OK
         except BrainError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return EXIT_RUNTIME
@@ -257,6 +293,9 @@ async def _handle_turn(
     except AgentError as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
         return EXIT_TASK_FAILED
+    except BrainStopped:
+        print("ClaireAI stopped by the local control panel.")
+        return EXIT_OK
     except BrainError as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
         return EXIT_RUNTIME
@@ -306,9 +345,15 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
         finally:
             conn.close()
 
+    if RuntimeControl(settings.control_state_path).read()["shutdown"]:
+        print("ClaireAI is stopped. Allow it to run from the local control panel.")
+        conn.close()
+        return EXIT_OK
+
     brain = ScratchBrain(
         checkpoint=settings.resolved_model_checkpoint,
         max_output_tokens=settings.max_output_tokens,
+        control_path=settings.control_state_path,
     )
     try:
         health = await brain.health()
@@ -335,10 +380,14 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
         print("ClaireAI ready. Commands: /log [n], /summary, /exit\n")
         while True:
             try:
-                question = input("you> ").strip()
+                question = _read_input_or_stop(RuntimeControl(settings.control_state_path))
             except (EOFError, KeyboardInterrupt):
                 print()
                 return EXIT_OK
+            if question is None:
+                print("ClaireAI stopped by the local control panel.")
+                return EXIT_OK
+            question = question.strip()
             if not question:
                 continue
             if question in {"/exit", "/quit"}:
@@ -360,6 +409,8 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
                 question=question,
                 database_path=database_path,
             )
+            if RuntimeControl(settings.control_state_path).read()["shutdown"]:
+                return EXIT_OK
     finally:
         await brain.aclose()
         conn.close()

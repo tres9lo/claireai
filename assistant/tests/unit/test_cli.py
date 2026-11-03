@@ -7,6 +7,7 @@ The brain is replaced so these tests assert the task/audit bookkeeping, not the
 from __future__ import annotations
 
 import sqlite3
+import threading
 from argparse import Namespace
 from pathlib import Path
 
@@ -15,9 +16,33 @@ import pytest
 from claireai.approval import ApprovalRequest
 from claireai.audit import AuditLog
 from claireai.brain import BrainHealth, BrainResponse, BrainUnavailable, ToolCall
-from claireai.cli import CliApprovalBroker, _handle_turn, ask
+from claireai.cli import CliApprovalBroker, _handle_turn, _read_input_or_stop, ask
+from claireai.runtime_control import RuntimeControl
 from claireai.config import Settings
 from claireai.storage import TaskRepository
+
+
+def test_stop_interrupts_an_idle_cli_input_wait(tmp_path: Path, monkeypatch) -> None:
+    controls = RuntimeControl(tmp_path / "runtime-control.json")
+    entered_input = threading.Event()
+    release_input = threading.Event()
+
+    def blocked_input(_prompt: str) -> str:
+        entered_input.set()
+        release_input.wait(timeout=2)
+        return "too late"
+
+    monkeypatch.setattr("builtins.input", blocked_input)
+
+    def stop_after_prompt() -> None:
+        assert entered_input.wait(timeout=1)
+        controls.update({"shutdown": True})
+
+    threading.Thread(target=stop_after_prompt, daemon=True).start()
+    try:
+        assert _read_input_or_stop(controls) is None
+    finally:
+        release_input.set()
 
 
 class StubBrain:

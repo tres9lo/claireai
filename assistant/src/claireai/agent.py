@@ -372,17 +372,21 @@ async def run_task(
 
     except BrainError as exc:
         with transaction(conn):
+            stopped = isinstance(exc, BrainStopped)
             audit.record(
                 task_id=task.id,
                 device=device,
                 action="agent.run",
-                status="failed",
+                status="skipped" if stopped else "failed",
                 target=None,
                 detail={"error": str(exc), "steps": len(steps)},
             )
-            tasks.update_status(task.id, "failed", error=str(exc))
+            tasks.update_status(task.id, "cancelled" if stopped else "failed", error=str(exc))
         if presence:
-            presence.emit("offline" if "reach" in str(exc).lower() else "error")
+            if stopped:
+                presence.emit("offline", detail={"label": "stopped by owner"})
+            else:
+                presence.emit("offline" if "reach" in str(exc).lower() else "error")
         raise
     finally:
         if browser is not None:

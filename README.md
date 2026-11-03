@@ -91,7 +91,7 @@ This is the part worth reviewing before you run it.
 - **Nothing is deleted permanently.** `move_to_trash` relocates into ClaireAI's own recoverable bin.
 - **Secrets are redacted and long text truncated** before storage.
 - **Inference is local.** ClaireAI loads its own checkpoint and does not call a hosted model API.
-- **Capabilities are opt-in.** Browser access starts disabled. The local HUD can enable it; browser actions still use the existing approval path. The stop control blocks new model/tool steps after the current model call finishes.
+- **Capabilities are opt-in.** Browser access starts disabled. The local HUD can enable it; browser actions still use the existing approval path. Stop ends model generation between tokens, lets a current bounded tool action finish, prevents subsequent model/tool calls, and exits the interactive CLI even while it is waiting for input. The HUD remains available; after allowing the runtime again, start ClaireAI from the CLI.
 
 Read [docs/architecture/threat-model.md](docs/architecture/threat-model.md) for the full boundary analysis.
 
