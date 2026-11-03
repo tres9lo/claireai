@@ -26,18 +26,24 @@ from typing import Any, Mapping, Sequence
 
 from claireai.approval import ApprovalBroker, ApprovalRequest, DenyAll, new_ref
 from claireai.audit import AuditLog, redact
-from claireai.brain import Brain, BrainError, BrainResponse, Message, ToolCall
+from claireai.brain import Brain, BrainError, BrainResponse, BrainStopped, Message, ToolCall
 from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox, check_risk, requires_approval
 from claireai.presence import PresenceStream
 from claireai.routing import Route, route as choose_route, schema_bytes
+from claireai.runtime_control import RuntimeControl
 from claireai.storage import TaskRepository, transaction
 from claireai.tools import ToolError, ToolRegistry, UnknownTool
 from claireai.tools.base import ToolContext
 from claireai.tools.browser import BrowserSession
 
 SYSTEM_PROMPT = (
-    "You are ClaireAI, a local personal assistant on the owner's own computer. "
+    "You are ClaireAI, a friendly local personal assistant on the owner's own computer. "
+    "You are assisting the owner named {owner_name}; address them naturally, without overusing their name. "
+    "Use light humor when it fits or when asked, and keep status reports structured: "
+    "completed, blocked, and next. When asked for ideas, offer practical options and state assumptions. "
+    "Never claim consciousness or claim an action succeeded "
+    "until a tool result confirms it. "
     "You can read files with the provided tools, and only inside the allowed folders. "
     "Call a tool when the request needs real data; do not guess file names or sizes. "
     "For the biggest or largest files, call find_largest_files and answer only "
@@ -63,7 +69,7 @@ def _retry_worthwhile(response: BrainResponse, temperature: float) -> bool:
     """Is one more attempt at the same conversation likely to differ?
 
     The empty replies we have measured come from a *generated but malformed*
-    tool call: Ollama reports ``completion_tokens`` while delivering neither
+    tool call: a runtime reports generated tokens while delivering neither
     text nor a call, so the tokens exist and a fresh sample can differ. Nothing
     generated means there is nothing to re-roll, and a temperature of 0 means
     the same input yields the same empty reply again — in both cases a retry
@@ -86,9 +92,8 @@ class AgentStepLimit(AgentError):
 class AgentEmptyReply(AgentError):
     """The model returned neither text nor a tool call.
 
-    Observed for real with ``qwen2.5:1.5b``: an empty assistant message is not a
-    valid answer, and treating it as one shows the owner a blank screen while the
-    task claims success.
+    An empty assistant message is not a valid answer, and treating it as one
+    shows the owner a blank screen while the task claims success.
     """
 
 
@@ -123,8 +128,9 @@ def _clip(text: str, limit: int = MAX_TOOL_TEXT) -> str:
     return text[:limit] + f"\n[... truncated, {len(text) - limit} characters omitted]"
 
 
-def system_message(sandbox: Sandbox) -> Message:
-    return Message(role="system", content=f"{SYSTEM_PROMPT} Allowed folders: {sandbox.describe()}.")
+def system_message(sandbox: Sandbox, owner_name: str = "Bikorimana Ange Tresor") -> Message:
+    prompt = SYSTEM_PROMPT.format(owner_name=owner_name)
+    return Message(role="system", content=f"{prompt} Allowed folders: {sandbox.describe()}.")
 
 
 async def run_task(
@@ -144,7 +150,11 @@ async def run_task(
     """Run one request to completion, logging every step."""
     from claireai.tools import default_registry  # local import keeps import graph flat
 
-    registry = registry or default_registry()
+    controls = RuntimeControl(settings.control_state_path)
+    control_state = controls.read()
+    if control_state["shutdown"]:
+        raise BrainStopped("ClaireAI is stopped. Resume it from the local control panel.")
+    registry = registry or default_registry(browser_enabled=control_state["browser"])
     sandbox = sandbox or Sandbox.from_settings(settings)
     broker: ApprovalBroker = approvals or DenyAll()
     step_limit = max_steps or settings.agent_max_steps
@@ -190,9 +200,8 @@ async def run_task(
     verified = not can_verify
 
     # For a request that can write, read the allowed folders *before the model
-    # speaks*. Measured twice: qwen2.5:1.5b goes straight to move_file, and when
-    # told afterwards to read first it either answers with the instruction or
-    # gives up. Grounding it up front costs no model call and removes the guess.
+    # speaks*. Small models can go straight to a write without grounding.
+    # Grounding it up front costs no model call and removes the guess.
     context_note = ""
     if can_verify and plan is not None and any(
         registry.get(name).mutates for name in plan.tools
@@ -203,7 +212,7 @@ async def run_task(
             verified = True
 
     messages: list[Message] = [
-        Message(role="system", content=system_message(sandbox).content + context_note),
+        Message(role="system", content=system_message(sandbox, settings.owner_name).content + context_note),
         Message(role="user", content=request),
     ]
     steps: list[AgentStep] = []
@@ -212,6 +221,8 @@ async def run_task(
 
     try:
         for step_number in range(1, step_limit + 1):
+            if controls.read()["shutdown"]:
+                raise BrainStopped("ClaireAI was stopped from the local control panel.")
             # Dynamic decoding. Until a step has succeeded the model is choosing
             # what to do, so it gets the low temperature; once it has real data
             # it is phrasing an answer, so it gets the configured one.
@@ -306,6 +317,11 @@ async def run_task(
                 Message(role="assistant", content=response.content, tool_calls=response.tool_calls)
             )
             for position, call in enumerate(response.tool_calls):
+                state = controls.read()
+                if state["shutdown"]:
+                    raise BrainStopped("ClaireAI was stopped before the proposed action could run.")
+                if call.name in {"open_url", "get_page_text", "search_web", "download_file"} and not state["browser"]:
+                    raise BrainResponseError("browser access was disabled before the action could run")
                 step = await _execute(
                     call=call,
                     index=len(steps) + 1,
@@ -379,9 +395,8 @@ def _discovery(
     """Read a folder the model should have looked at, and describe it.
 
     Called only when a write arrives with nothing read yet. The runtime does the
-    read instead of asking again: measured, ``qwen2.5:1.5b`` went straight to
-    ``move_file`` in 6 of 6 runs and then, told to read first, answered instead
-    of reading. A local folder listing costs no model call, and putting the real
+    read instead of asking again: small models can go straight to ``move_file``
+    without grounding. A local folder listing costs no model call, and putting the real
     names in the transcript is the only way this model gets them.
 
     Returns the text to feed back and whether a read actually happened.

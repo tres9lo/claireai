@@ -7,18 +7,10 @@ from claireai.config import Settings
 from claireai.doctor import FAIL, OK, WARN, Report, Row, Section, collect, format_text, report_as_dict
 from claireai.storage import Database
 
-# Port 9 (discard) on loopback: refuses immediately, so the test does not depend
-# on whether a real Ollama happens to be running on this machine.
-UNREACHABLE_URL = "http://127.0.0.1:9"
-
-
 def _settings(tmp_path: Path, **overrides) -> Settings:
     defaults = dict(
         _env_file=None,
         data_dir=tmp_path / "data",
-        ollama_base_url=UNREACHABLE_URL,
-        ollama_model="test-model",
-        ollama_timeout_seconds=2,
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -59,19 +51,17 @@ def test_report_as_dict_is_serialisable() -> None:
     assert payload["sections"][0]["rows"][0] == {"label": "k", "value": "v", "state": OK}
 
 
-async def test_collect_reports_unreachable_runtime_and_missing_database(tmp_path: Path) -> None:
+async def test_collect_reports_missing_checkpoint_and_database(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     report = await collect(settings)
 
     text = format_text(report)
-    assert "Runtime reachable" in text
+    assert "Scratch checkpoint ready" in text
     assert "[FAIL]" in text
     assert report.exit_code == 2
-    # One actionable problem at a time: an unreachable runtime is reported, and
-    # the model row still names the pull command for when it comes back.
+    # A missing local checkpoint is an actionable setup problem.
     assert len(report.errors) == 1
-    assert "unreachable" in report.errors[0]
-    assert "ollama pull test-model" in text
+    assert "scratch" in report.errors[0]
 
 
 async def test_collect_is_read_only_for_the_database(tmp_path: Path) -> None:
@@ -98,8 +88,8 @@ async def test_collect_never_prints_secret_values(tmp_path: Path, monkeypatch) -
 
 
 async def test_invalid_configuration_becomes_a_report_not_a_crash(monkeypatch) -> None:
-    monkeypatch.setenv("CLAIREAI_OLLAMA_BASE_URL", "http://10.0.0.5:11434")
+    monkeypatch.setenv("CLAIREAI_ALLOWED_CAPABILITIES", '["teleport"]')
     report = await collect(None)
     assert report.exit_code == 2
     assert report.sections == ()
-    assert any("non-loopback" in error for error in report.errors)
+    assert any("unknown capability" in error for error in report.errors)

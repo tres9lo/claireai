@@ -1,5 +1,16 @@
 # TresorAI / ClaireAI Master Roadmap (12 Months) — Updated Execution Edition (2026-10)
 
+## Owner direction (2026-11-03; supersedes older runtime/model choices)
+
+ClaireAI must use a model trained from random initialization in this repository.
+Ollama and downloaded pretrained model weights are removed from the active
+runtime path. The target product includes a clear assistant stop control,
+owner-controlled browser/device access, OS-aware adapters, a desktop UI, and
+local speech with configurable voice characteristics. These are staged goals;
+they must not be described as complete until implemented and evaluated. The
+original phase tables below contain historical Ollama-era plans and are not
+current acceptance criteria where they conflict with this direction.
+
 > **Audience:** Freebuff or another coding agent working with Tresor. **How to use this file:** Read the whole roadmap and the handoff section before writing code. Work on one small task at a time, run tests, show real output, update `PROGRESS.md`, and stop for human confirmation at each phase gate. Do not claim a check passed unless it was actually run.
 >
 > **Naming decision required at project start:** the uploaded filename says TresorAI, while the original document calls the assistant ClaireAI. This edition provisionally treats **TresorAI** as the repository/project name and **ClaireAI** as the assistant's in-product name. Ask Tresor to confirm before renaming directories, package IDs, application IDs, or visible branding.
@@ -26,23 +37,23 @@ Build **ClaireAI**: a personal assistant that lives on Tresor's PC and Android p
 - Talk with a natural voice.
 - Show a **live visual presence**: a local rendering layer that mirrors what the assistant is doing — idle, listening, thinking, running a tool, speaking, waiting for approval — and can draw an avatar/HUD scene, in the spirit of Jarvis-style assistants.
 - **Perceive and operate the computer when a task needs it**: camera snapshots, screen capture, cursor and keyboard control, clipboard, windows and apps. All of it approval-gated with a visible indicator; none of it a background capability.
-- Eventually develop an experimental model from scratch (own tokenizer, own transformer, randomly initialized weights, own training pipeline). Keep this educational research track separate from the practical assistant model. The usable assistant may run a downloaded open-weight model locally; the from-scratch model is not expected to match it within 12 months.
+- Train ClaireAI's model from scratch (own tokenizer, own transformer, randomly initialized weights, own training pipeline) and improve it on computer-use tasks using licensed data and fixed evaluations. The first CPU model will be limited; keep safety decisions in the application runtime.
 
 ## 2. Strategy: Two Tracks, One Product
 
 The project has two tracks that run in parallel and share a common `Brain` interface.
 
-- **Track A: The Assistant (agent layer).** Build a useful assistant early, using a **downloaded local model** through Ollama. No DeepSeek API or other hosted model is required for normal operation.
-- **Track B: The Brain (from-scratch model).** The long educational road. Starts tiny and grows independently; it is a research/learning project, not a dependency for shipping Track A.
+- **Track A: The Assistant (agent layer).** Keep the tool runtime, approvals, audit log, UI and cross-platform adapters behind the `Brain` protocol. The configured brain is now the locally trained checkpoint; inference must remain offline.
+- **Track B: The Brain (from-scratch model).** The `brain-lab/` transformer and tokenizer are the source of ClaireAI's model. Training remains an independent, measurable subsystem, but its checkpoint is intended to serve Track A. No pretrained weights or hosted model API are part of the normal runtime.
 
-The local model is the default brain, not a cloud placeholder. All application code talks to a `Brain` interface so model providers can be swapped without rewriting agents. Keep cloud providers optional and disabled by default.
+The locally trained model is the default brain. Application code talks to a `Brain` interface so model architecture changes do not rewrite agents. Cloud model providers are out of scope.
 
 ## 3. Constraints and Assumptions
 
-- Tresor's first computer is modest, so the default local assistant model must be small and quantized, and Track B training must be feasible on **CPU** in early phases.
+- Tresor's first computer is modest, so the first locally trained assistant model must be small, and CPU training must be feasible for experiments.
 - PyTorch and NumPy are allowed as tensor and autograd tools. The transformer architecture and training loop are written by hand.
 - Desktop must support **Linux and Windows** as first-class platforms. Tresor develops on Linux, so Linux setup and packaging must be tested throughout—not added at the end. Android is the mobile target (Tecno Spark 20).
-- Budget is limited. Prefer free, local, and open-source tools. The default experience must not require API keys, subscriptions, or paid inference. Model downloads require internet once; inference should work offline afterward.
+- Budget is limited. Prefer free, local, and open-source tools. The default experience must not require API keys, subscriptions, paid inference, or pretrained model downloads. Inference should work offline.
 - Internet is not always reliable. Design for offline-first where possible: queue tasks, retry later.
 - Tresor already knows: TypeScript, React Native/Expo, Next.js, Node/Express, MongoDB, Tauri with Rust, SQLite, Python, PyTorch, NumPy. Reuse these skills instead of introducing new stacks without a reason.
 
@@ -55,7 +66,7 @@ The local model is the default brain, not a cloud placeholder. All application c
 | Desktop shell | **Tauri v2** (Rust + web UI) | Cross-platform desktop shell for Linux and Windows; test both targets continuously |
 | Desktop UI | React + TypeScript + Tailwind | Matches the mobile skills |
 | Agent runtime | **Python 3.11+** sidecar process with FastAPI | Best ecosystem for agents, speech and ML. Tauri launches it as a sidecar |
-| Local model runtime | **Ollama** with a locally downloaded quantized instruct model | Runs locally on Linux and Windows; exposes a localhost API; no hosted inference required |
+| Local model runtime | ClaireAI's own PyTorch transformer checkpoint | Starts from random initialization, runs locally on CPU, and needs no model service |
 | Local memory | **SQLite** (tasks, logs, summaries, notes) | Zero setup, one file, works offline |
 | Browser control | **Playwright** (Python) with a dedicated automation profile | Reliable, scriptable, can run visible or headless |
 | File and system tasks | Python `pathlib`, `shutil`, `subprocess`, plus OS-specific adapters (`apt`/`dnf`/`pacman` where appropriate and `winget` on Windows) | Keep common logic portable; never assume one package manager or shell |
@@ -77,28 +88,29 @@ The local model is the default brain, not a cloud placeholder. All application c
 | --- | --- |
 | Language | Python |
 | Tensor library | PyTorch (CPU first), NumPy for learning exercises |
-| Tokenizer | Byte-level BPE written by hand, then compare with a library |
+| Tokenizer | Corpus-trained byte-pair encoding written by hand |
 | Model | Decoder-only transformer written by hand (embeddings, causal self-attention, MLP, layer norm, residuals) |
 | Training | Own training loop: AdamW, learning-rate schedule, gradient clipping, checkpoints |
 | Data | Public-domain and permissively licensed text, plus Tresor's own writing. Record the source and license of every dataset |
 | Evaluation | Validation loss, perplexity, and fixed prompt samples saved at every checkpoint |
 | Later | Instruction tuning data, quantization (int8/int4) for phone inference, GPU rental for bigger runs |
 
-### 4.3 Default local model and runtime
+### 4.3 ClaireAI model and runtime
 
-- **Initial model candidate:** `qwen2.5:1.5b` through Ollama for low-memory machines, subject to checking the current model library and testing on the target PC. If the machine has enough RAM and the smaller model is not capable enough, allow a configurable `qwen2.5:3b` or another locally downloadable instruct model. Never assume a model tag is valid without verifying it.
-- **Important licensing check:** model weights have their own licenses, separate from Ollama. Before redistributing model files or bundling them in an installer, verify the exact model version's license and comply with it. Downloading a model for personal local use is not the same as receiving permission to redistribute it.
-- **Why a small model:** it can be downloaded once and used locally without sending prompts to a hosted inference API. It will be weaker than larger models, can make mistakes, and may struggle with complex multi-step tool calls. Tool schemas, validation, permissions, and deterministic application code must enforce safety.
-- **Runtime:** Ollama's local HTTP API, normally `http://127.0.0.1:11434`. Make the base URL and model name configurable. Bind to loopback for local-only operation; do not expose the API to the LAN unless authentication and an explicit security review are added.
-- **Offline behavior:** after the runtime, model, speech models, wake-word models, and browser dependencies have been downloaded, basic chat and voice should work without internet. Clearly mark features such as web search, Gmail, Calendar, and remote sync as internet-dependent.
-- **Model setup examples:**
-
-  ```bash
-  ollama pull qwen2.5:1.5b
-  ollama run qwen2.5:1.5b
-  ```
-
-  The exact tag available in the installed Ollama library must be checked at setup time. Store the selected model in configuration rather than hard-coding it in agents.
+- Initialize all model weights randomly and train the tokenizer and decoder-only
+  transformer from the tracked training code. No pretrained language-model
+  weights or external inference runtime are part of the product.
+- Keep architecture, tokenizer, data manifests, checkpoints and fixed
+  evaluations versioned or reproducibly recorded. Raw data and checkpoints
+  remain outside Git.
+- The first CPU model is a learning baseline, not a capable general assistant.
+  Evaluate it on held-out computer-use instructions, tool-call validity,
+  factual reporting, and refusal behavior before enabling any capability.
+- The runtime reads a local checkpoint path. All proposed actions remain subject
+  to tool schemas, path allow-lists, capability gates, approvals and audit logs.
+- Voice, wake-word and browser assets need separate licensing records. Web
+  access is an explicit owner-controlled feature and requires internet; local
+  inference does not.
 
 ### 4.4 Wake word and voice behavior
 
@@ -268,7 +280,7 @@ tresorai/
 
 ### 6.1 Brain interface
 
-A provider-neutral interface with a main method such as `generate(messages, tools=None) -> response`. Implement `OllamaBrain` first. Later adapters may include the from-scratch model or an explicitly enabled optional provider. The rest of the app must never import a specific model runtime.
+A provider-neutral interface with a main method such as `generate(messages, tools=None) -> response`. The active adapter loads ClaireAI's own local scratch checkpoint. The rest of the app must never import model implementation details.
 
 ### 6.2 Tool interface
 
@@ -326,7 +338,7 @@ Machine access is a capability, not a tool with a hidden side door. Each capabil
 9. **Prompt-injection boundary:** web pages, emails, files, model outputs, and tool results are untrusted input and cannot change permissions or system policy.
 10. **Approval binding:** approval applies only to the displayed action and exact target/arguments; changes to the plan require a new approval.
 11. **Recovery:** interrupted actions must be reconciled before retrying; never blindly replay non-idempotent or dangerous operations.
-12. **Network exposure:** local API and Ollama bind to loopback by default. LAN access requires explicit pairing/authentication and a documented threat review.
+12. **Network exposure:** the local UI binds to loopback by default. LAN access requires explicit pairing/authentication and a documented threat review.
 13. **Camera and screen are microphone-class permissions:** visible indicator whenever active, an explicit grant per task, never continuous capture by default, frames processed locally and never uploaded, and audio is never captured together with video unless the owner asks for both.
 14. **Cursor and keyboard control are dangerous:** per-action approval until a named pattern is trusted, a visible indicator, a kill-switch hotkey that releases input immediately, a step cap, and a refusal to type into password fields or send credentials.
 15. **Perception output is untrusted input:** text read from a screenshot, a camera frame, a clipboard or a window title cannot change permissions, policy or the tool set. The prompt-injection boundary (item 9) applies to pixels and OCR too.
@@ -337,7 +349,7 @@ Machine access is a capability, not a tool with a hidden side door. Each capabil
 
 - The desktop UI must not directly execute arbitrary shell commands or filesystem operations. It talks to the Python service through a narrow, authenticated local API or a narrowly scoped Tauri command.
 - The Python service owns agent orchestration, tool validation, permissions, the task queue, database access, and audit records.
-- Ollama is a separate local process. Configure its URL and selected model; verify availability at startup and show a useful status if unavailable.
+- The scratch model loads from a local checkpoint in the assistant process. Verify the checkpoint and PyTorch availability at startup and show a useful status if unavailable.
 - The Android app is a client, not a remote shell. It sends typed, schema-validated requests to a paired desktop service and displays task state. Phone-local features use Android APIs only where the OS permits them.
 - Track B's tokenizer/model/training code belongs in `brain-lab/`. Do not import experimental training modules into the production runtime.
 
@@ -378,7 +390,7 @@ Audit events should include event ID, UTC timestamp, device ID, task ID, actor, 
 - Pair devices using a short-lived, one-time pairing code or QR token displayed by the desktop. Do not use a permanent shared secret embedded in the mobile app.
 - Issue a revocable per-device credential; store it in Android Keystore-backed secure storage via an appropriate library such as Expo SecureStore. Never place tokens in logs or source control.
 - Require authenticated requests, request-size limits, rate limits for pairing/auth endpoints, expiry, revocation, and replay protection for one-time pairing.
-- Use TLS for remote access. Do not expose Ollama's port or the Python service directly to the public internet. Remote access is out of scope until reviewed separately.
+- Use TLS for remote access. Do not expose the Python service directly to the public internet. Remote access is out of scope until reviewed separately.
 - LAN discovery is optional. If implemented, pairing and authentication remain mandatory; discovery itself is not authorization.
 - Queue only idempotent or uniquely identified requests while offline. Before retrying a non-idempotent action, query task status to avoid duplicate execution.
 
@@ -424,7 +436,7 @@ Audit events should include event ID, UTC timestamp, device ID, task ID, actor, 
 - Validate configuration at startup and fail with a clear message for invalid settings.
 - Provide `.env.example` only for non-secret examples. Actual secrets belong in OS credential storage or a local ignored secrets file with restrictive permissions.
 - Pin or lock dependencies for reproducible installs. Update dependencies deliberately and run tests after each update.
-- Record tested versions of Python, Node, Rust, Tauri, Expo SDK, Ollama, and model tags in setup docs; verify current stable versions against official documentation when implementing.
+- Record tested versions of Python, PyTorch, Node, Rust, Tauri, and Expo SDK in setup docs; verify current stable versions against official documentation when implementing.
 - Avoid claiming that “latest” is a permanent version. Use supported release lines and a deliberate upgrade process.
 - Add a dependency/license inventory before packaging. Check the license of each model, voice, wake-word asset, dataset, and bundled runtime.
 
@@ -440,8 +452,7 @@ Audit events should include event ID, UTC timestamp, device ID, task ID, actor, 
 
 The original stack remains a reasonable baseline, with these qualifications:
 
-- **Ollama:** use its current local API and verify the selected model tag at setup time. Tool calling and structured output support vary by model; test the exact chosen model instead of assuming every model supports reliable tool calls. Keep the model name configurable. Official reference: https://docs.ollama.com/api and https://ollama.com/library.
-- **Default model:** `qwen2.5:1.5b` may remain a candidate for low-memory hardware, but do not treat it as a permanent guaranteed tag or assume it is the best current model. During setup, compare currently available small instruct models using a fixed local test set, measured RAM use, latency, language quality, and tool-call validity. Select one explicit tag in local config and document its license. The original `qwen2.5:1.5b-instruct` string may not match the exact Ollama library tag; verify before using it.
+- **Scratch model:** keep architecture and checkpoint formats versioned. Test training, held-out loss, response quality, tool-call validity, RAM use, and latency before raising capability limits. Never treat training loss as evidence of safe tool use.
 - **Tauri v2:** use the official v2 documentation and least-privilege capabilities. Do not enable broad shell, filesystem, or updater permissions by default. Updater artifacts must be signed; protect the private signing key and never commit it. Reference: https://v2.tauri.app/.
 - **Expo:** use the current stable Expo SDK and `npx expo install` for compatible native package versions. Test permissions and notifications on a real Android device. Background execution and always-on microphone behavior are OS-controlled and must not be promised. References: https://docs.expo.dev/ and https://docs.expo.dev/versions/latest/sdk/securestore/.
 - **FastAPI:** use Pydantic request/response models, explicit authentication dependencies for non-loopback access, and generated OpenAPI contracts. Never assume CORS is authentication.
@@ -475,9 +486,9 @@ Each phase lists a goal, the steps, and **acceptance checks**. Time estimates as
 - Create the repo and folder layout from section 5.
 - Set up Python 3.11 virtual environment, install FastAPI, uvicorn, httpx, pydantic, APScheduler.
 - Create the SQLite schema: `tasks`, `task_log`, `summaries`, `notes`.
-- Implement the `Brain` interface and `OllamaBrain` adapter using Ollama's local API. Do not add an API key or hosted model dependency.
+- Implement the `Brain` interface and a local scratch-checkpoint adapter. Do not add hosted inference or downloaded pretrained weights.
 - Build a command-line chat that talks to the brain.
-- Install Ollama on the development OS, download the configured local model, then check: `python -m assistant.cli` answers a question without an API key and logs it.
+- Install CPU PyTorch, train a tiny checkpoint from licensed text, then check the CLI loads it locally and logs a turn. Treat the first checkpoint as a wiring experiment, not a capable assistant.
 
 **Week 2: First tools and agent loop**
 
@@ -567,8 +578,7 @@ Each phase lists a goal, the steps, and **acceptance checks**. Time estimates as
 - Add a chat format with special tokens for system, user, and assistant turns.
 - Run supervised instruction tuning on the from-scratch model.
 - Evaluate with a fixed test set of 50 prompts, scored by hand each time.
-- Add the **from-scratch ClaireAI adapter** to the `Brain` interface and a settings switch between the local Ollama model and the experimental from-scratch model. Do not make cloud inference a requirement.
-- Keep the local instruct model as the practical fallback for tasks the from-scratch model cannot handle. An optional remote provider may be added only behind an explicit opt-in setting, with clear privacy disclosure.
+- Improve the **from-scratch ClaireAI model** with instruction data, held-out evaluation, and a settings-bound local checkpoint. Do not add cloud inference or pretrained weights as a fallback.
 - *Acceptance:* ClaireAI handles simple, well-defined assistant tasks such as classifying a command, extracting a file name, or writing a short summary.
 
 ---
@@ -581,7 +591,7 @@ Each phase lists a goal, the steps, and **acceptance checks**. Time estimates as
 - Fine-tune ClaireAI on a strict tool-call format. Validate outputs against the tool schemas, and reject malformed calls.
 - Rent GPU time for a larger run if the budget allows, with a clear spending cap. Consider 50 to 150 million parameters.
 - Quantize the model (int8, then int4) and test inference speed on the Tecno Spark 20.
-- *Acceptance:* ClaireAI completes a defined list of common tasks with the downloaded local instruct model selected, and fails safely when unsure.
+- *Acceptance:* ClaireAI completes a defined list of common tasks with its evaluated scratch checkpoint selected, and fails safely when unsure.
 
 ---
 
@@ -601,7 +611,7 @@ Follow this sequence before asking the coding agent to implement features. Comma
 ### Step 1 — Confirm project identity and machine baseline
 
 1. Confirm whether the repo is named `tresorai` and the user-facing assistant is named `ClaireAI`.
-2. Confirm the development OS and version, available RAM/disk, Python version, and whether Ollama is already installed.
+2. Confirm the development OS and version, available RAM/disk, Python version, and CPU/PyTorch availability.
 3. Confirm the target Android phone can be connected for testing.
 4. Create a project directory in a location chosen by Tresor; do not assume a home path.
 
@@ -694,17 +704,15 @@ If PowerShell blocks activation, do not weaken machine-wide execution policy aut
 
 The agent should then create `assistant/pyproject.toml`, install only the initial dependencies needed for the first milestone, and record resolved versions. Do not install every future dependency at once.
 
-### Step 5 — Create the local model runtime
+### Step 5 — Create the local scratch-model path
 
-1. Install Ollama using its official OS-specific instructions.
-2. Confirm its local service is reachable on loopback.
-3. Check the current model library and choose a small instruct model that fits the machine.
-4. Pull the exact selected tag and record it in local configuration.
-5. Test plain chat, structured output, and tool-call formatting with a tiny test before building the agent loop.
-6. Turn off network access temporarily and confirm basic chat still works.
-7. Do not expose the Ollama API to the LAN.
+1. Install the CPU PyTorch build in the project environment.
+2. Add a licensed training corpus with a tracked source manifest; do not download or include pretrained model weights.
+3. Train a tiny checkpoint from random initialization and save its architecture, tokenizer merges, data hashes, and training/validation losses.
+4. Load that checkpoint through `ScratchBrain` and verify inference works offline.
+5. Run held-out instruction and tool-call evaluations before relying on model output.
 
-The agent must record actual versions, model tag, RAM use, and test output in `docs/setup/` and `PROGRESS.md`. If the model cannot run on the machine, stop and discuss options rather than silently switching to a paid API.
+Record CPU/RAM use and actual output in `PROGRESS.md`. A smoke checkpoint proves wiring only; never describe it as a useful assistant.
 
 ### Step 6 — Build the database and CLI before the UI
 
@@ -712,7 +720,7 @@ Implement, in order:
 1. configuration validation and platform-aware application-data paths;
 2. SQLite connection and first migration;
 3. task and audit-log repositories;
-4. provider-neutral `Brain` protocol and Ollama adapter;
+4. provider-neutral `Brain` protocol and local scratch-checkpoint adapter;
 5. CLI chat with request IDs and sanitized logs;
 6. read-only tools and allow-list tests;
 7. approval service and dry-run mode;
@@ -740,7 +748,7 @@ Before proceeding, the agent must show:
 - OS and tool versions;
 - dependency install output;
 - test output;
-- Ollama health/model test output if installed;
+- training corpus manifest, checkpoint metadata, held-out evaluation and inference output;
 - the created database schema/migration result;
 - known blockers and the next single task.
 
@@ -750,14 +758,14 @@ Before proceeding, the agent must show:
 
 ### 9.1 Developer machine requirements
 
-- Linux (Ubuntu/Zorin OS or another supported distribution) and Windows 10/11; 8 GB RAM minimum for early development, 16 GB recommended; reserve at least 10–20 GB for runtime, model files, voice models, and build artifacts. Actual model speed depends on RAM, CPU, and GPU.
+- Linux (Ubuntu/Zorin OS or another supported distribution) and Windows 10/11; 8 GB RAM minimum for early development, 16 GB recommended; reserve at least 10–20 GB for runtime, training data, voice assets, and build artifacts. Actual training speed depends on RAM, CPU, and GPU.
 - Python 3.11+, Node.js LTS, Rust toolchain (`rustup`), Git, and Tauri prerequisites for the chosen OS. On Linux install the documented system libraries and WebKit/GTK build dependencies; on Windows install the required Microsoft C++ build tools. Keep OS-specific setup scripts separate.
 - Android: Android Studio or Expo with a physical phone for testing.
 - Accounts: none required for local chat, wake word, speech recognition, or speech output. Google Cloud OAuth is optional for Gmail/Calendar integrations; optional sync hosting is not required for local desktop use.
 
 ### 9.2 First-time setup commands (agent should verify each one works)
 
-Create both `scripts/setup_linux.sh` and `scripts/setup_windows.ps1` (plus a shared Python setup module where practical). Each script should check prerequisites, create the virtual environment, install Python requirements, install Playwright browsers, create the SQLite database, and print a checklist. Do not silently install system packages or make destructive changes. Provide separate instructions for installing Ollama, pulling the configured local LLM, and downloading speech/wake-word assets.
+Create both `scripts/setup_linux.sh` and `scripts/setup_windows.ps1` (plus a shared Python setup module where practical). Each script should check prerequisites, create the virtual environment, install Python requirements and CPU PyTorch, create the SQLite database, and print a checklist. Do not silently install system packages or make destructive changes. Explain how to add licensed training data and download optional speech/wake-word assets.
 
 ### 9.3 How the desktop app ships
 
@@ -819,8 +827,8 @@ A feature is not “cross-platform” just because it compiles. Record tested OS
 
 ## 12. Risks and Honest Expectations
 
-- A from-scratch model trained on a modest computer will be small and limited. It will not match the downloaded local instruct model or large commercial assistants. Treat it as an educational experiment until evaluations show otherwise.
-- The downloaded local instruct model stays as the practical default/fallback for hard tasks until the from-scratch model proves itself on repeatable evaluations. Normal operation must not depend on a hosted model.
+- A from-scratch model trained on a modest computer will be small and limited. It will not match large pretrained or commercial assistants. Improve it through legal task-specific data, code-owned safeguards, and repeatable evaluation; do not overstate its capability.
+- There is no pretrained-model fallback. If the scratch model is not capable enough for a task, the runtime must refuse or report its limit while deterministic code and approval gates remain authoritative.
 - Voice cloning of a specific commercial voice is out of scope. Use an open-licensed voice or Tresor's own.
 - Automation that touches email, files, and installs is powerful. Keep approvals on, keep the audit log, and widen trust slowly.
 - Money and time are limited. If a phase slips, shorten the scope. Do not skip the acceptance checks.
@@ -829,7 +837,7 @@ A feature is not “cross-platform” just because it compiles. Record tested OS
 
 | Month | Track A: Assistant | Track B: Brain |
 | --- | --- | --- |
-| 1 | CLI, local Ollama model, tools, approvals, daily summary, Linux/Windows desktop UI, presence renderer v0 | Toy language model |
+| 1 | CLI, local scratch checkpoint, tools, approvals, daily summary, Linux/Windows desktop UI, presence renderer v0 | Tokenizer, transformer, CPU training baseline |
 | 2 to 3 | Email, calendar, memory, local voice, wake-word prototype, OS-specific installs, camera/screen/cursor access, lip-sync | Byte-level BPE tokenizer |
 | 4 to 5 | Phone app, sync, notifications | Hand-written transformer |
 | 6 to 7 | Hardening, packaging, presence renderer quality (WebGL) | First real CPU training run |
@@ -839,16 +847,16 @@ A feature is not “cross-platform” just because it compiles. Record tested OS
 
 ## 14. First Prompt to Give the Coding Agent
 
-> Read `ClaireAI Master Roadmap` fully. We are starting **Month 1, Week 1**. Restate the goal and acceptance check. Then create the cross-platform repository layout, Python environment, SQLite schema, `Brain` interface, and local `OllamaBrain` adapter. Confirm Linux and Windows setup paths are documented. Run the local model without an API key, show real output, and do not move on until the acceptance check passes. Follow section 0.
+> Read the owner direction at the top of `ROADMAP.md` first. ClaireAI must use a from-scratch model trained in this repository; do not add Ollama, pretrained language-model weights, or hosted inference. Keep capability grants explicit, the stop control visible, tool use approval-gated, and model limits accurate.
 
 
 ## Appendix A. First Setup Smoke Test
 
 Run these checks after installation. The coding agent must adapt commands to the current OS and report actual output rather than claiming success without running them.
 
-1. Confirm Python, Node.js, Git, Rust, Tauri prerequisites, and Ollama versions.
-2. Confirm Ollama is reachable on loopback.
-3. Pull and run the configured small instruct model.
+1. Confirm Python, Node.js, Git, Rust, Tauri prerequisites, and PyTorch CPU availability.
+2. Confirm the training corpus has a tracked license/source manifest.
+3. Train and load a small scratch checkpoint, then record held-out metrics.
 4. Run one CLI question and verify that the task log records it.
 5. Disconnect the network and repeat local chat to confirm inference is genuinely local.
 6. Confirm microphone capture is off by default; enable push-to-talk and test transcription.
@@ -864,9 +872,6 @@ Run these checks after installation. The coding agent must adapt commands to the
 
 Check official documentation at implementation time because supported model tags, install instructions, runtime behavior, and licenses can change:
 
-- Ollama downloads and local runtime: https://ollama.com/download
-- Ollama model library: https://ollama.com/library
-- Qwen model cards and license files: https://huggingface.co/Qwen
 - openWakeWord project and platform notes: https://github.com/dscripka/openWakeWord
 - Tauri prerequisites and platform build instructions: https://v2.tauri.app/start/prerequisites/
 
@@ -902,11 +907,11 @@ Use this checklist when starting the project:
 - [ ] Create the repository and initialize Git.
 - [ ] Add `.gitignore`, `README.md`, `PROGRESS.md`, and `docs/platform-support.md`.
 - [ ] Create the minimal top-level folder structure in section 5.
-- [ ] Check Python, Git, Node.js, Rust, Tauri prerequisites, and Ollama versions without changing system configuration.
+- [ ] Check Python, Git, Node.js, Rust, Tauri prerequisites, and PyTorch CPU availability without changing system configuration.
 - [ ] Create the Python virtual environment.
 - [ ] Create `assistant/pyproject.toml` and the first test.
 - [ ] Implement the first SQLite migration.
-- [ ] Implement and test the `Brain` interface and Ollama adapter.
+- [ ] Implement and evaluate the `Brain` interface and local scratch-checkpoint adapter.
 - [ ] Run one CLI prompt and verify the task/audit record.
 - [ ] Disable network and repeat the local chat smoke test.
 - [ ] Commit the scaffold and show the commit hash.
@@ -930,9 +935,6 @@ Copy this prompt to Freebuff together with this updated Markdown file:
 
 The roadmap is a project plan, not a substitute for checking current upstream documentation. Re-check exact versions, install commands, platform support, API behavior, and licenses when implementing:
 
-- Ollama API: https://docs.ollama.com/api
-- Ollama model library: https://ollama.com/library
-- Qwen model cards: https://huggingface.co/Qwen
 - Tauri v2 documentation: https://v2.tauri.app/
 - Tauri updater and signing: https://v2.tauri.app/plugin/updater/
 - Expo documentation: https://docs.expo.dev/

@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from claireai.brain import Brain, BrainHealth, BrainResponse, OllamaBrain
+from claireai.brain import Brain, BrainHealth, BrainResponse, ScratchBrain
 from claireai.config import Settings
 from claireai.evaluation import (
     load_cases,
@@ -34,6 +34,7 @@ from claireai.evaluation import (
     run_cases,
     summarise,
 )
+from claireai.improvements import ImprovementLedger
 
 DEFAULT_CASES = Path(__file__).resolve().parent / "model_eval_cases.json"
 
@@ -71,20 +72,15 @@ def _build_brain(args: argparse.Namespace, cases) -> tuple[Brain, str, Settings 
         label = "STUB MODE - harness wiring check, NOT a model result"
         return StubBrain(answers), label, None
 
-    overrides: dict[str, object] = {"ollama_timeout_seconds": 300.0}
-    if args.model:
-        overrides["ollama_model"] = args.model
-    if args.base_url:
-        overrides["ollama_base_url"] = args.base_url
+    overrides: dict[str, object] = {}
+    if args.model_checkpoint:
+        overrides["model_checkpoint"] = args.model_checkpoint
     settings = Settings(**overrides)
-    brain = OllamaBrain(
-        base_url=settings.ollama_base_url,
-        model=settings.ollama_model,
-        timeout=settings.ollama_timeout_seconds,
-        # Deterministic decoding: this harness measures capability, not luck.
-        options={"temperature": 0, "num_predict": 200},
+    brain = ScratchBrain(
+        checkpoint=settings.resolved_model_checkpoint,
+        max_output_tokens=200,
     )
-    return brain, f"model {settings.ollama_model} @ {settings.ollama_base_url}", settings
+    return brain, f"from-scratch model @ {settings.resolved_model_checkpoint}", settings
 
 
 def _save(results, *, path: Path, label: str) -> Path:
@@ -125,9 +121,7 @@ async def _run(args: argparse.Namespace) -> int:
                 print(f"ERROR: {health.detail}", file=sys.stderr)
                 return EXIT_RUNTIME
             if not health.model_present:
-                print(f"ERROR: model {settings.ollama_model!r} is not installed.", file=sys.stderr)
-                print(f"Download it once: ollama pull {settings.ollama_model}", file=sys.stderr)
-                print(f"Installed models: {', '.join(health.models) or '(none)'}", file=sys.stderr)
+                print(f"ERROR: scratch checkpoint unavailable: {health.detail}", file=sys.stderr)
                 return EXIT_RUNTIME
 
         results = await run_cases(brain, cases, runs=args.runs)
@@ -148,6 +142,25 @@ async def _run(args: argparse.Namespace) -> int:
     saved = _save(results, path=out_path, label=label)
     print(f"results saved: {saved}")
 
+    if settings is not None and args.model_checkpoint:
+        try:
+            checkpoint = Path(args.model_checkpoint).expanduser().resolve()
+            checkpoint.relative_to((settings.resolved_data_dir / "models" / "candidates").resolve())
+            relative = checkpoint.relative_to(settings.resolved_data_dir.resolve())
+            candidate = next(
+                item for item in ImprovementLedger(settings.resolved_data_dir).list()
+                if item.get("checkpoint") == str(relative)
+            )
+            fixed_suite = Path(args.cases).expanduser().resolve() == DEFAULT_CASES.resolve()
+            eligible = fixed_suite and summarise(results)["cases"] == len(load_cases(DEFAULT_CASES))
+            ImprovementLedger(settings.resolved_data_dir).record_evaluation(
+                candidate["id"], summarise(results), eligible=eligible
+            )
+            suffix = "eligible for review" if eligible else "logged but not eligible for promotion (use the fixed case suite)"
+            print(f"candidate evaluation recorded: {candidate['id']} · {suffix}")
+        except (ValueError, StopIteration):
+            pass
+
     return EXIT_OK if summarise(results)["all_stable"] else EXIT_CASE_FAILURES
 
 
@@ -161,8 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cases", default=str(DEFAULT_CASES), help="case file (JSON)")
     parser.add_argument("--runs", type=int, default=3, help="attempts per case (default 3)")
-    parser.add_argument("--model", help="override CLAIREAI_OLLAMA_MODEL")
-    parser.add_argument("--base-url", help="override CLAIREAI_OLLAMA_BASE_URL (loopback only)")
+    parser.add_argument("--model-checkpoint", type=Path, help="override CLAIREAI_MODEL_CHECKPOINT")
     parser.add_argument("--out", help="write the JSON report here instead of the data directory")
     parser.add_argument(
         "--stub",

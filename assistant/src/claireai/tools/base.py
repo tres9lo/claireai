@@ -74,13 +74,12 @@ class Tool:
     @property
     def parameters(self) -> dict[str, Any]:
         # Strip pydantic's ``title`` noise: the model does not need it, and on a
-        # CPU every schema token is re-processed on every step. Measured on this
-        # laptop: prompt processing runs at ~31 tokens/s, so 300 saved tokens is
-        # roughly 10 s per model call.
+        # CPU model every schema token is re-processed on every step. Smaller
+        # prompts also leave more of the limited context window for the request.
         return _strip_titles(self.args_model.model_json_schema())
 
     def schema(self) -> dict[str, Any]:
-        """The wire shape Ollama expects in ``tools``."""
+        """Provider-neutral JSON function schema shown to the model."""
         return {
             "type": "function",
             "function": {
@@ -95,7 +94,7 @@ class Tool:
 
         ``null`` for an optional parameter means "unspecified" in every tool
         API models are trained on, so it is dropped before validation and the
-        declared default applies. Observed for real: ``qwen2.5:1.5b`` sends
+        declared default applies. Small models may send
         ``"limit": null`` rather than omitting the key. Dropping a null never
         widens permission: a null ``path`` still fails as missing.
         """

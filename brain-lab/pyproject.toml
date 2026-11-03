@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claireai-scratch-brain"
+version = "0.1.0"
+description = "ClaireAI from-scratch research transformer"
+requires-python = ">=3.11"
+dependencies = ["torch>=2.2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

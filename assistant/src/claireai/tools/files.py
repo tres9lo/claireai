@@ -199,7 +199,7 @@ def find_largest_files(context: ToolContext, arguments: LargestFilesArgs) -> Too
     """The largest *files* under a folder, with their real sizes.
 
     Exists because a small model cannot sort a listing itself: measured on
-    2026-10-30, ``qwen2.5:1.5b`` either listed folder names as "files" or
+    small models may either list folder names as "files" or
     invented sizes for them. Doing the measurement here means the model only has
     to choose a folder and relay numbers it was given.
     """

@@ -39,7 +39,7 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     # a read tool.** A write needs a fact only a read can establish — does the
     # source exist, is there already a file there, what is really in the folder
     # — and without one the model has to invent a path. Measured: with `move`
-    # offering only write tools, qwen2.5:1.5b answered with
+    # offering only write tools, a small model answered with
     # `/Users/yourname/quarterly-report.pdf` and the sandbox refused it, twice.
     # Reads come after the tool that owns the intent, because order is a prior.
     (

@@ -21,8 +21,7 @@ plan and `PROGRESS.md` holds what is proven and what is not.
  loop (≤ CLAIREAI_AGENT_MAX_STEPS, default 8)                │
    │                                                        │
    ├─► brain.generate(messages, tools=schemas)               │
-   │      └─ claireai.brain.ollama ──► POST /api/chat        │
-   │                                  (127.0.0.1:11434)      │
+   │      └─ claireai.brain.scratch ──► local PyTorch checkpoint │
    │                                                         │
    ├─ no tool calls → record answer, status=succeeded, return │
    │                                                         │
@@ -51,7 +50,7 @@ constraints rather than cosmetics.
 | `audit/audit_log.py` | Append-only `task_log` writes, redacted detail | Update or delete (triggers reject it) |
 | `audit/redaction.py` | Pattern-based secret redaction, length truncation | Guarantee that no secret is ever stored |
 | `brain/base.py` | `Brain` protocol, `Message`/`ToolCall`/`BrainResponse` wire-neutral shapes | Import any concrete runtime |
-| `brain/ollama.py` | `POST /api/chat`, `GET /api/tags`, tool-call parsing | Retry, decide, or run tools |
+| `brain/scratch.py` | Local checkpoint loading, text generation and tool-call parsing | Train the model, decide permissions, or run tools |
 | `permissions.py` | `Sandbox` (folder allow-list, symlink-aware resolution), risk policy, capability policy | Prompt the user |
 | `tools/base.py` | `Tool` (name, description, risk, pydantic args, handler), registry, schema stripping | Execute side effects |
 | `tools/files.py` | Five read-only file tools | Write anything |
@@ -91,8 +90,7 @@ constraints rather than cosmetics.
    an `approval_ref`.
 5. **Storage is local and append-only for audit.** `task_log` triggers reject
    `UPDATE` and `DELETE`. Detail is redacted and truncated on the way in.
-6. **Inference is loopback.** `Settings` rejects a non-loopback model URL unless
-   `CLAIREAI_ALLOW_NON_LOOPBACK_OLLAMA=true`; no hosted provider exists.
+6. **Inference is local.** `ScratchBrain` loads a checkpoint from disk and does not call a remote model service.
 
 Deeper: `docs/architecture/threat-model.md` (16 threats, controls and residual
 risks, including the open camera/screen/cursor scope),
@@ -119,8 +117,8 @@ claim something the audit trail does not contain.
 
 ## Performance
 
-Measured on this machine (4-thread CPU, `qwen2.5:1.5b`): prompt processing runs at
-~31 tokens/s, generation at ~9.7 tokens/s. Because every step re-processes the
+Previously measured on this machine (4-thread CPU, a downloaded 1.5B model): prompt processing ran at
+~31 tokens/s, generation at ~9.7 tokens/s. This historical measurement does not predict scratch-model speed. Because every step re-processes the
 whole prompt, cost scales with *schema bytes × steps*, not with answer length.
 
 Three changes took one representative request from 126.8 s to 71.7 s:

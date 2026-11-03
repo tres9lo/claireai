@@ -10,7 +10,7 @@ recorded in `PROGRESS.md`.
 | --- | --- | --- | --- |
 | Python 3.11+ | yes | `python3 --version` | 3.12.3 was used; 3.11 and 3.12 are both supported by the pinned deps |
 | Git | yes | `git --version` | 2.43.0 |
-| Ollama | yes, for real inference | `ollama --version` | install from <https://ollama.com/download> |
+| PyTorch | yes, for training and inference | `python -c 'import torch; print(torch.__version__)'` | CPU build is sufficient; training is slow on low-end CPUs |
 | Node.js 20+ | later (desktop/mobile) | `node --version` | 24.20.0 present, unused so far |
 | Rust / Tauri prereqs | later (desktop) | `rustc --version` | not installed yet |
 
@@ -38,31 +38,30 @@ directly; do not rely on the current working directory for imports.
 Resolved versions from this install are frozen in `assistant/requirements.lock.txt`
 (regenerate with `uv pip freeze --python assistant/.venv/bin/python`).
 
-## 3. Ollama (local model runtime)
-
-Official instructions (checked 2026-10-29, <https://docs.ollama.com/linux>):
+## 3. Install the scratch model code
 
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama --version
+uv pip install --python assistant/.venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch
+uv pip install --python assistant/.venv/bin/python -e "assistant[model]"
+uv pip install --python assistant/.venv/bin/python -e ./brain-lab
 ```
 
-Then download the configured model once:
+Use the CPU wheel for this host; PyTorch's official installer provides a CPU
+compute-platform option for pip. See [PyTorch Start Locally](https://pytorch.org/get-started/locally/).
+
+Add only licensed plain-text training material under `brain-lab/data/raw/`.
+Record the source and terms in `docs/model-and-data-licenses.md` and a tracked
+manifest before training. The corpus is intentionally not bundled. The initial
+transformer is randomly initialized and experimental; a training run alone does
+not establish useful chat or tool-use quality.
 
 ```bash
-ollama pull qwen2.5:1.5b   # candidate tag for ~8 GB RAM machines
-ollama list                # confirm the exact tag you configured
-curl -s http://127.0.0.1:11434/api/tags | head -c 200
+export CLAIREAI_DATA_DIR=./runtime-data
+assistant/.venv/bin/python brain-lab/train.py brain-lab/data/raw --steps 1000
 ```
 
-Notes:
-
-- The model tag is a **candidate**, not a guarantee. Confirm it exists in the
-  current library and that it answers acceptably before relying on it.
-- Weights have their own licence (see `docs/model-and-data-licenses.md`).
-  Downloading for local use is not permission to redistribute.
-- Do not expose port 11434 on the LAN. The assistant refuses non-loopback
-  model endpoints unless `CLAIREAI_ALLOW_NON_LOOPBACK_OLLAMA=true` is set.
+The resulting checkpoint is stored under `runtime-data/models/` and ignored by
+Git. Keep steps and context small on the documented 4-thread, 7 GiB machine.
 
 ## 4. Run
 
@@ -74,12 +73,12 @@ assistant/.venv/bin/python -m claireai.cli --once "Explain what a tokenizer does
 assistant/.venv/bin/python -m claireai.cli        # interactive; /log shows the audit tail
 ```
 
-Exit codes: `0` success, `2` invalid configuration, `3` model runtime unavailable.
+Exit codes: `0` success, `2` invalid configuration, `3` scratch checkpoint or PyTorch unavailable.
 
 ## 5. Diagnostics
 
 `scripts/doctor.py` is read-only: it reports versions, paths, database/schema
-state and model-runtime status, never creates anything and never prints secret
+state and local checkpoint status, never creates anything and never prints secret
 values (only the names of set `CLAIREAI_*` variables).
 
 ```bash
@@ -94,14 +93,13 @@ assistant/.venv/bin/python scripts/doctor.py --json
 cd assistant && .venv/bin/python -m pytest
 ```
 
-The suite runs without Ollama: the adapter tests use `httpx.MockTransport`
-(mocked, not proof that a real runtime answers). The real check is the CLI smoke
-test in step 4.
+The unit suite does not train a model. A real inference check requires a trained
+checkpoint and must be reported separately from test results.
 
 ## Checking the install end to end
 
 ```bash
-assistant/.venv/bin/python scripts/smoke.py              # needs Ollama running
+assistant/.venv/bin/python scripts/smoke.py              # needs a scratch checkpoint
 assistant/.venv/bin/python scripts/smoke.py --skip-model # runtime only
 ```
 

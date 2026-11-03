@@ -12,6 +12,7 @@ import pytest
 
 from claireai.presence import PresenceStream
 from claireai.presence_server import build_server
+from claireai.improvements import ImprovementLedger
 
 HTML = Path(__file__).resolve().parents[3] / "desktop" / "presence" / "index.html"
 
@@ -172,10 +173,107 @@ def test_there_is_no_way_to_post_an_approval(data_server) -> None:  # noqa: ANN0
             connection.request("POST", path, body=b"approve=1")
             response = connection.getresponse()
             response.read()
-            # 501 = the handler implements no POST at all.
-            assert response.status == 501
+            # Unrecognized POST routes have no side effect.
+            assert response.status == 404
     finally:
         connection.close()
+
+
+def test_control_posts_require_same_origin_and_json(tmp_path: Path) -> None:
+    control_path = tmp_path / "runtime-control.json"
+    instance = build_server(
+        PresenceStream(), html_path=HTML, port=0, control_path=control_path
+    )
+    thread = threading.Thread(target=instance.serve_forever, args=(0.05,), daemon=True)
+    thread.start()
+    host, port = instance.server_address[:2]
+    connection = http.client.HTTPConnection(host, port, timeout=3)
+    origin = f"http://{host}:{port}"
+    try:
+        connection.request(
+            "POST",
+            "/control",
+            body=json.dumps({"browser": True}),
+            headers={"Origin": origin, "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"},
+        )
+        response = connection.getresponse()
+        state = json.loads(response.read())
+        assert response.status == 200
+        assert state == {"browser": True, "shutdown": False, "self_improvement": False}
+
+        connection.request(
+            "POST",
+            "/control",
+            body=json.dumps({"shutdown": True}),
+            headers={"Origin": "http://attacker.invalid", "Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"},
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 403
+        assert json.loads(control_path.read_text(encoding="utf-8")) == state
+
+        connection.request(
+            "POST", "/control", body=json.dumps({"self_improvement": True}),
+            headers={"Origin": origin, "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"},
+        )
+        response = connection.getresponse()
+        state = json.loads(response.read())
+        assert response.status == 200 and state["self_improvement"] is True
+
+        # Same-site origin is still rejected when the request uses a rebinding
+        # hostname instead of the loopback Host required by this service.
+        connection.request(
+            "POST",
+            "/control",
+            body=json.dumps({"shutdown": True}),
+            headers={"Host": "attacker.invalid", "Origin": "http://attacker.invalid", "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"},
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 403
+        assert json.loads(control_path.read_text(encoding="utf-8")) == state
+    finally:
+        connection.close()
+        instance.shutdown()
+        instance.server_close()
+        thread.join(timeout=2)
+
+
+def test_improvement_log_can_be_managed_only_after_passing_fixed_evaluation(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    candidate_path = data_dir / "models" / "candidates" / "candidate.pt"
+    candidate_path.parent.mkdir(parents=True)
+    candidate_path.write_bytes(b"candidate")
+    ledger = ImprovementLedger(data_dir)
+    candidate_id = ledger.record_candidate(checkpoint=candidate_path, parent=candidate_path, manifest={})
+    ledger.record_evaluation(candidate_id, {"all_stable": True, "cases": 1}, eligible=False)
+    control_path = data_dir / "runtime-control.json"
+    instance = build_server(PresenceStream(), html_path=HTML, port=0, control_path=control_path)
+    thread = threading.Thread(target=instance.serve_forever, args=(0.05,), daemon=True)
+    thread.start()
+    host, port = instance.server_address[:2]
+    connection = http.client.HTTPConnection(host, port, timeout=3)
+    origin = f"http://{host}:{port}"
+    try:
+        connection.request("GET", "/improvements")
+        response = connection.getresponse()
+        items = json.loads(response.read())
+        assert response.status == 200 and items[0]["status"] == "evaluation_failed"
+
+        body = json.dumps({"id": candidate_id, "action": "approve"})
+        connection.request(
+            "POST", "/improvements", body=body,
+            headers={"Origin": origin, "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"},
+        )
+        response = connection.getresponse()
+        assert response.status == 400
+        response.read()
+        assert ledger.list()[0]["status"] == "evaluation_failed"
+    finally:
+        connection.close()
+        instance.shutdown()
+        instance.server_close()
+        thread.join(timeout=2)
 
 
 def test_today_without_a_database_explains_itself(server) -> None:  # noqa: ANN001

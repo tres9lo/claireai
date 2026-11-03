@@ -23,8 +23,8 @@ def _tool(name: str = "noop", risk: str = "safe") -> Tool:
     )
 
 
-def test_default_registry_has_read_only_and_approval_gated_tools() -> None:
-    registry = default_registry()
+def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
+    registry = default_registry(browser_enabled=True)
     assert registry.names() == (
         "create_folder",
         "create_text_file",
@@ -68,7 +68,7 @@ def test_default_registry_has_read_only_and_approval_gated_tools() -> None:
     assert all(tool.risk != "dangerous" for tool in registry)
 
 
-def test_schemas_are_function_shaped_for_ollama() -> None:
+def test_schemas_are_function_shaped() -> None:
     schema = default_registry().get("list_folder").schema()
     assert schema["type"] == "function"
     function = schema["function"]

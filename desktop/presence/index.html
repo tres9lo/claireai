@@ -46,6 +46,19 @@
       ul.indicators li.on .dot { background: #ff4d6d; box-shadow: 0 0 10px #ff4d6d; }
       footer { margin-top: 22px; font-size: 12px; color: var(--muted); }
       footer a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+      .controls { margin: 24px auto 0; padding: 18px; text-align: left; border: 1px solid var(--line); border-radius: 16px; background: #0b101b; }
+      .controls h2 { margin: 0 0 10px; font-size: 16px; }
+      .controls p { color: var(--muted); margin: 4px 0 12px; }
+      .control-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+      .control-row button { min-height: 44px; min-width: 150px; border: 1px solid #465673; border-radius: 9px; background: #172238; color: var(--ink); font: inherit; padding: 8px 14px; cursor: pointer; }
+      .control-row button:hover { background: #233351; }
+      .control-row button:focus-visible { outline: 3px solid #88b4ff; outline-offset: 2px; }
+      .control-row button.danger { border-color: #a23d4c; background: #351720; }
+      .control-row button:disabled { opacity: .5; cursor: wait; }
+      #control-status { min-height: 1.5em; color: var(--muted); }
+      #improvement-log { list-style: none; padding: 0; margin: 8px 0; text-align: left; }
+      #improvement-log li { border-top: 1px solid var(--line); padding: 10px 0; }
+      #improvement-log button { margin: 8px 6px 0 0; min-height: 36px; border: 1px solid #465673; border-radius: 7px; background: #172238; color: var(--ink); padding: 5px 10px; cursor: pointer; }
       code { color: #9fb3d9; }
       @media (prefers-reduced-motion: reduce) { canvas { transition: none; } }
     </style>
@@ -62,7 +75,27 @@
         <li data-key="screen"><span class="dot"></span>screen</li>
         <li data-key="input"><span class="dot"></span>input</li>
       </ul>
-      <footer>seq <span id="seq">0</span> · task <code id="task">—</code> · this view has no control over ClaireAI · <a href="/today">today's log</a></footer>
+      <section class="controls" aria-labelledby="controls-title">
+        <h2 id="controls-title">Runtime controls</h2>
+        <p>Controls apply to ClaireAI using this local data directory.</p>
+        <div class="control-row">
+          <div><strong>Browser access</strong><br /><span id="browser-state">Off</span></div>
+          <button id="browser-toggle" type="button" aria-pressed="false">Enable browser access</button>
+        </div>
+        <div class="control-row">
+          <div><strong>Assistant runtime</strong><br /><span id="runtime-state">Running</span></div>
+          <button id="shutdown" class="danger" type="button">Stop ClaireAI</button>
+        </div>
+        <div class="control-row">
+          <div><strong>Self-improvement</strong><br /><span id="improvement-state">Off · candidates require your review</span></div>
+          <button id="improvement-toggle" type="button" aria-pressed="false">Enable self-improvement</button>
+        </div>
+        <h3>Improvement log</h3>
+        <p>Training candidates are evaluated and reviewed here. Promotion archives the current checkpoint; the replacement is loaded when ClaireAI starts next.</p>
+        <ul id="improvement-log" aria-live="polite"><li>Loading improvement history…</li></ul>
+        <p id="control-status" role="status" aria-live="polite">Loading local controls…</p>
+      </section>
+      <footer>seq <span id="seq">0</span> · task <code id="task">—</code> · <a href="/today">today's log</a></footer>
     </main>
     <script>
       const COLORS = {
@@ -78,6 +111,15 @@
       const taskEl = document.getElementById("task");
       const items = [...document.querySelectorAll("#indicators li")];
       const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      const controlStatus = document.getElementById("control-status");
+      const browserToggle = document.getElementById("browser-toggle");
+      const browserState = document.getElementById("browser-state");
+      const runtimeState = document.getElementById("runtime-state");
+      const shutdownButton = document.getElementById("shutdown");
+      const improvementToggle = document.getElementById("improvement-toggle");
+      const improvementState = document.getElementById("improvement-state");
+      const improvementLog = document.getElementById("improvement-log");
+      let controls = { shutdown: false, browser: false, self_improvement: false };
 
       let current = { state: "idle", taskId: null, detail: {}, active: {}, seq: 0 };
       let lastFrame = 0;
@@ -151,6 +193,115 @@
           }, 1500);
         };
       }
+
+      function renderControls(next) {
+        controls = next;
+        browserToggle.setAttribute("aria-pressed", String(controls.browser));
+        browserToggle.textContent = controls.browser ? "Disable browser access" : "Enable browser access";
+        browserState.textContent = controls.browser ? "Enabled · browser actions still need approval" : "Off";
+        runtimeState.textContent = controls.shutdown ? "Stopped · new model and tool steps are blocked" : "Running";
+        shutdownButton.textContent = controls.shutdown ? "Resume ClaireAI" : "Stop ClaireAI";
+        shutdownButton.classList.toggle("danger", !controls.shutdown);
+        improvementToggle.setAttribute("aria-pressed", String(controls.self_improvement));
+        improvementToggle.textContent = controls.self_improvement ? "Disable self-improvement" : "Enable self-improvement";
+        improvementState.textContent = controls.self_improvement ? "Enabled · training still requires an explicit command" : "Off · candidates require your review";
+      }
+
+      async function loadControls() {
+        try {
+          const response = await fetch("/control-state", { cache: "no-store" });
+          if (!response.ok) throw new Error("control endpoint unavailable");
+          renderControls(await response.json());
+          controlStatus.textContent = "Changes apply before the next model or tool step.";
+        } catch (_) {
+          controlStatus.textContent = "Controls unavailable. Start the local presence preview to enable them.";
+          browserToggle.disabled = true;
+          shutdownButton.disabled = true;
+          improvementToggle.disabled = true;
+        }
+      }
+
+      async function updateControls(changes) {
+        controlStatus.textContent = "Saving…";
+        browserToggle.disabled = true;
+        shutdownButton.disabled = true;
+        improvementToggle.disabled = true;
+        try {
+          const response = await fetch("/control", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(changes),
+          });
+          if (!response.ok) throw new Error(await response.text());
+          renderControls(await response.json());
+          controlStatus.textContent = "Control state saved.";
+        } catch (error) {
+          controlStatus.textContent = `Could not save controls: ${error.message}`;
+        } finally {
+          browserToggle.disabled = false;
+          shutdownButton.disabled = false;
+          improvementToggle.disabled = false;
+        }
+      }
+
+      async function loadImprovements() {
+        try {
+          const response = await fetch("/improvements", { cache: "no-store" });
+          if (!response.ok) throw new Error("improvement ledger unavailable");
+          const entries = await response.json();
+          improvementLog.replaceChildren();
+          if (!entries.length) {
+            const empty = document.createElement("li"); empty.textContent = "No improvement candidates recorded."; improvementLog.append(empty); return;
+          }
+          for (const entry of entries) {
+            const row = document.createElement("li");
+            const title = document.createElement("strong"); title.textContent = `${entry.id.slice(0, 12)} · ${entry.status}`; row.append(title);
+            const detail = document.createElement("div");
+            const evaluation = entry.evaluation ? ` · stable cases ${entry.evaluation.cases_stable ?? "?"}/${entry.evaluation.cases ?? "?"}` : "";
+            detail.textContent = `Train loss ${entry.training_loss ?? "?"} · validation loss ${entry.validation_loss ?? "?"}${evaluation} · ${entry.checkpoint}`; row.append(detail);
+            if (entry.status === "ready_for_review" || entry.status === "evaluation_failed") {
+              addAction(row, "Approve", entry.id, "approve", entry.status !== "ready_for_review");
+              addAction(row, "Reject", entry.id, "reject", false);
+            }
+            if (entry.status === "approved") addAction(row, "Promote checkpoint", entry.id, "promote", false);
+            improvementLog.append(row);
+          }
+        } catch (_) { improvementLog.textContent = "Improvement history unavailable."; }
+      }
+
+      function addAction(row, label, id, action, disabled) {
+        const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.disabled = disabled;
+        button.addEventListener("click", async () => {
+          const prompt = action === "promote" ? "Replace the active checkpoint with this approved candidate? The current checkpoint will be archived." : `${label} this candidate?`;
+          if (!window.confirm(prompt)) return;
+          try {
+            const response = await fetch("/improvements", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, action }) });
+            if (!response.ok) throw new Error(await response.text());
+            await loadImprovements();
+            controlStatus.textContent = `Candidate ${action} recorded.`;
+          } catch (error) { controlStatus.textContent = `Could not ${action} candidate: ${error.message}`; }
+        });
+        row.append(button);
+      }
+
+      browserToggle.addEventListener("click", () => {
+        const enable = !controls.browser;
+        if (enable && !window.confirm("Allow ClaireAI to make browser requests? Each browser action still needs approval.")) return;
+        updateControls({ browser: enable });
+      });
+      shutdownButton.addEventListener("click", () => {
+        const stop = !controls.shutdown;
+        if (stop && !window.confirm("Stop ClaireAI? It will finish its current model call, then block new model and tool steps.")) return;
+        updateControls({ shutdown: stop });
+      });
+      improvementToggle.addEventListener("click", () => {
+        const enable = !controls.self_improvement;
+        if (enable && !window.confirm("Allow explicit continued-training runs to record candidates for review? This does not let the model modify its code or promote itself.")) return;
+        updateControls({ self_improvement: enable });
+      });
+      loadControls();
+      loadImprovements();
+      setInterval(loadImprovements, 10000);
       connect();
     </script>
   </body>

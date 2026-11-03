@@ -1,7 +1,7 @@
 """CLI turn tests with a stub brain.
 
 The brain is replaced so these tests assert the task/audit bookkeeping, not the
-model's answer. The real Ollama path is exercised by the manual smoke test.
+ model's answer. A trained checkpoint is exercised by the manual smoke test.
 """
 
 from __future__ import annotations
@@ -70,14 +70,14 @@ async def test_turn_sends_system_prompt_then_question(
 async def test_failure_marks_task_failed_and_audits_redacted_error(
     conn: sqlite3.Connection, settings: Settings
 ) -> None:
-    brain = StubBrain(error=BrainUnavailable("cannot reach Ollama (ConnectError)"))
+    brain = StubBrain(error=BrainUnavailable("scratch checkpoint unavailable"))
     with pytest.raises(BrainUnavailable):
         await ask(settings=settings, conn=conn, brain=brain, question="hi")
 
     tasks = TaskRepository(conn)
     failed = tasks.recent(limit=1)[0]
     assert failed.status == "failed"
-    assert "cannot reach Ollama" in (failed.error or "")
+    assert "scratch checkpoint unavailable" in (failed.error or "")
 
     entries = AuditLog(conn).for_task(failed.id)
     assert [entry.status for entry in entries] == ["failed"]

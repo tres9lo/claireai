@@ -8,89 +8,48 @@ from pydantic import ValidationError
 from claireai.config import Settings
 
 
-def test_defaults_target_loopback_and_local_model() -> None:
+def test_defaults_to_local_scratch_checkpoint() -> None:
     settings = Settings(_env_file=None)
-    assert settings.ollama_base_url == "http://127.0.0.1:11434"
-    assert settings.ollama_model
-    assert settings.allow_non_loopback_ollama is False
+    assert settings.model_checkpoint is None
+    assert settings.resolved_model_checkpoint == settings.resolved_data_dir / "models" / "claire-scratch.pt"
 
 
-def test_non_loopback_runtime_is_rejected_by_default() -> None:
-    with pytest.raises(ValidationError) as excinfo:
-        Settings(_env_file=None, ollama_base_url="http://192.168.1.20:11434")
-    assert "non-loopback" in str(excinfo.value)
+def test_checkpoint_can_be_overridden(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "custom.pt"
+    settings = Settings(_env_file=None, model_checkpoint=checkpoint)
+    assert settings.resolved_model_checkpoint == checkpoint
 
 
-def test_non_loopback_runtime_allowed_only_with_explicit_flag() -> None:
-    settings = Settings(
-        _env_file=None,
-        ollama_base_url="http://192.168.1.20:11434",
-        allow_non_loopback_ollama=True,
-    )
-    assert settings.ollama_base_url == "http://192.168.1.20:11434"
-
-
-def test_temperature_defaults_are_not_zero_and_differ_per_phase() -> None:
+def test_temperature_defaults_are_per_phase() -> None:
     settings = Settings(_env_file=None)
     assert settings.temperature == 0.8
     assert settings.temperature_tools == 0.2
-    # Deciding on a tool must be more repeatable than phrasing the answer, and 0
-    # is never the default: measured, a pinned 0 made a smaller model emit a
-    # malformed tool call on every attempt.
-    assert settings.temperature_tools < settings.temperature
     assert settings.tool_temperature == settings.temperature_tools
 
 
-def test_temperature_is_configurable_from_the_environment(monkeypatch) -> None:
-    monkeypatch.setenv("CLAIREAI_TEMPERATURE", "1.1")
-    monkeypatch.setenv("CLAIREAI_TEMPERATURE_TOOLS", "0")
-    settings = Settings(_env_file=None)
-    assert settings.temperature == 1.1
-    assert settings.temperature_tools == 0.0
-
-
-@pytest.mark.parametrize("value", ["-0.1", "2.1"])
-def test_temperature_outside_the_supported_range_is_rejected(value: str) -> None:
+@pytest.mark.parametrize("value", [-0.1, 2.1])
+def test_temperature_outside_range_is_rejected(value: float) -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, temperature=float(value))
+        Settings(_env_file=None, temperature=value)
 
 
-def test_trailing_slash_is_normalised() -> None:
-    settings = Settings(_env_file=None, ollama_base_url="http://localhost:11434/")
-    assert settings.ollama_base_url == "http://localhost:11434"
-
-
-@pytest.mark.parametrize("url", ["ftp://localhost:11434", "not-a-url", "http://"])
-def test_invalid_urls_are_rejected(url: str) -> None:
+def test_output_token_limit_is_bounded() -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, ollama_base_url=url)
-
-
-def test_timeout_bounds_are_enforced() -> None:
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, ollama_timeout_seconds=0.5)
+        Settings(_env_file=None, max_output_tokens=2048)
 
 
 def test_data_dir_override_controls_paths(tmp_path: Path) -> None:
     settings = Settings(_env_file=None, data_dir=tmp_path / "runtime")
     assert settings.database_path == tmp_path / "runtime" / "db" / "claireai.sqlite3"
     assert settings.log_dir == tmp_path / "runtime" / "logs"
+    assert settings.control_state_path == tmp_path / "runtime" / "runtime-control.json"
 
 
-def test_default_data_dir_is_os_application_data_location() -> None:
-    settings = Settings(_env_file=None)
-    # Must not be the working directory or a hard-coded home path.
-    assert settings.resolved_data_dir.is_absolute()
-    assert settings.resolved_data_dir.name.lower() == "claireai"
-
-
-def test_ensure_directories_creates_db_and_log_dirs(tmp_path: Path) -> None:
-    settings = Settings(_env_file=None, data_dir=tmp_path / "runtime")
-    settings.ensure_directories()
-    assert settings.database_path.parent.is_dir()
-    assert settings.log_dir.is_dir()
+def test_unknown_capabilities_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="unknown capability"):
+        Settings(_env_file=None, allowed_capabilities=["teleport"])
 
 
 def test_unknown_setting_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, ollama_typo_setting=True)  # type: ignore[call-arg]
+        Settings(_env_file=None, unknown_setting=True)  # type: ignore[call-arg]

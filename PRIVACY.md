@@ -23,7 +23,7 @@ Nothing is uploaded anywhere by the application.
 - No hosted model provider and no API keys in the runtime path.
 - No background sync, remote backup or cloud storage.
 
-The only network traffic the runtime initiates is to the model endpoint, which must be **loopback** (`127.0.0.1` / `localhost`) unless you explicitly override it. Browser tools fetch URLs you ask them to fetch; those requests go directly from your machine to the site, with no proxy in between.
+The scratch model runs locally and makes no network requests. Browser tools are off by default; when enabled they fetch URLs you ask them to fetch directly from your machine.
 
 ## What the model sees
 
@@ -47,7 +47,7 @@ To delete everything, stop the assistant and remove the data directory. There is
 
 ## Third-party services
 
-- **Ollama** runs locally. Its own logs and model files are governed by its configuration, not ClaireAI's.
+- **Improvement candidates**, training manifests, and evaluation history stay in the local data directory. Promotion is an owner action from the local control panel.
 - **Model weights** carry their own licences, listed in [docs/model-and-data-licenses.md](docs/model-and-data-licenses.md).
 - **GitHub** hosts this repository. Reading it, opening issues or commenting is covered by GitHub's privacy policy and is unrelated to the application's runtime behaviour.
 

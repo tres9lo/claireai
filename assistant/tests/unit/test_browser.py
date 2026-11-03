@@ -238,7 +238,7 @@ def test_download_file_refuses_a_missing_parent(root: Path) -> None:
 
 
 def test_the_registry_marks_web_tools_as_needing_approval() -> None:
-    registry = default_registry()
+    registry = default_registry(browser_enabled=True)
     for name in ("open_url", "search_web", "download_file"):
         assert registry.get(name).risk == "needs_approval"
     # Reading a page already fetched in this task touches nothing.
@@ -249,7 +249,7 @@ def test_the_registry_marks_web_tools_as_needing_approval() -> None:
 
 
 def test_web_requests_route_to_the_browser_tools() -> None:
-    registry = default_registry()
+    registry = default_registry(browser_enabled=True)
     for text in (
         "open https://example.com and tell me what it says",
         "search the web for python 3.13 release notes",
@@ -261,6 +261,6 @@ def test_web_requests_route_to_the_browser_tools() -> None:
 
 def test_opening_a_local_file_still_routes_to_the_file_tools() -> None:
     # "open" is shared with reading a file; the object has to decide.
-    result = route("open the file notes.txt", default_registry())
+    result = route("open the file notes.txt", default_registry(browser_enabled=True))
     assert result.intent == "read"
     assert "read_text_file" in result.tools

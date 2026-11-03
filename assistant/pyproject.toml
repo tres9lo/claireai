@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "ClaireAI local-first personal assistant runtime (Track A)"
 requires-python = ">=3.11"
 dependencies = [
-  # Local model runtime is reached over its loopback HTTP API; no hosted SDK.
+  # The assistant keeps external network access in explicit tools only.
   "httpx>=0.27",
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
@@ -25,6 +25,7 @@ dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
 ]
+model = ["torch>=2.2"]
 
 [project.scripts]
 claireai = "claireai.cli:main"

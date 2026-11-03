@@ -27,10 +27,10 @@ The result is an assistant you can actually point at real folders, because the b
 
 | Capability | Status |
 | --- | --- |
-| Validated configuration with loopback-only model endpoints | ✅ |
+| From-scratch byte tokenizer and decoder-only transformer research model | ✅ foundation |
 | SQLite storage with a versioned, checksummed migration runner | ✅ |
 | Append-only audit log (`task_log`), enforced by database triggers | ✅ |
-| Provider-neutral `Brain` interface + Ollama adapter with tool calls | ✅ |
+| Provider-neutral `Brain` interface + local scratch-checkpoint adapter | ✅ foundation |
 | CLI chat that records every turn as a task plus audit entries | ✅ |
 | 5 read-only file tools (list, info, read, search, largest) | ✅ |
 | 6 approval-gated write tools (create, write, rename, move, trash) | ✅ |
@@ -41,7 +41,10 @@ The result is an assistant you can actually point at real folders, because the b
 | Read-only `/today` page served over loopback | ✅ |
 | Retention/pruning for trash and summaries | ✅ |
 | Presence HUD (canvas 2D, loopback preview) | ✅ |
-| Browser tools over HTTP (no JavaScript execution) | ✅ |
+| Browser tools, disabled until enabled in the local control panel | ✅ |
+| Runtime stop switch and browser access control panel | ✅ first version |
+| OS family detection (Linux/Windows first targets) | ✅ detection only |
+| Licensed corpus, trained capable assistant, TTS voice controls | 🚧 not included yet |
 | FastAPI service · Playwright engine · Tauri desktop shell | 🚧 planned |
 | Camera, screen, cursor and keyboard control | 🚧 specified, not built |
 
@@ -59,7 +62,7 @@ claireai.cli ──► claireai.agent.run_task
   │                 ├─ presence.emit("thinking")
   │                 ▼
   │            loop (≤ 8 steps)
-  │                 ├─ brain.generate(messages, tools) ──► Ollama at 127.0.0.1
+  │                 ├─ brain.generate(messages, tools) ──► locally trained PyTorch checkpoint
   │                 ├─ no tool call → answer, status = succeeded
   │                 └─ tool call →
   │                      1. registry lookup      unknown → refused
@@ -85,13 +88,14 @@ This is the part worth reviewing before you run it.
 - **The audit log is append-only at the database level.** Triggers reject `UPDATE` and `DELETE`; retention reports the log instead of pruning it.
 - **Nothing is deleted permanently.** `move_to_trash` relocates into ClaireAI's own recoverable bin.
 - **Secrets are redacted and long text truncated** before storage.
-- **The model runtime must be loopback** unless explicitly overridden.
+- **Inference is local.** ClaireAI loads its own checkpoint and does not call a hosted model API.
+- **Capabilities are opt-in.** Browser access starts disabled. The local HUD can enable it; browser actions still use the existing approval path. The stop control blocks new model/tool steps after the current model call finishes.
 
 Read [docs/architecture/threat-model.md](docs/architecture/threat-model.md) for the full boundary analysis.
 
 ## Quick start (Linux)
 
-Requires **Python 3.11+** and a local [Ollama](https://ollama.com/download) install.
+Requires **Python 3.11+**, PyTorch, and a licensed text corpus. The scratch model starts with random weights; it is a research prototype and will not behave like a pretrained assistant until trained and evaluated on substantial task-specific data.
 
 ```bash
 git clone https://github.com/tres9lo/claireai.git
@@ -99,10 +103,14 @@ cd claireai
 
 # 1. Python environment
 uv venv --seed --python 3.12 assistant/.venv
-uv pip install --python assistant/.venv/bin/python -e "assistant[dev]"
+uv pip install --python assistant/.venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch
+uv pip install --python assistant/.venv/bin/python -e "assistant[dev,model]"
+uv pip install --python assistant/.venv/bin/python -e ./brain-lab
 
-# 2. Local model — downloaded once, works offline afterwards
-ollama pull qwen2.5:1.5b
+# 2. Add licensed .txt training data under brain-lab/data/raw/ (not committed)
+# Then train a small CPU checkpoint. Increase --steps after confirming the first run.
+export CLAIREAI_DATA_DIR=./runtime-data
+assistant/.venv/bin/python brain-lab/train.py brain-lab/data/raw --steps 1000
 
 # 3. Ask one question; the turn is logged to SQLite
 CLAIREAI_DATA_DIR=./runtime-data \
@@ -114,7 +122,7 @@ CLAIREAI_ALLOWED_FOLDERS='["~/Downloads"]' \
   assistant/.venv/bin/python -m claireai.cli --once "List the biggest files in my Downloads folder"
 ```
 
-Windows steps and troubleshooting live in [docs/setup/windows.md](docs/setup/windows.md) and [docs/platform-support.md](docs/platform-support.md).
+Windows setup uses the same Python and CPU training path; see [docs/setup/windows.md](docs/setup/windows.md).
 
 ### Granting a folder
 
@@ -142,8 +150,11 @@ assistant/.venv/bin/python -m claireai.cli --summary
 # Daily summary at 18:00 local time
 assistant/.venv/bin/python -m claireai.cli --summary-at 18:00
 
-# Presence HUD at http://127.0.0.1:8765/
-assistant/.venv/bin/python scripts/presence_preview.py --demo --db ./runtime-data/db/claireai.sqlite3
+# Local HUD and runtime controls at http://127.0.0.1:8765/
+assistant/.venv/bin/python scripts/presence_preview.py --data-dir ./runtime-data
+
+# Self-improvement: enable it in the HUD, then train an isolated candidate
+assistant/.venv/bin/python brain-lab/train.py brain-lab/data/raw --steps 200 --improvement
 
 # Diagnostics
 assistant/.venv/bin/python scripts/doctor.py
@@ -170,7 +181,7 @@ Re-sending every tool schema on every loop step is the dominant cost on a CPU-on
 ```bash
 cd assistant && python -m pytest        # unit + security tests
 assistant/.venv/bin/python scripts/smoke.py --skip-model   # end-to-end, no model
-assistant/.venv/bin/python scripts/smoke.py                # full run, needs Ollama
+assistant/.venv/bin/python scripts/smoke.py                # full run, needs a trained checkpoint
 ```
 
 CI runs the portable unit suite on Ubuntu and Windows across Python 3.11 and 3.12. The 14-check smoke script verifies the real loop: migrations, a chat turn, tool execution, a refused write, the presence stream, the daily summary, the read-only page, retention, and that the audit log rejects mutation.

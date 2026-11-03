@@ -170,8 +170,10 @@ BROWSER_TOOLS: tuple[Tool, ...] = (
 )
 
 
-def default_registry() -> ToolRegistry:
-    return ToolRegistry((*FILE_TOOLS, *WRITE_TOOLS, *BROWSER_TOOLS))
+def default_registry(*, browser_enabled: bool = False) -> ToolRegistry:
+    """Build the active tools; browser networking stays off unless enabled."""
+    tools = (*FILE_TOOLS, *WRITE_TOOLS, *(BROWSER_TOOLS if browser_enabled else ()))
+    return ToolRegistry(tools)
 
 
 __all__ = [

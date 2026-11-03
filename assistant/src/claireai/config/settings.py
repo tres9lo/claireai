@@ -7,17 +7,14 @@ directory is worse than one that refuses to start.
 
 from __future__ import annotations
 
-import ipaddress
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
 
 from platformdirs import user_data_path
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_NAME = "ClaireAI"
-LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # Machine-access capabilities (docs/architecture/machine-access.md). Knowing the
 # names here lets configuration reject typos early; the tools that use them land
@@ -25,23 +22,10 @@ LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 KNOWN_CAPABILITIES = frozenset({"screen", "camera", "cursor", "keyboard", "clipboard"})
 
 
-def _is_loopback(host: str | None) -> bool:
-    if not host:
-        return False
-    if host in LOOPBACK_HOSTS:
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
 class Settings(BaseSettings):
     """Settings sourced from ``CLAIREAI_*`` environment variables or ``.env``.
 
-    The model runtime defaults to loopback on purpose (roadmap 7.12). Pointing
-    it at another machine requires an explicit opt-in so the default install
-    never sends prompts over the network by accident.
+    The brain is an on-disk checkpoint; inference makes no network requests.
     """
 
     model_config = SettingsConfigDict(
@@ -51,10 +35,9 @@ class Settings(BaseSettings):
         extra="forbid",
     )
 
-    ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen2.5:1.5b"
-    ollama_timeout_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
-    allow_non_loopback_ollama: bool = False
+    model_checkpoint: Path | None = None
+    max_output_tokens: int = Field(default=128, ge=8, le=1024)
+    owner_name: str = "Bikorimana Ange Tresor"
 
     # Tool sandbox (roadmap 7.2). Empty by default: file tools can reach nothing
     # until the owner names the folders. Set as a JSON array, e.g.
@@ -69,9 +52,6 @@ class Settings(BaseSettings):
 
     # Presence renderer (docs/architecture/presence-renderer.md). `auto` means
     # WebGL when the webview supports it and holds the frame budget, else 2D.
-    # Cap on generated tokens per model call. Measured on this laptop: an
-    # unbounded answer cost 126 s; a tool-using reply needs far less than 400.
-    max_output_tokens: int = Field(default=400, ge=32, le=4096)
 
     # Decoding temperature, chosen per phase by the agent loop rather than fixed:
     # while no tool has run the model is deciding what to do, which wants
@@ -95,23 +75,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     @model_validator(mode="after")
-    def _validate_runtime_endpoint(self) -> "Settings":
-        url = self.ollama_base_url.strip().rstrip("/")
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError(
-                f"CLAIREAI_OLLAMA_BASE_URL must be an http(s) URL with a host, got {self.ollama_base_url!r}"
-            )
-        if not _is_loopback(parsed.hostname) and not self.allow_non_loopback_ollama:
-            raise ValueError(
-                "CLAIREAI_OLLAMA_BASE_URL points at a non-loopback host "
-                f"({parsed.hostname!r}). Local inference is the default; set "
-                "CLAIREAI_ALLOW_NON_LOOPBACK_OLLAMA=true only after a security review."
-            )
-        if not self.ollama_model.strip():
-            raise ValueError("CLAIREAI_OLLAMA_MODEL must not be empty")
-        object.__setattr__(self, "ollama_base_url", url)
-
+    def _validate_settings(self) -> "Settings":
+        owner_name = self.owner_name.strip()
+        if not owner_name:
+            raise ValueError("CLAIREAI_OWNER_NAME must not be empty")
+        object.__setattr__(self, "owner_name", owner_name)
         cleaned: list[Path] = []
         for folder in self.allowed_folders:
             text = str(folder).strip()
@@ -147,6 +115,18 @@ class Settings(BaseSettings):
     @property
     def database_path(self) -> Path:
         return self.resolved_data_dir / "db" / "claireai.sqlite3"
+
+    @property
+    def resolved_model_checkpoint(self) -> Path:
+        return (
+            Path(self.model_checkpoint).expanduser()
+            if self.model_checkpoint
+            else self.resolved_data_dir / "models" / "claire-scratch.pt"
+        )
+
+    @property
+    def control_state_path(self) -> Path:
+        return self.resolved_data_dir / "runtime-control.json"
 
     @property
     def log_dir(self) -> Path:

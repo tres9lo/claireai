@@ -25,8 +25,7 @@ supported" and the run reports 23 failed / 52 passed. CI uses
 Covered today: settings validation and loopback enforcement, migration runner
 (idempotency, checksum tampering, statement splitting with trigger bodies),
 schema safety (foreign keys, append-only audit triggers), task state machine,
-credential redaction, the Ollama adapter via `httpx.MockTransport` (including
-tool-call parsing and malformed-call rejection), CLI task/audit bookkeeping, the
+credential redaction, the scratch model adapter and checkpoint validation, CLI task/audit bookkeeping, the
 evaluation checkers/runner, the tool registry, the five read-only file tools, the
 agent loop (refusals, invalid arguments, empty replies, dry run, step limit), the
 approval flow (brokers, the CLI prompt, non-TTY refusal, denial logging, shared
@@ -37,16 +36,15 @@ The allow-list tests are the ones to keep strict: they assert that parent
 traversal, absolute paths outside the list, and symlinks that resolve outside it
 are all refused, and that an empty allow-list allows nothing.
 
-**Labelled honestly:** every Ollama test is **mocked** — it proves our request
-shape and error mapping, not that a real runtime answers. The real proof is the
-CLI smoke test in `docs/setup/linux.md`.
+Scratch-model tests cover checkpoint loading and response parsing. They do not
+measure conversational capability; use the fixed evaluation harness for that.
 
 No Windows results exist yet; see `docs/platform-support.md`.
 
 ## Smoke check
 
 ```bash
-assistant/.venv/bin/python scripts/smoke.py              # needs Ollama
+assistant/.venv/bin/python scripts/smoke.py              # uses a configured scratch checkpoint
 assistant/.venv/bin/python scripts/smoke.py --skip-model # no model needed
 ```
 
@@ -72,9 +70,9 @@ and assert `/`, `/state`, `/events`, `/healthz`, `/today`, a 404 for unknown
 paths and the loopback-only refusal. If they ever look flaky, remember the stream
 sends `retry:` before the first event — read until a data frame arrives.
 
-The `/today` tests are the security-relevant ones: they assert the page writes
-nothing (the database file's mtime is unchanged after repeated requests), that no
-POST is implemented on any path (501), and that the CSP header is present.
+The `/today` tests assert the page writes nothing (the database file's mtime is
+unchanged after repeated requests) and that the CSP header is present. The local
+control POST requires a loopback Host, same-origin header, and JSON body.
 `tests/unit/test_today.py` adds that a request containing `<script>` comes back
 escaped, and that `open_read_only` raises on a write attempt.
 
@@ -117,25 +115,14 @@ Reading the output: `PASS` = all runs passed, `FLAKY` = some runs passed,
 Exit codes: `0` all stable, `1` at least one case failed or flaked, `2` bad
 configuration or case file, `3` runtime unavailable / model not installed.
 
-### Current results, and which models are supported
+### Current model status
 
-Measured 2026-10-31 on the reference machine (Zorin 18.1, i5-6300U, 7.1 GiB,
-Ollama 0.40.2), `--runs 2`, temperature 0, both models run the same day:
-
-| model | cases stable | checks passed | supported |
-| --- | --- | --- | --- |
-| `qwen2.5:1.5b` (default) | 12/13 | 24/26 | yes |
-| `qwen2.5:0.5b` | 9/13 | 18/26 | **no** |
-
-`qwen2.5:0.5b` is **unsupported**. It swaps the source and destination of a
-move, drops the required headings from a summary while inventing events, and —
-through the real agent loop — generates a malformed tool call that Ollama
-discards, so the turn ends with no answer at all (23–40 tokens generated,
-`content` empty). At temperature 0 that happens on every attempt; at the app's
-default temperature it happened on half. The default stays
-`qwen2.5:1.5b`, another model is still selectable with
-`CLAIREAI_OLLAMA_MODEL`, and these failures are why a smaller tag should not be
-assumed to work without re-running this harness first.
+The current architecture is a small transformer trained from random
+initialization. No task-relevant corpus or capable assistant checkpoint is
+bundled, so there are no current model capability results to report. Historical
+predecessor-model measurements are in `PROGRESS.md`; they do not describe the
+active runtime. Evaluate every newly trained checkpoint with the fixed harness
+before relying on it.
 
 Two categories read differently from the rest:
 
@@ -159,26 +146,3 @@ Rules for the case file:
   and design around it (deterministic code instead of free-form model output).
 - Keep cases small and unambiguous; a flaky case usually means the prompt or the
   output contract is ambiguous, not that the model is random.
-
-## Proving inference is local (offline check)
-
-The roadmap asks for a repeat with the network disconnected. If the owner cannot
-drop their connection (it may be carrying the coding session), the same
-condition can be created for the process alone: run the CLI inside a network
-namespace that has no route anywhere, bridged to the local runtime over a Unix
-socket. Nothing leaves the machine, and the model still answers.
-
-```bash
-# scratch relay, outside git: runtime-data/tmp/relay.py unix-out|tcp-out
-python runtime-data/tmp/relay.py unix-out --socket "$PWD/runtime-data/tmp/ollama.sock" &
-unshare -rn bash -c '
-  ip link set lo up
-  # prove it: no route, egress blocked, DNS broken
-  # then bridge 127.0.0.1:11434 to the Unix socket and run the real CLI
-  python -m claireai.cli --data-dir ./runtime-data --once "what does a tokenizer do?"'
-```
-
-Record it in `PROGRESS.md` with the egress/DNS lines, the answer and the audit
-row. State the limit honestly: this proves the client process used no network
-and that the runtime serves from local model files; it does not audit the
-runtime's own syscalls.

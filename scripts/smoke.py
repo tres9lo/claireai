@@ -2,7 +2,7 @@
 """End-to-end smoke check that runs the same way on Linux and Windows.
 
     assistant/.venv/bin/python scripts/smoke.py
-    assistant/.venv/bin/python scripts/smoke.py --skip-model     # no Ollama needed
+    assistant/.venv/bin/python scripts/smoke.py --skip-model     # no checkpoint needed
 
 The unit tests prove behaviour with mocked edges; this proves the assembled
 thing: settings, database, migrations, a real model turn (unless skipped), the
@@ -28,7 +28,7 @@ from pathlib import Path
 from claireai.agent import run_task
 from claireai.approval import DenyAll
 from claireai.audit import AuditLog
-from claireai.brain import BrainResponse, OllamaBrain, ToolCall
+from claireai.brain import BrainResponse, ScratchBrain, ToolCall
 from claireai.cli import ask
 from claireai.config import Settings
 from claireai.presence import PresenceStream
@@ -107,7 +107,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"data directory: {data_dir}")
         print(f"workspace: {workspace}\n")
 
-        results.check("settings load and validate", True, f"model={settings.ollama_model}")
+        results.check("settings load and validate", True, f"checkpoint={settings.resolved_model_checkpoint}")
 
         applied = database.migrate()
         results.check(
@@ -116,11 +116,7 @@ async def _run(args: argparse.Namespace) -> int:
             f"applied={', '.join(applied) or 'none (already up to date)'}",
         )
 
-        brain = OllamaBrain(
-            base_url=settings.ollama_base_url,
-            model=settings.ollama_model,
-            timeout=settings.ollama_timeout_seconds,
-        )
+        brain = ScratchBrain(checkpoint=settings.resolved_model_checkpoint)
         health = await brain.health()
         model_ok = health.available and health.model_present
         if args.skip_model:
@@ -129,13 +125,13 @@ async def _run(args: argparse.Namespace) -> int:
             results.check("local model runtime reachable", False, health.detail)
         elif not health.model_present:
             results.check(
-                "configured model installed",
+                "scratch checkpoint ready",
                 False,
-                f"{settings.ollama_model} missing; run: ollama pull {settings.ollama_model}",
+                health.detail,
             )
         else:
-            results.check("local model runtime reachable", True, f"{len(health.models)} model(s)")
-            results.check("configured model installed", True, settings.ollama_model)
+            results.check("scratch model available", True, ", ".join(health.models))
+            results.check("scratch checkpoint ready", True, str(settings.resolved_model_checkpoint))
 
         if not args.skip_model and model_ok:
             turn = await ask(settings=settings, conn=conn, brain=brain, question="Say OK.")
@@ -249,8 +245,8 @@ async def _run(args: argparse.Namespace) -> int:
             routed.route == "largest"
             and len(shown) == 1
             and shown[0]["function"]["name"] == "find_largest_files"
-            and len(default_registry()) > 1,
-            f"{len(shown)} of {len(default_registry())} tools, intent={routed.route}",
+            and len(default_registry(browser_enabled=True)) > 1,
+            f"{len(shown)} of {len(default_registry(browser_enabled=True))} tools, intent={routed.route}",
         )
 
         # Imported here so a missing scheduler dependency cannot hide the checks above.
@@ -323,7 +319,7 @@ async def _run(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="End-to-end ClaireAI smoke check.")
     parser.add_argument("--data-dir", help="use this directory instead of a temporary one")
-    parser.add_argument("--skip-model", action="store_true", help="skip every step that needs Ollama")
+    parser.add_argument("--skip-model", action="store_true", help="skip every step that needs a trained checkpoint")
     parser.add_argument("--keep", action="store_true", help="keep the temporary data directory")
     args = parser.parse_args(argv)
     try:

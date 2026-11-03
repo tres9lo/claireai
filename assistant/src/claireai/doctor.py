@@ -21,8 +21,9 @@ from typing import Sequence
 from pydantic import ValidationError
 
 from claireai import __version__
-from claireai.brain import OllamaBrain
+from claireai.brain import ScratchBrain
 from claireai.config import Settings
+from claireai.platform import detect_os, supported_host
 
 TRACKED_PACKAGES = (
     "httpx",
@@ -79,6 +80,11 @@ def _platform_section(settings: Settings) -> Section:
         rows=(
             Row("OS", f"{platform.system()} {platform.release()} ({platform.machine()})"),
             Row("Python", f"{platform.python_version()} at {sys.executable}"),
+            Row(
+                "Detected host",
+                f"{detect_os().family} ({detect_os().name} {detect_os().release}, {detect_os().machine})",
+                OK if supported_host() else WARN,
+            ),
             Row("ClaireAI package", __version__),
             Row("Data directory", str(settings.resolved_data_dir)),
             Row("Log directory", str(settings.log_dir)),
@@ -90,14 +96,8 @@ def _settings_row(settings: Settings) -> Section:
     return Section(
         title="Configuration",
         rows=(
-            Row("Model runtime", settings.ollama_base_url),
-            Row("Model", settings.ollama_model),
-            Row(
-                "Non-loopback override",
-                "enabled" if settings.allow_non_loopback_ollama else "disabled (default)",
-                WARN if settings.allow_non_loopback_ollama else OK,
-            ),
-            Row("Request timeout", f"{settings.ollama_timeout_seconds:g}s"),
+            Row("Model backend", "from-scratch transformer (CPU)"),
+            Row("Checkpoint", str(settings.resolved_model_checkpoint)),
             Row(
                 "Data dir exists",
                 "yes" if settings.resolved_data_dir.is_dir() else "no (created on first run)",
@@ -152,11 +152,7 @@ def _versions_section() -> Section:
 
 
 async def _brain_section(settings: Settings) -> tuple[Section, list[str], list[str]]:
-    brain = OllamaBrain(
-        base_url=settings.ollama_base_url,
-        model=settings.ollama_model,
-        timeout=min(settings.ollama_timeout_seconds, 15.0),
-    )
+    brain = ScratchBrain(checkpoint=settings.resolved_model_checkpoint)
     try:
         health = await brain.health()  # type: ignore[attr-defined]
     finally:
@@ -166,22 +162,22 @@ async def _brain_section(settings: Settings) -> tuple[Section, list[str], list[s
     errors: list[str] = []
     rows = [
         Row(
-            "Runtime reachable",
+            "Local model available",
             "yes" if health.available else f"no - {health.detail}",
             OK if health.available else FAIL,
         ),
         Row(
-            "Configured model installed",
-            "yes" if health.model_present else f"no - run: ollama pull {settings.ollama_model}",
+            "Scratch checkpoint ready",
+            "yes" if health.model_present else f"no - {health.detail}",
             OK if health.model_present else FAIL,
         ),
-        Row("Installed models", ", ".join(health.models) or "(none)"),
+        Row("Checkpoint model", ", ".join(health.models) or "(none)"),
     ]
     if not health.available:
-        errors.append(f"model runtime unreachable at {settings.ollama_base_url}")
+        errors.append(f"scratch model unavailable: {health.detail}")
     elif not health.model_present:
-        errors.append(f"model {settings.ollama_model!r} is not installed")
-    return Section(title="Local model runtime", rows=tuple(rows)), warnings, errors
+        errors.append(f"scratch checkpoint is not ready: {settings.resolved_model_checkpoint}")
+    return Section(title="Local scratch model", rows=tuple(rows)), warnings, errors
 
 
 async def collect(settings: Settings | None = None) -> Report:

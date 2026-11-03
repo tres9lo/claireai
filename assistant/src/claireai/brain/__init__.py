@@ -6,11 +6,12 @@ from claireai.brain.base import (
     BrainHealth,
     BrainResponse,
     BrainResponseError,
+    BrainStopped,
     BrainUnavailable,
     Message,
     ToolCall,
 )
-from claireai.brain.ollama import OllamaBrain
+from claireai.brain.scratch import ScratchBrain
 
 __all__ = [
     "Brain",
@@ -18,8 +19,9 @@ __all__ = [
     "BrainHealth",
     "BrainResponse",
     "BrainResponseError",
+    "BrainStopped",
     "BrainUnavailable",
     "Message",
-    "OllamaBrain",
+    "ScratchBrain",
     "ToolCall",
 ]

@@ -19,6 +19,7 @@ Security posture:
 from __future__ import annotations
 
 import json
+import ipaddress
 import sqlite3
 import threading
 import time
@@ -29,6 +30,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from claireai.presence import STATES, PresenceStream, sse_frame
+from claireai.runtime_control import RuntimeControl
+from claireai.improvements import ImprovementError, ImprovementLedger
 from claireai.today import open_read_only, render_today, render_unavailable
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -37,11 +40,24 @@ POLL_SECONDS = 0.2
 TODAY_CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 
 
+def _is_loopback_host_header(raw: str) -> bool:
+    host = urlparse(f"//{raw}").hostname
+    if not host:
+        return False
+    if host.lower() in LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _handler_factory(
     stream: PresenceStream,
     html: bytes,
     page_title: str,
     database_path: Path | None = None,
+    control_path: Path | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     class PresenceHandler(BaseHTTPRequestHandler):
         server_version = "ClaireAIPresence/0.1"
@@ -63,8 +79,56 @@ def _handler_factory(
                 self._today()
             elif path == "/healthz":
                 self._send(HTTPStatus.OK, "text/plain; charset=utf-8", b"ok\n")
+            elif path == "/control-state" and control_path is not None:
+                payload = json.dumps(RuntimeControl(control_path).read(), sort_keys=True).encode()
+                self._send(HTTPStatus.OK, "application/json", payload)
+            elif path == "/improvements" and control_path is not None:
+                ledger = ImprovementLedger(control_path.parent)
+                payload = json.dumps(ledger.list(), sort_keys=True).encode()
+                self._send(HTTPStatus.OK, "application/json", payload)
             else:
                 self._send(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n")
+
+        def do_POST(self) -> None:  # noqa: N802
+            request_path = urlparse(self.path).path
+            if request_path not in {"/control", "/improvements"} or control_path is None:
+                self._send(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n")
+                return
+            host = self.headers.get("Host", "")
+            expected_origin = f"http://{host}"
+            if (
+                not _is_loopback_host_header(host)
+                or self.headers.get("Origin") != expected_origin
+                or self.headers.get("Sec-Fetch-Site", "same-origin") not in {"same-origin", "none"}
+                or self.headers.get_content_type() != "application/json"
+            ):
+                self._send(HTTPStatus.FORBIDDEN, "text/plain; charset=utf-8", b"same-origin JSON required\n")
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 1 <= length <= 1024:
+                    raise ValueError("invalid body size")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError("JSON object required")
+                if request_path == "/control":
+                    result = RuntimeControl(control_path).update(body)
+                else:
+                    action = body.get("action")
+                    candidate_id = body.get("id")
+                    if not isinstance(candidate_id, str) or action not in {"approve", "reject", "promote"}:
+                        raise ValueError("provide a candidate id and approve, reject, or promote action")
+                    ledger = ImprovementLedger(control_path.parent)
+                    if action == "promote":
+                        from claireai.config import Settings
+                        ledger.promote(candidate_id, active_checkpoint=Settings(data_dir=control_path.parent).resolved_model_checkpoint)
+                    else:
+                        ledger.decide(candidate_id, "approved" if action == "approve" else "rejected")
+                    result = ledger.list()
+            except (ValueError, OSError, ImprovementError) as exc:
+                self._send(HTTPStatus.BAD_REQUEST, "text/plain; charset=utf-8", str(exc).encode()[:512])
+                return
+            self._send(HTTPStatus.OK, "application/json", json.dumps(result, sort_keys=True).encode())
 
         def _send(
             self,
@@ -138,6 +202,7 @@ def build_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     database_path: Path | None = None,
+    control_path: Path | None = None,
 ) -> ThreadingHTTPServer:
     """Create (but do not start) the preview server.
 
@@ -150,7 +215,13 @@ def build_server(
             "a LAN-exposed renderer needs the paired API and a threat review"
         )
     html = html_path.read_bytes()
-    handler = _handler_factory(stream, html, html_path.name, Path(database_path) if database_path else None)
+    handler = _handler_factory(
+        stream,
+        html,
+        html_path.name,
+        Path(database_path) if database_path else None,
+        Path(control_path) if control_path else None,
+    )
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     return server
@@ -181,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Serve the ClaireAI presence HUD.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--data-dir", help="ClaireAI data directory shared with the CLI runtime")
     parser.add_argument("--demo", action="store_true", help="cycle fake states for a visual check")
     parser.add_argument(
         "--html",
@@ -192,12 +264,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    from claireai.config import Settings
+
+    settings = Settings(data_dir=Path(args.data_dir).expanduser() if args.data_dir else None)
+    control_path = settings.control_state_path
     if args.db:
         database_path: Path | None = Path(args.db).expanduser()
     else:
-        from claireai.config import Settings
-
-        candidate = Settings().database_path
+        candidate = settings.database_path
         database_path = candidate if candidate.exists() else None
 
     stream = PresenceStream()
@@ -211,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         host=args.host,
         port=args.port,
         database_path=database_path,
+        control_path=control_path,
     )
     host, port = server.server_address[:2]
     print(f"presence preview: http://{host}:{port}/  ({len(STATES)} states)")
@@ -220,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
         print("today page disabled: no database found; pass --db PATH to enable it")
     if args.demo:
         print("demo mode: fake state changes every 1.5 s")
+    print(f"local controls: {control_path}")
     try:
         server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:

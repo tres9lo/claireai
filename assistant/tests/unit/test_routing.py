@@ -20,7 +20,7 @@ from claireai.tools import default_registry
 
 @pytest.fixture()
 def registry():
-    return default_registry()
+    return default_registry(browser_enabled=True)
 
 
 @pytest.mark.parametrize(

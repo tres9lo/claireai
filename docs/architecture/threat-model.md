@@ -24,7 +24,7 @@ implemented **today**, or marks the control as required-when-built.
 ```
  owner ──prompt──▶ CLI/UI ──request──▶ agent loop ──tool──▶ filesystem / OS
                     ▲                    │
-                    │ approval           ├──▶ model (Ollama, loopback)
+                    │ approval           ├──▶ model (local scratch checkpoint)
                     └──── decision ◀─────┘
  renderer ◀── PresenceEvent (read-only, loopback) ── agent / API
  untrusted input: file contents, file names, screenshots, OCR, clipboard,
@@ -62,7 +62,7 @@ Two rules hold the design together:
 - The owner's machine account is not already compromised. A same-user attacker
   can read the database and the config regardless of what this app does.
 - Loopback is trusted. Anyone who can bind `127.0.0.1` is already the same user.
-- The model weights and the Ollama runtime are not adversarial. They are
+- The model weights and local inference runtime are not adversarial. They are
   downloaded out of band and recorded in `docs/model-and-data-licenses.md`.
 - The human reads the approval prompt. The prompt shows tool, arguments, target
   and reference; it does not hide the effect behind a summary.

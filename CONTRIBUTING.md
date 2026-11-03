@@ -20,10 +20,11 @@ cd assistant
 python -m pytest
 ```
 
-Ollama is only needed for the parts of the smoke check that talk to a model:
+The model smoke check is skipped unless a scratch checkpoint exists. To run the
+dependency-free runtime checks:
 
 ```bash
-scripts/smoke.py --skip-model
+assistant/.venv/bin/python scripts/smoke.py --skip-model
 ```
 
 ## What a pull request needs

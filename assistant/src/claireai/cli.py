@@ -24,7 +24,7 @@ from pydantic import ValidationError
 from claireai.agent import AgentError, describe_steps, run_task
 from claireai.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest, DenyAll
 from claireai.audit import AuditLog, redact
-from claireai.brain import Brain, BrainError, Message, OllamaBrain
+from claireai.brain import Brain, BrainError, BrainStopped, Message, ScratchBrain
 from claireai.config import Settings
 from claireai.permissions import Sandbox
 from claireai.presence import PresenceStream
@@ -34,6 +34,7 @@ from claireai.retention import (
     describe as describe_prune,
     plan as plan_prune,
 )
+from claireai.runtime_control import RuntimeControl
 from claireai.scheduler import build_scheduler, next_run_label, run_once
 from claireai.storage import Database, TaskRepository, transaction
 from claireai.summary import DailySummary, SummaryError, parse_day, render_markdown
@@ -41,6 +42,7 @@ from claireai.tools import default_registry
 
 SYSTEM_PROMPT = (
     "You are ClaireAI, a local personal assistant running on the user's own computer. "
+    "Be friendly, use light humor when it fits, and distinguish known facts from guesses. "
     "Answer briefly and concretely, and say so plainly when you are unsure. "
     "You have no tools yet: do not claim to have performed actions."
 )
@@ -101,6 +103,8 @@ async def ask(
     device: str = "desktop",
 ) -> ChatTurn:
     """Ask one question, recording the task and audit rows for the turn."""
+    if RuntimeControl(settings.control_state_path).read()["shutdown"]:
+        raise BrainStopped("ClaireAI is stopped. Resume it from the local control panel.")
     tasks = TaskRepository(conn)
     audit = AuditLog(conn)
 
@@ -112,7 +116,10 @@ async def ask(
     started = time.perf_counter()
     try:
         response = await brain.generate(
-            [Message(role="system", content=SYSTEM_PROMPT), Message(role="user", content=question)]
+            [
+                Message(role="system", content=f"{SYSTEM_PROMPT} You are assisting {settings.owner_name}; address them naturally."),
+                Message(role="user", content=question),
+            ]
         )
     except BrainError as exc:
         duration_ms = int((time.perf_counter() - started) * 1000)
@@ -123,8 +130,8 @@ async def ask(
                 device=device,
                 action="brain.generate",
                 status="failed",
-                target=settings.ollama_model,
-                detail={"model": settings.ollama_model, "duration_ms": duration_ms, "error": str(exc)},
+                target=str(settings.resolved_model_checkpoint),
+                detail={"model": str(settings.resolved_model_checkpoint), "duration_ms": duration_ms, "error": str(exc)},
             )
         raise
 
@@ -274,10 +281,12 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
     if applied:
         print(f"Applied migrations: {', '.join(applied)}")
     print(f"database: {database_path}")
-    print(f"brain: {'ollama'} @ {settings.ollama_base_url} model={settings.ollama_model}")
+    print(f"brain: from-scratch model @ {settings.resolved_model_checkpoint}")
     sandbox = Sandbox.from_settings(settings)
-    tool_label = "off (--no-tools)" if args.no_tools else f"{len(default_registry())} tools"
-    print(f"tools: {tool_label} | allow-list: {sandbox.describe()}")
+    controls = RuntimeControl(settings.control_state_path).read()
+    registry = default_registry(browser_enabled=controls["browser"])
+    tool_label = "off (--no-tools)" if args.no_tools else f"{len(registry)} tools"
+    print(f"tools: {tool_label} | browser: {'enabled' if controls['browser'] else 'off'} | allow-list: {sandbox.describe()}")
     print(f"routing: {settings.tool_routing} (narrow the tool set per request)")
     approvals_label = "interactive prompt" if sys.stdin.isatty() else "none (write tools refused)"
     print(f"approvals: {approvals_label}")
@@ -297,29 +306,20 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
         finally:
             conn.close()
 
-    brain = OllamaBrain(
-        base_url=settings.ollama_base_url,
-        model=settings.ollama_model,
-        timeout=settings.ollama_timeout_seconds,
-        # Bounded decoding: an unbounded reply took 126 s on this 4-thread CPU.
-        # The temperature here is the base for calls that do not choose one; the
-        # agent loop passes its own per phase (settings.temperature_tools while
-        # deciding, settings.temperature once it is phrasing an answer).
-        options={
-            "num_predict": settings.max_output_tokens,
-            "temperature": settings.temperature,
-        },
+    brain = ScratchBrain(
+        checkpoint=settings.resolved_model_checkpoint,
+        max_output_tokens=settings.max_output_tokens,
     )
     try:
         health = await brain.health()
         if not health.available:
-            print(f"\nERROR: local model runtime unavailable — {health.detail}", file=sys.stderr)
-            print("Install/start Ollama, then retry. No hosted fallback is used.", file=sys.stderr)
+            print(f"\nERROR: scratch model unavailable — {health.detail}", file=sys.stderr)
+            print("Train a checkpoint with brain-lab/train.py; no remote inference is used.", file=sys.stderr)
             return EXIT_RUNTIME
         if not health.model_present:
-            print(f"\nERROR: model {settings.ollama_model!r} is not installed locally.", file=sys.stderr)
-            print(f"Download it once: ollama pull {settings.ollama_model}", file=sys.stderr)
-            print(f"Installed models: {', '.join(health.models) or '(none)'}", file=sys.stderr)
+            print("\nERROR: the configured scratch-model checkpoint is not ready.", file=sys.stderr)
+            print(f"Checkpoint: {settings.resolved_model_checkpoint}", file=sys.stderr)
+            print(health.detail, file=sys.stderr)
             return EXIT_RUNTIME
 
         if args.once:
@@ -368,8 +368,7 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="claireai", description="Chat with the local ClaireAI model.")
     parser.add_argument("--once", "-q", metavar="QUESTION", help="ask one question, print the answer, exit")
-    parser.add_argument("--model", help="override CLAIREAI_OLLAMA_MODEL for this run")
-    parser.add_argument("--base-url", help="override CLAIREAI_OLLAMA_BASE_URL (loopback only by default)")
+    parser.add_argument("--model-checkpoint", type=Path, help="override CLAIREAI_MODEL_CHECKPOINT for this run")
     parser.add_argument("--data-dir", help="override the application data directory (development use)")
     parser.add_argument("--db", help="use a specific SQLite file instead of the default location")
     parser.add_argument("--device", default="desktop", help="device label recorded in the task log")
@@ -429,10 +428,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     overrides: dict[str, object] = {}
-    if args.model:
-        overrides["ollama_model"] = args.model
-    if args.base_url:
-        overrides["ollama_base_url"] = args.base_url
+    if args.model_checkpoint:
+        overrides["model_checkpoint"] = args.model_checkpoint
     if args.data_dir:
         overrides["data_dir"] = Path(args.data_dir)
     if args.no_routing:

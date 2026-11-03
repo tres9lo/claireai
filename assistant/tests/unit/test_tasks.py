@@ -49,8 +49,8 @@ def test_failure_records_error(conn: sqlite3.Connection) -> None:
     tasks = TaskRepository(conn)
     task = tasks.create(request="hi")
     tasks.update_status(task.id, "running")
-    failed = tasks.update_status(task.id, "failed", error="ollama down")
-    assert failed.error == "ollama down"
+    failed = tasks.update_status(task.id, "failed", error="model unavailable")
+    assert failed.error == "model unavailable"
     assert failed.status == "failed"
 
 

@@ -1,8 +1,7 @@
 """Provider-neutral brain interface.
 
-Agents and the CLI talk to this module only. Nothing outside ``claireai.brain``
-may import a specific runtime (Ollama today, the from-scratch model later), so
-swapping the brain never touches the agent layer.
+Agents and the CLI talk to this module only. Runtime-specific checkpoint loading
+stays inside ``claireai.brain`` so the agent layer remains provider-neutral.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ class Message:
 
     ``tool_calls`` is set on an assistant message that proposed calls, and
     ``tool_name`` on a ``tool`` message carrying one result
-    (https://docs.ollama.com/capabilities/tool-calling, checked 2026-10-30).
+    Tool calls are represented independently of the model's output format.
     """
 
     role: Role
@@ -84,6 +83,10 @@ class BrainUnavailable(BrainError):
 
 class BrainResponseError(BrainError):
     """The runtime answered, but rejected the request or returned junk."""
+
+
+class BrainStopped(BrainError):
+    """The owner activated the assistant's local stop control."""
 
 
 @runtime_checkable

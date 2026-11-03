@@ -39,8 +39,6 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         _env_file=None,
         data_dir=tmp_path / "data",
-        ollama_base_url="http://127.0.0.1:11434",
-        ollama_model="test-model",
     )
 
 

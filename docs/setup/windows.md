@@ -9,8 +9,7 @@
 
 - Python 3.11+ from python.org (check `py -3 --version`).
 - Git for Windows.
-- Ollama for Windows from <https://ollama.com/download> (runs as a tray app and
-  listens on `http://127.0.0.1:11434`).
+- PyTorch CPU package for the scratch model (installed in the next section).
 - Later phases only: Node.js LTS, `rustup`, and the Microsoft C++ build tools
   required by Tauri v2 (<https://v2.tauri.app/start/prerequisites/>).
 
@@ -21,7 +20,9 @@ py -3 --version
 py -3 -m venv assistant\.venv
 .\assistant\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
-pip install -e "assistant[dev]"
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -e "assistant[dev,model]"
+pip install -e .\brain-lab
 ```
 
 If PowerShell blocks activation, do **not** weaken the machine-wide execution
@@ -29,17 +30,17 @@ policy. Either call the interpreter directly
 (`.\assistant\.venv\Scripts\python.exe -m claireai.cli`), or use the documented
 `-ExecutionPolicy Bypass -Scope Process` form for the current shell only.
 
-## 3. Ollama and the local model
+## 3. Train a local scratch checkpoint
 
 ```powershell
-ollama --version
-ollama pull qwen2.5:1.5b
-ollama list
-Invoke-RestMethod http://127.0.0.1:11434/api/tags | ConvertTo-Json -Depth 3
+New-Item -ItemType Directory -Force brain-lab\data\raw
+$env:CLAIREAI_DATA_DIR = "$PWD\runtime-data"
+# Add licensed UTF-8 .txt training files, then:
+python brain-lab\train.py brain-lab\data\raw --steps 1000
 ```
 
-Do not expose port 11434 on the LAN; the assistant rejects non-loopback model
-endpoints unless explicitly overridden.
+The transformer is randomly initialized. Training speed and assistant quality
+depend on the corpus and hardware; no model weights or corpus are included.
 
 ## 4. Run
 

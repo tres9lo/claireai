@@ -1,5 +1,69 @@
 # Progress log
 
+## 2026-11-03 — Owner direction: scratch brain and local controls (first slice)
+
+**Requested direction:** Train ClaireAI's model from random initialization, remove
+Ollama, add an assistant stop control and explicit access controls, detect the
+host OS, and work toward a voice-enabled desktop assistant. No pretrained model
+or hosted inference fallback is part of this direction.
+
+### Implemented in this slice
+
+- Removed the Ollama adapter and its active configuration from the runtime.
+- Added `brain-lab/`: a byte-pair tokenizer learned from the supplied corpus, a
+  small decoder-only transformer with random initialization, and a CPU-oriented
+  training entry point that saves a checkpoint plus corpus hash manifest.
+- Added `ScratchBrain` as the assistant's local checkpoint adapter. It supports
+  the app's tool-call wire shape; the agent still validates every call and
+  applies the existing sandbox, approval policy, and audit log.
+- Added a local HUD control panel with an emergency pause gate and a browser
+  access toggle. Browser networking starts disabled and normal approval still
+  applies. State is shared with the CLI through an atomic local JSON file.
+- Added a disabled-by-default self-improvement switch. An explicit training
+  command can continue from the active checkpoint into an isolated candidate;
+  evaluation history is append-only, custom evaluations cannot qualify, and a
+  candidate needs the complete fixed suite plus owner approval before promotion.
+  Promotion archives the active checkpoint first. The model cannot edit code,
+  launch its own training, change permissions, or self-promote.
+- Added host OS detection to diagnostics. Existing file path logic remains
+  portable; screen, camera and input adapters are not implemented yet.
+- Updated setup instructions for the scratch model and removed Ollama from the
+  active setup path.
+
+### Not yet achieved
+
+- No task-relevant corpus is included. A throwaway 2-step smoke run on a tiny
+  temporary fixture completed (train loss 85.51, validation loss 84.58); its
+  generated output was `::::::::`, confirming the expected lack of capability.
+  This is only a pipeline check, not a usable model. A model trained from
+  scratch on the recorded i5-6300U / 7.1 GiB host will be a small experiment,
+  not a capable general-purpose assistant without a large, lawful, task-focused
+  corpus and substantial training/evaluation.
+- The current HUD pause blocks new inference/tool steps after any in-flight
+  model call; it does not terminate the CLI process. Browser control is wired;
+  screen/camera/remote input controls are not available because those tools do
+  not exist yet.
+- Voice capture, speech output, voice/pitch tuning, and wake-word activation
+  remain unimplemented. The code does not claim the model is sentient.
+- Installed the CPU PyTorch package in the ignored `assistant/.venv` and verified
+  checkpoint load plus local inference using the temporary smoke checkpoint.
+- Full unit + security suite passed after adapting the control endpoint test;
+  `python -m compileall`, `git diff --check`, and the runtime smoke check passed.
+  A tiny candidate training/evaluation wiring check also passed; the candidate
+  failed its deliberately simple quality case and was not eligible for review.
+  No useful task-quality model exists yet.
+
+### Next steps
+
+1. Install the CPU PyTorch extra in the project environment and source a lawful,
+   task-relevant computer-use corpus with a tracked license manifest.
+2. Run a short training experiment, record training and held-out metrics, then
+   exercise the CLI and fixed evaluation harness against that real checkpoint.
+3. Build a supervised desktop shell that can actually terminate/restart the
+   assistant, then implement and independently gate OS-specific screen/input
+   tools.
+4. Add local TTS/STT with licensed voice assets and exposed pitch/speed controls.
+
 ## 2026-10-29 — Session 1: repository setup + Month 1, Week 1 foundations
 
 **Scope taken:** Initial Repository Setup (steps 1–6, 9) and Month 1 Week 1 —

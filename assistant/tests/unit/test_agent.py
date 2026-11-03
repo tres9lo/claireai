@@ -19,6 +19,7 @@ from claireai.brain import BrainResponse, BrainUnavailable, ToolCall
 from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox
 from claireai.presence import PresenceStream
+from claireai.runtime_control import RuntimeControl
 from claireai.storage import TaskRepository
 from claireai.tools import default_registry
 from claireai.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
@@ -155,13 +156,14 @@ async def test_the_tool_result_is_fed_back_to_the_model(
     assert second[-1].role == "tool"
     assert second[-1].tool_name == "list_folder"
     assert "big.iso" in second[-1].content
-    # The assistant message that proposed the call is echoed, as Ollama requires.
+    # The assistant message that proposed the call stays in the model history.
     assert any(message.tool_calls for message in second)
 
 
 async def test_tool_schemas_are_offered_to_the_model(
     conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
 ) -> None:
+    RuntimeControl(agent_settings.control_state_path).update({"browser": True})
     brain = ScriptedBrain([answer()])
     await run_task(settings=agent_settings, conn=conn, brain=brain, request="hi")
 
@@ -441,7 +443,7 @@ async def test_an_empty_reply_is_a_failure_not_an_answer(
 def _empty_reply(**kwargs) -> BrainResponse:
     """An empty reply carrying the signature of a generated-but-swallowed call.
 
-    ``completion_tokens`` is what the real Ollama responses had: 23-40 tokens
+    ``completion_tokens`` is what the earlier runtime reported: 23-40 tokens
     generated, nothing delivered. It is also the field that decides whether a
     retry is worth attempting.
     """
