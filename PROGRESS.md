@@ -1617,3 +1617,24 @@ or implement the page-approval design against the existing loopback server.
   available only for turns created after this feature; earlier prompts were not
   stored as full transcripts. Details and retention boundaries are in
   `docs/architecture/local-conversations.md`.
+
+## 2026-11-03 — Voice identity, spoken consent and routine requirements
+
+- Added explicit acceptance requirements for always-available wake-word use,
+  speaker enrollment, exact-action spoken consent, and owner-reviewed routine
+  learning/replay. Wake recognition and voice matching alone cannot approve
+  actions; saved routines never retain or reuse approval grants.
+- Recorded the security boundary and staged implementation sequence in
+  `docs/architecture/voice-and-routines.md`.
+- Updated the Wayland screen-capture design to use the user-granted ScreenCast
+  PipeWire stream for transient frames. The session portal exposes ScreenCast,
+  but its Screenshot method returns a file URI, so that method is not suitable
+  for normal ephemeral observation.
+- Environment evidence: current session is Wayland and portal introspection
+  advertises ScreenCast version 5 and Screenshot version 2. The host has no
+  `/dev/snd` capture device; the Python environment has no STT or wake-word
+  package. No microphone capture or screen capture is claimed as implemented.
+- Next implementation slice: build local push-to-talk capture and transcription
+  through the UI with explicit microphone status, then add wake-word detection
+  behind the same local audio interface. Live audio acceptance needs a host with
+  a microphone; mocked tests alone will not satisfy the platform gate.

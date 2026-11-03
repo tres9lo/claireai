@@ -68,7 +68,7 @@ A grant is a record, not a boolean:
 
 | Capability | Linux X11 | Linux Wayland | Windows |
 | --- | --- | --- | --- |
-| Screen capture | `mss` / X screenshot | `xdg-desktop-portal` ScreenCast/Screenshot, user grant may be refused | `mss` (Win32 GDI) |
+| Screen capture | `mss` / X screenshot | `xdg-desktop-portal` ScreenCast with a user grant and transient PipeWire frames; refuse when denied | `mss` (Win32 GDI) |
 | Camera | `opencv-python` (V4L2) | same (V4L2) | `opencv-python` (MediaFoundation) |
 | Cursor / keyboard | XTest via `pyautogui` | portal/libei or `ydotool`; often unavailable — report unsupported | `SendInput` via `pyautogui`/ctypes |
 | Windows / apps | `wmctrl`/`xdotool` where installed | portal | `pygetwindow`/Win32 |
@@ -90,6 +90,12 @@ time and keep the detail in `docs/model-and-data-licenses.md`.
 | `pyautogui` | 0.9.54 | BSD | cursor/keyboard on X11 and Windows |
 | `Pillow` | 13.0.0 | MIT-CMU (upstream LICENSE; PyPI has no classifier) | image handling |
 | `pynput` | 1.8.2 | LGPLv3 | **avoid for now** — LGPL obligations are not worth it when `pyautogui` works |
+
+Wayland implementation should prefer ScreenCast's PipeWire stream for transient
+in-memory frames. The portal Screenshot method returns a URI to a screenshot
+file; do not use it for the normal observe-screen tool because that creates a
+persisted artifact and weakens the no-save-by-default contract. A future explicit
+save flow must name the destination and go through the existing write approval.
 
 System dependencies, not pip packages: `xdg-desktop-portal` (Wayland), `ydotool`
 + `uinput` permission (Wayland input), `wmctrl`/`xdotool` (X11 window control).

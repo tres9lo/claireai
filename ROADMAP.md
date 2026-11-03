@@ -11,6 +11,11 @@ they must not be described as complete until implemented and evaluated. The
 original phase tables below contain historical Ollama-era plans and are not
 current acceptance criteria where they conflict with this direction.
 
+The owner also requires an always-available wake-word interface, locally
+learned and reviewable routines, voice identity checks, spoken consent, and a
+fully configurable UI. These are separate acceptance requirements: detecting
+a wake word or matching a voice must never silently grant a computer capability.
+
 > **Audience:** Freebuff or another coding agent working with Tresor. **How to use this file:** Read the whole roadmap and the handoff section before writing code. Work on one small task at a time, run tests, show real output, update `PROGRESS.md`, and stop for human confirmation at each phase gate. Do not claim a check passed unless it was actually run.
 >
 > **Naming decision required at project start:** the uploaded filename says TresorAI, while the original document calls the assistant ClaireAI. This edition provisionally treats **TresorAI** as the repository/project name and **ClaireAI** as the assistant's in-product name. Ask Tresor to confirm before renaming directories, package IDs, application IDs, or visible branding.
@@ -119,7 +124,11 @@ The locally trained model is the default brain. Application code talks to a `Bra
 - **Build in stages:** (1) microphone permission and audio capture, (2) push-to-talk, (3) local speech-to-text, (4) local speech output, (5) wake-word detection, (6) custom “Hey Claire” model and false-activation testing.
 - **Privacy:** microphone capture must be visible in the UI. Wake-word detection should process audio locally and use a rolling buffer; do not save or upload continuous audio. Start with the microphone disabled until the user explicitly enables hands-free mode. Provide a clear mute/disable control.
 - **Reliability:** add a cooldown after activation, an activation sound or visual indicator, configurable sensitivity, and a push-to-talk fallback. Test false activations from TV/audio and missed activations across different microphone levels and accents.
-- **Wake word is not authentication:** never treat recognition of the phrase as proof of identity or permission to perform sensitive actions. The existing approval system still applies.
+- **Voice identity:** provide explicit local enrollment and deletion for the owner's voice profile. Keep enrollment samples/embeddings local and encrypted where the OS provides a usable key store. Evaluate false accepts, false rejects, replayed recordings and synthetic/replayed speech before enabling voice-gated actions. Voice matching is a signal, not proof by itself.
+- **Spoken consent:** vocal approval must be tied to the currently pending approval reference and the exact tool, arguments and target. ClaireAI reads a concise action summary, issues a fresh challenge, requires a bounded-time spoken confirmation, verifies the enrolled speaker, and logs the result without storing raw audio. A wake phrase, generic "yes", transcript match, or voice match alone never approves. Keep an accessible on-screen approval path. Until anti-replay and speaker verification pass the security gate, voice may confirm only low-risk actions; dangerous actions still require the existing explicit approval path.
+- **Wake word is not authentication:** wake detection only starts a listening turn; it never grants a capability or counts as consent.
+- **Routines:** learn a routine only from an owner-selected, completed task after showing the exact ordered steps, folders, applications and inputs for review. Store the reviewed routine locally. Replay must use registered tools, revalidate current paths and OS support, ask again for each approval-gated step, observe step/time limits, and stop immediately on owner request. Never capture passwords, hidden fields, arbitrary shell input or unreviewed free-form action sequences. Routines can be edited, disabled and deleted from the UI.
+- **Wake-word and voice security gate:** test false activations from TV/audio and missed activations across microphone levels and accents; also test replay and spoof attempts. No microphone audio, speaker profile or routine leaves the device unless the owner separately enables an explicitly described sync feature.
 
 ### 4.5 Cross-platform engineering rules
 
