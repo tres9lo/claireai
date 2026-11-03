@@ -1724,3 +1724,48 @@ or implement the page-approval design against the existing loopback server.
   left alone and nothing is claimed about conversational ability. This model
   cannot converse at any step count; the corpus and the architecture are the
   limit, not the schedule.
+
+## 2026-11-04 — A voice that sounds like a person, and a window from this decade
+
+- Speech now uses **Piper** (a local neural voice) when a model for the language
+  is installed, and falls back to eSpeak NG otherwise. Both English and French
+  models are installed here; measured on this host, each renders a short
+  sentence to a ~116 KB WAV in under two seconds. The language check is
+  unchanged and still strict: a voice file whose name does not carry the
+  language code is never used, so French is not read by an English model.
+  `CLAIREAI_PIPER_DIR` now *replaces* the search path instead of extending it.
+- Replaced the Tk/ttk default look, which is what made the window look like
+  1995. The shell is now customtkinter with a token layer
+  (`desktop/theme.py`): one accent colour, rounded surfaces, and a real
+  animation clock (`Animator`) that computes frames from the wall clock. The
+  sidebar pill eases its fill and text colours, the status dot breathes, the
+  chat page shows a moving thinking indicator during a turn, and pages fade
+  their surface in when opened.
+- Animation is covered by tests that need no display: colour interpolation at
+  both ends and outside the unit interval, every easing curve pinned at 0 and 1,
+  a tween that reaches its end and leaves no timer behind, replacement of a
+  tween on the same key, and a widget destroyed mid-tween. That last test found
+  a real defect: the first frame was applied outside the guard, so a destroyed
+  widget raised at tween start. Fixed in the animator, not in the test.
+- Verified the window on this host: all seven pages build, every page's
+  selection pill lands on the right sidebar entry, the pulse is mid-tween when
+  sampled, and the window closes without leaving timers. Screenshots remain
+  impossible here (mutter returns black frames), so this is widget-level
+  evidence, not a visual review.
+- Harvested 5.1 MB of real prose — nine public-domain books from Project
+  Gutenberg in English and French — against 20 KB of bootstrap text before it.
+  Getting there exposed a real bug: Gutenberg files are hard-wrapped near 70
+  columns, and the paragraph filter dropped every line of every book. Paragraphs
+  are now blank-line-delimited blocks with soft wrapping collapsed, which is
+  also correct for HTML. A regression test covers the wrapped-plain-text case.
+- `brain-lab/train.py` can now set `--width`, `--layers` and `--heads`; the size
+  was hard-coded and recorded as 128/4/4 regardless of the model trained. The
+  run prints its parameter count before training so a run can be attributed.
+- Measured this machine rather than guessing: Intel i5-6300U (2 cores, 4
+  threads), 7.1 GB RAM with ~2.2 GB usable, Intel HD 520 graphics with no CUDA.
+  Training throughput is 4,548 steps/hour at 955 K parameters (9.3 M tokens per
+  hour) and 2,147 steps/hour at 5.1 M parameters. The 5.1 MB corpus tokenises to
+  roughly 1.6 M tokens, so a larger model would only memorise it: the binding
+  constraint is data, not patience. A 4,000-step run at 1.5 M parameters over
+  the new corpus was started and is still running; its numbers are reported when
+  it finishes, and no claim about conversational ability is made until then.

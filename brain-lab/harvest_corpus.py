@@ -66,27 +66,36 @@ def robots_allows(url: str) -> bool:
 
 
 def html_to_text(payload: str) -> str:
-    """Readable paragraphs from an HTML or plain-text document."""
+    """Readable paragraphs from an HTML or plain-text document.
 
-    # Drop whole <script>, <style>, <nav>, <footer> and <header> blocks first, so
-    # their contents never reach the corpus.
-    cleaned = _TEXT_TAGS.sub(" ", payload)
-
-    # Block-level tags mark paragraph boundaries, so turn them into newlines.
-    # Without this every run of text collapses into one unusable line.
-    cleaned = _BLOCK_TAGS.sub("\n", cleaned)
-
-    # Inline tags just separate words.
-    cleaned = _TAG.sub(" ", cleaned)
+    Both formats arrive here, and prose in plain-text files is hard-wrapped at
+    about seventy characters. Filtering per line would therefore discard every
+    line of a perfectly good book, so a paragraph is one blank-line-separated
+    block with its wrapping collapsed, not a single line.
+    """
+    if _TAG.search(payload):
+        # Drop whole <script>, <style>, <nav>, <footer> and <header> blocks first,
+        # so their contents never reach the corpus.
+        cleaned = _TEXT_TAGS.sub(" ", payload)
+        # Block-level tags mark paragraph boundaries, so they become blank lines.
+        cleaned = _BLOCK_TAGS.sub("\n\n", cleaned)
+        # Inline tags just separate words.
+        cleaned = _TAG.sub(" ", cleaned)
+    else:
+        cleaned = payload
 
     # Decode entities like &amp; back to their literal characters.
-    cleaned = html.unescape(cleaned)
+    cleaned = html.unescape(cleaned).replace("\r\n", "\n").replace("\r", "\n")
 
-    # Normalise the spaces inside each paragraph, keeping the line breaks.
-    lines = (_SPACE.sub(" ", line).strip() for line in cleaned.splitlines())
-    kept = [line for line in lines if len(line) >= MIN_PARAGRAPH_CHARS]
+    paragraphs = []
+    for block in _BLANK_LINES.split(cleaned):
+        # Collapse the soft wrapping that both formats use inside a paragraph.
+        joined = " ".join(part.strip() for part in block.split("\n"))
+        joined = _SPACE.sub(" ", joined).strip()
+        if len(joined) >= MIN_PARAGRAPH_CHARS:
+            paragraphs.append(joined)
 
-    return _BLANK_LINES.sub("\n\n", "\n\n".join(kept)).strip()
+    return "\n\n".join(paragraphs).strip()
 
 
 def fetch(url: str, *, max_bytes: int = MAX_BYTES) -> str:

@@ -44,7 +44,7 @@ The result is an assistant you can actually point at real folders, because the b
 | Browser tools, disabled until enabled in the local control panel | ✅ |
 | Runtime stop switch and browser access control panel | ✅ first version |
 | Local web chat, stored conversation history, owner directives and UI preferences | ✅ first version |
-| Optional offline speech output with UI pitch/rate controls | ✅ eSpeak NG required |
+| Offline speech output with UI pitch/rate controls | ✅ Piper neural voice, else eSpeak NG |
 | Push-to-talk local speech transcription in the HUD | ✅ first version; optional Whisper weights installed from the UI |
 | OS family detection (Linux/Windows first targets) | ✅ detection only |
 | Reproducible MIT synthetic task corpus + split-aware text training | ✅ starter data |
@@ -112,8 +112,15 @@ uv pip install --python assistant/.venv/bin/python --index-url https://download.
 uv pip install --python assistant/.venv/bin/python -e "assistant[dev,model]"
 uv pip install --python assistant/.venv/bin/python -e ./brain-lab
 
-# Optional offline speech output (OS package, not bundled with ClaireAI)
-sudo apt install espeak-ng pulseaudio-utils
+# Speech output. Piper is a neural voice and sounds like a person; eSpeak NG is
+# the fallback and always works. Neither one sends audio anywhere.
+uv pip install --python assistant/.venv/bin/python piper-tts
+sudo apt install pulseaudio-utils            # for paplay; espeak-ng as fallback
+
+# Voice models (~61 MB each). Download the ones you want into:
+#   ./runtime-data/models/voice/piper/  (or set CLAIREAI_PIPER_DIR)
+#   https://huggingface.co/rhasspy/piper-voices  →  en/en_US/lessac/medium,
+#   fr/fr_FR/siwis/medium. Each voice needs its .onnx and .onnx.json side by side.
 
 # 2. Train on the included synthetic starter corpus (pipeline demo, not enough
 #    data for useful capability). Add licensed corpora for serious experiments.
@@ -136,10 +143,16 @@ Windows setup uses the same Python and CPU training path; see [docs/setup/window
 
 ### The desktop app
 
-The native window is built on Tk, which ships with Python: nothing to install,
-no browser, no loopback web server, no JavaScript. It opens on **Chat** and has
+The native window is built on Tk with customtkinter for its surfaces: no
+browser, no loopback web server, no JavaScript. It opens on **Chat** and has
 seven separate screens in the sidebar — Chat, Activity, Approvals, History,
 Voice, Settings and About — each with its own job rather than one long page.
+
+Design tokens live in `desktop/theme.py`: one accent colour, rounded surfaces,
+and motion timed from the wall clock rather than a frame count, so a slow
+machine drops frames instead of playing every animation in slow motion. The
+selected sidebar pill eases between pages, the status dot breathes, the chat
+shows a live thinking indicator, and each page fades its surface in.
 
 ```bash
 assistant/.venv/bin/claireai-desktop      # or: ./scripts/start.sh --desktop

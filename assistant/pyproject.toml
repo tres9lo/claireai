@@ -27,6 +27,9 @@ dev = [
 ]
 model = ["torch>=2.2"]
 voice = ["faster-whisper>=1.1,<2"]
+# The native window draws its own surfaces, so it needs a styling toolkit on top
+# of Tk. Nothing else in the package does.
+desktop = ["customtkinter>=5.2"]
 
 [project.scripts]
 # No arguments starts the local app; any argument is passed to the CLI

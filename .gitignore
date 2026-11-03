@@ -49,3 +49,6 @@ brain-lab/data/raw/
 brain-lab/data/processed/
 brain-lab/data/external/
 brain-lab/**/checkpoints/
+
+# Harvested corpora are large and reproducible from their manifests.
+brain-lab/data/gutenberg-*/

@@ -27,6 +27,9 @@ def main() -> int:
     parser.add_argument("--log-interval", type=int, default=100, help="training steps between validation reports")
     parser.add_argument("--context", type=int, default=256)
     parser.add_argument("--vocab-size", type=int, default=512)
+    parser.add_argument("--width", type=int, default=128, help="residual stream width")
+    parser.add_argument("--layers", type=int, default=4, help="transformer blocks")
+    parser.add_argument("--heads", type=int, default=4, help="attention heads; width must divide by this")
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, help="checkpoint path (default: ClaireAI data directory)")
@@ -35,6 +38,10 @@ def main() -> int:
     args = parser.parse_args()
     if min(args.steps, args.batch_size, args.validation_batches, args.log_interval) < 1:
         parser.error("steps, batch-size, validation-batches, and log-interval must be positive")
+    if min(args.width, args.layers, args.heads, args.context) < 1:
+        parser.error("width, layers, heads and context must be positive")
+    if args.width % args.heads:
+        parser.error("width must divide evenly by heads")
     train_dir = args.corpus / "train"
     validation_dir = args.corpus / "validation"
     if train_dir.is_dir() or validation_dir.is_dir():
@@ -105,11 +112,31 @@ def main() -> int:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.set_num_threads(max(1, min(4, torch.get_num_threads())))
-    model = ScratchTransformer(context=args.context, vocab_size=tokenizer.vocab_size)
+    model = ScratchTransformer(
+        context=args.context,
+        width=args.width,
+        layers=args.layers,
+        heads=args.heads,
+        vocab_size=tokenizer.vocab_size,
+    )
+    parameters = sum(weight.numel() for weight in model.parameters())
+    print(
+        f"model: width={args.width} layers={args.layers} heads={args.heads} "
+        f"context={args.context} vocab={tokenizer.vocab_size} params={parameters:,}",
+        flush=True,
+    )
     if parent_payload is not None:
         architecture = parent_manifest.get("architecture", {})
-        if (architecture.get("context"), architecture.get("width"), architecture.get("layers"), architecture.get("heads"), architecture.get("vocab_size")) != (args.context, 128, 4, 4, tokenizer.vocab_size):
-            parser.error("continued training requires the parent's architecture; match --context and tokenizer vocabulary")
+        expected = (args.context, args.width, args.layers, args.heads, tokenizer.vocab_size)
+        found = (
+            architecture.get("context"), architecture.get("width"), architecture.get("layers"),
+            architecture.get("heads"), architecture.get("vocab_size"),
+        )
+        if found != expected:
+            parser.error(
+                "continued training requires the parent's architecture; "
+                f"parent is {found} but this run is {expected}"
+            )
         model.load_state_dict(parent_payload["state_dict"])
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     model.train()
@@ -153,7 +180,7 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
         "format": 1,
-        "architecture": {"context": args.context, "width": 128, "layers": 4, "heads": 4, "vocab_size": tokenizer.vocab_size},
+        "architecture": {"context": args.context, "width": args.width, "layers": args.layers, "heads": args.heads, "vocab_size": tokenizer.vocab_size},
         "tokenizer": "corpus-bpe-v1",
         "tokenizer_merges": tokenizer.merges,
         "seed": args.seed,

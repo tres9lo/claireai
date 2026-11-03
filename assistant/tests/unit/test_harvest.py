@@ -43,6 +43,25 @@ def test_html_is_reduced_to_readable_paragraphs() -> None:
     assert "menu" not in text
 
 
+def test_wrapped_plain_text_is_reflowed_into_paragraphs() -> None:
+    # Project Gutenberg plain text is hard-wrapped near 70 columns. Judging each
+    # line on its own would discard the whole book, so a paragraph is a block.
+    book = (
+        "CHAPTER I\n\n"
+        "It is a truth universally acknowledged, that a single man in possession\n"
+        "of a good fortune, must be in want of a wife.\n\n"
+        "However little known the feelings or views of such a man may be on his\n"
+        "first entering a neighbourhood, this truth is so well fixed.\n"
+    )
+    text = harvest.html_to_text(book)
+
+    paragraphs = text.split("\n\n")
+    assert len(paragraphs) == 2, repr(text)
+    assert paragraphs[0].endswith("in want of a wife.")
+    assert " " in paragraphs[0] and len(paragraphs[0]) > 70
+    assert "CHAPTER I" not in text
+
+
 def test_non_http_urls_are_refused() -> None:
     with pytest.raises(harvest.HarvestError):
         harvest.robots_allows("file:///etc/passwd")

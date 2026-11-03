@@ -4,6 +4,10 @@ Each page is its own screen with its own job -- chat is not a dashboard, the
 activity log is not squeezed under the transcript. Pages never talk to the model
 directly: they call :class:`claireai.desktop.runtime.DesktopRuntime` through the
 shell's worker, so the window stays responsive.
+
+Presentation is customtkinter over Tk. Long-form text keeps a plain ``tk.Text``
+because message tags and fast appends matter there, and tables keep
+``ttk.Treeview`` because it is virtualised; both are restyled to match.
 """
 
 from __future__ import annotations
@@ -14,8 +18,50 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
+import customtkinter as ctk
+
+from claireai.desktop import theme
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from claireai.desktop.app import ClaireDesktop
+
+FONT_BODY = (theme.FONT, 12)
+FONT_SMALL = (theme.FONT, 11)
+FONT_TITLE = (theme.FONT, 24, "bold")
+FONT_SUBTITLE = (theme.FONT, 12)
+
+
+def _style_tables(root: tk.Misc) -> None:
+    """One dark table style, applied once per process."""
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:  # pragma: no cover - theme availability varies
+        pass
+    style.configure(
+        "Claire.Treeview",
+        background=theme.SURFACE,
+        fieldbackground=theme.SURFACE,
+        foreground=theme.TEXT,
+        rowheight=30,
+        borderwidth=0,
+        font=FONT_SMALL,
+    )
+    style.configure(
+        "Claire.Treeview.Heading",
+        background=theme.SURFACE_HIGH,
+        foreground=theme.MUTED,
+        relief="flat",
+        borderwidth=0,
+        font=(theme.FONT, 10, "bold"),
+        padding=(8, 6),
+    )
+    style.map(
+        "Claire.Treeview",
+        background=[("selected", theme.ACCENT_DEEP)],
+        foreground=[("selected", theme.TEXT)],
+    )
+    style.layout("Claire.Treeview", [("Claire.Treeview.treearea", {"sticky": "nswe"})])
 
 
 class Page:
@@ -26,12 +72,16 @@ class Page:
 
     def __init__(self, app: "ClaireDesktop", parent: tk.Widget) -> None:
         self.app = app
-        self.frame = ttk.Frame(parent, padding=18)
+        self.frame = ctk.CTkFrame(parent, corner_radius=0, fg_color=theme.BACKGROUND)
         self.build()
 
     @property
     def runtime(self):  # noqa: ANN201
         return self.app.runtime
+
+    @property
+    def animator(self):  # noqa: ANN201
+        return self.app.animator
 
     def build(self) -> None:  # pragma: no cover - overridden
         raise NotImplementedError
@@ -39,10 +89,75 @@ class Page:
     def on_show(self) -> None:
         """Called every time the page becomes visible."""
 
+    # -- shared building blocks -----------------------------------------
+
     def heading(self, text: str, subtitle: str = "") -> None:
-        ttk.Label(self.frame, text=text, style="Heading.TLabel").pack(anchor="w")
+        ctk.CTkLabel(
+            self.frame,
+            text=text,
+            font=ctk.CTkFont(family=theme.FONT, size=24, weight="bold"),
+            text_color=theme.TEXT,
+            anchor="w",
+        ).pack(anchor="w", padx=theme.GUTTER, pady=(theme.GUTTER, 0))
         if subtitle:
-            ttk.Label(self.frame, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(2, 10))
+            ctk.CTkLabel(
+                self.frame,
+                text=subtitle,
+                font=ctk.CTkFont(family=theme.FONT, size=12),
+                text_color=theme.MUTED,
+                anchor="w",
+                justify="left",
+                wraplength=820,
+            ).pack(anchor="w", padx=theme.GUTTER, pady=(2, 14))
+
+    def card(self, parent: tk.Misc | None = None, *, pady: tuple[int, int] = (0, 12)) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(
+            parent or self.frame,
+            corner_radius=theme.RADIUS,
+            fg_color=theme.SURFACE,
+            border_width=1,
+            border_color=theme.BORDER,
+        )
+        frame.pack(fill="x", padx=theme.GUTTER, pady=pady)
+        return frame
+
+    def button(self, parent: tk.Misc, text: str, command, *, primary: bool = False) -> ctk.CTkButton:
+        return ctk.CTkButton(
+            parent,
+            text=text,
+            command=command,
+            height=34,
+            corner_radius=theme.RADIUS_SMALL,
+            fg_color=theme.ACCENT if primary else theme.SURFACE_HIGH,
+            hover_color=theme.ACCENT_ALT if primary else theme.SURFACE_HOVER,
+            text_color=theme.BACKGROUND if primary else theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=12, weight="bold" if primary else "normal"),
+        )
+
+    def text_area(self, parent: tk.Misc, *, height: int = 6) -> tk.Text:
+        return tk.Text(
+            parent,
+            height=height,
+            wrap="word",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            padx=14,
+            pady=12,
+            background=theme.SURFACE_HIGH,
+            foreground=theme.TEXT,
+            insertbackground=theme.ACCENT,
+            selectbackground=theme.ACCENT_DEEP,
+            font=FONT_BODY,
+            spacing1=2,
+            spacing3=6,
+        )
+
+    def scroll_text(self, parent: tk.Misc, *, height: int = 6) -> tuple[tk.Text, ctk.CTkScrollbar]:
+        widget = self.text_area(parent, height=height)
+        bar = ctk.CTkScrollbar(parent, command=widget.yview, fg_color="transparent")
+        widget.configure(yscrollcommand=bar.set)
+        return widget, bar
 
 
 class ChatPage(Page):
@@ -53,44 +168,79 @@ class ChatPage(Page):
         self.heading(self.title, self.subtitle)
         self.conversation_id: str | None = None
         self.busy = False
+        self._dots = 0
 
-        bar = ttk.Frame(self.frame)
-        bar.pack(fill="x", pady=(0, 8))
+        bar = ctk.CTkFrame(self.frame, fg_color="transparent")
+        bar.pack(fill="x", padx=theme.GUTTER, pady=(0, 10))
         self.use_tools = tk.BooleanVar(value=True)
-        ttk.Checkbutton(bar, text="Let it use tools", variable=self.use_tools).pack(side="left")
         self.speak_replies = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bar, text="Speak replies", variable=self.speak_replies).pack(side="left", padx=12)
-        ttk.Button(bar, text="Stop speaking", command=self._stop_speaking).pack(side="right")
-        ttk.Button(bar, text="New chat", command=self.new_chat).pack(side="right", padx=6)
+        self.tools_switch = ctk.CTkSwitch(
+            bar, text="Let it use tools", variable=self.use_tools, progress_color=theme.ACCENT,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=12),
+        )
+        self.tools_switch.pack(side="left")
+        self.voice_switch = ctk.CTkSwitch(
+            bar, text="Speak replies", variable=self.speak_replies, progress_color=theme.ACCENT,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=12),
+        )
+        self.voice_switch.pack(side="left", padx=18)
+        self.button(bar, "Stop speaking", self._stop_speaking).pack(side="right")
+        self.button(bar, "New chat", self.new_chat).pack(side="right", padx=8)
 
-        body = ttk.Frame(self.frame)
-        body.pack(fill="both", expand=True)
-        self.transcript = tk.Text(body, wrap="word", state="disabled", padx=12, pady=10,
-                                  relief="flat", background="#12161f", foreground="#e8ecf4")
-        scroll = ttk.Scrollbar(body, orient="vertical", command=self.transcript.yview)
+        body = ctk.CTkFrame(
+            self.frame, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        body.pack(fill="both", expand=True, padx=theme.GUTTER)
+        self.transcript = self.text_area(body, height=18)
+        scroll = ctk.CTkScrollbar(body, command=self.transcript.yview, fg_color="transparent")
         self.transcript.configure(yscrollcommand=scroll.set)
-        self.transcript.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        self.transcript.tag_configure("you", foreground="#8bd5ff", spacing1=8)
-        self.transcript.tag_configure("claire", foreground="#e8ecf4", spacing1=8)
-        self.transcript.tag_configure("meta", foreground="#7c8798", spacing3=10)
-        self.transcript.tag_configure("error", foreground="#ff8a8a", spacing3=10)
+        self.transcript.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        scroll.pack(side="right", fill="y", padx=(0, 6), pady=6)
+        self.transcript.tag_configure("you", foreground=theme.ACCENT, spacing1=10)
+        self.transcript.tag_configure("claire", foreground=theme.TEXT, spacing1=10)
+        self.transcript.tag_configure("meta", foreground=theme.MUTED, spacing3=12)
+        self.transcript.tag_configure("error", foreground=theme.DANGER, spacing3=12)
+        self.transcript.configure(state="disabled")
 
-        compose = ttk.Frame(self.frame)
-        compose.pack(fill="x", pady=(10, 0))
-        self.entry = tk.Text(compose, height=3, wrap="word", relief="flat",
-                             background="#1a2030", foreground="#e8ecf4", insertbackground="#e8ecf4")
+        self.activity = ctk.CTkLabel(
+            self.frame,
+            text="",
+            text_color=theme.ACCENT,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+            anchor="w",
+        )
+        self.activity.pack(anchor="w", padx=theme.GUTTER, pady=(6, 0))
+
+        compose = ctk.CTkFrame(self.frame, fg_color="transparent")
+        compose.pack(fill="x", padx=theme.GUTTER, pady=(6, 0))
+        self.entry = ctk.CTkTextbox(
+            compose,
+            height=76,
+            corner_radius=theme.RADIUS_SMALL,
+            fg_color=theme.SURFACE_HIGH,
+            border_width=1,
+            border_color=theme.BORDER,
+            text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=12),
+            wrap="word",
+        )
         self.entry.pack(side="left", fill="both", expand=True)
         self.entry.bind("<Control-Return>", lambda _event: self.send())
-        self.send_button = ttk.Button(compose, text="Send", command=self.send)
+        self.send_button = self.button(compose, "Send", self.send, primary=True)
+        self.send_button.configure(width=96)
         self.send_button.pack(side="right", padx=(10, 0), fill="y")
-        ttk.Label(self.frame, text="Ctrl+Enter sends", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(
+            self.frame, text="Ctrl+Enter sends", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=10), anchor="w",
+        ).pack(anchor="w", padx=theme.GUTTER, pady=(4, theme.GUTTER))
 
     # -- helpers ---------------------------------------------------------
 
     def append(self, kind: str, text: str, tag: str) -> None:
         self.transcript.configure(state="normal")
-        self.transcript.insert("end", f"{kind}\n", (tag,))
+        if kind:
+            self.transcript.insert("end", f"{kind}\n", (tag,))
         self.transcript.insert("end", f"{text}\n", (tag,))
         self.transcript.configure(state="disabled")
         self.transcript.see("end")
@@ -100,6 +250,7 @@ class ChatPage(Page):
         self.transcript.configure(state="normal")
         self.transcript.delete("1.0", "end")
         self.transcript.configure(state="disabled")
+        self.activity.configure(text="")
 
     def _stop_speaking(self) -> None:
         self.runtime.stop_speaking()
@@ -107,8 +258,32 @@ class ChatPage(Page):
     def _set_busy(self, busy: bool, note: str = "") -> None:
         self.busy = busy
         self.send_button.configure(state="disabled" if busy else "normal")
+        if busy:
+            self._start_thinking()
+        else:
+            self._stop_thinking()
         if note:
             self.append("·", note, "meta")
+
+    def _start_thinking(self) -> None:
+        """Three dots that actually move, so a 30-second turn looks alive."""
+        self._dots = 0
+        self.activity.configure(text="thinking")
+        self.animator.tween_color(
+            "chat-activity", theme.MUTED, theme.ACCENT, 260, lambda colour: self.activity.configure(text_color=colour)
+        )
+
+        def tick() -> None:
+            if not self.busy:
+                return
+            self._dots = (self._dots + 1) % 4
+            self.activity.configure(text="thinking" + "·" * self._dots)
+            self.frame.after(320, tick)
+
+        self.frame.after(320, tick)
+
+    def _stop_thinking(self) -> None:
+        self.activity.configure(text="")
 
     # -- flow ------------------------------------------------------------
 
@@ -155,22 +330,31 @@ class ActivityPage(Page):
 
     def build(self) -> None:
         self.heading(self.title, self.subtitle)
-        bar = ttk.Frame(self.frame)
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Button(bar, text="Refresh", command=self.refresh).pack(side="left")
-        self.summary = ttk.Label(bar, text="", style="Muted.TLabel")
+        _style_tables(self.frame)
+        bar = ctk.CTkFrame(self.frame, fg_color="transparent")
+        bar.pack(fill="x", padx=theme.GUTTER, pady=(0, 10))
+        self.button(bar, "Refresh", self.refresh).pack(side="left")
+        self.summary = ctk.CTkLabel(
+            bar, text="", text_color=theme.MUTED, font=ctk.CTkFont(family=theme.FONT, size=11)
+        )
         self.summary.pack(side="left", padx=12)
 
         columns = ("when", "status", "request")
-        self.tree = ttk.Treeview(self.frame, columns=columns, show="headings", height=14)
+        self.tree = ttk.Treeview(self.frame, columns=columns, show="headings", height=14, style="Claire.Treeview")
         for column, label, width in (("when", "When", 150), ("status", "Status", 110), ("request", "Request", 520)):
             self.tree.heading(column, text=label)
             self.tree.column(column, width=width, anchor="w")
-        self.tree.pack(fill="both", expand=True)
+        self.tree.pack(fill="both", expand=True, padx=theme.GUTTER)
         self.tree.bind("<<TreeviewSelect>>", self._show_detail)
-        self.detail = tk.Text(self.frame, height=5, wrap="word", relief="flat",
-                              background="#1a2030", foreground="#e8ecf4", state="disabled")
-        self.detail.pack(fill="x", pady=(10, 0))
+
+        holder = ctk.CTkFrame(
+            self.frame, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        holder.pack(fill="x", padx=theme.GUTTER, pady=(10, theme.GUTTER))
+        self.detail = self.text_area(holder, height=5)
+        self.detail.pack(fill="x", padx=6, pady=6)
+        self.detail.configure(state="disabled")
 
     def refresh(self) -> None:
         tasks = self.runtime.recent_tasks()
@@ -206,25 +390,36 @@ class ApprovalsPage(Page):
 
     def build(self) -> None:
         self.heading(self.title, self.subtitle)
-        bar = ttk.Frame(self.frame)
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Button(bar, text="Approve", command=lambda: self._decide(True)).pack(side="left")
-        ttk.Button(bar, text="Deny", command=lambda: self._decide(False)).pack(side="left", padx=8)
-        ttk.Button(bar, text="Refresh", command=self.refresh).pack(side="left")
-        self.note = ttk.Label(bar, text="", style="Muted.TLabel")
+        _style_tables(self.frame)
+        bar = ctk.CTkFrame(self.frame, fg_color="transparent")
+        bar.pack(fill="x", padx=theme.GUTTER, pady=(0, 10))
+        self.button(bar, "Approve", lambda: self._decide(True), primary=True).pack(side="left")
+        self.button(bar, "Deny", lambda: self._decide(False)).pack(side="left", padx=8)
+        self.button(bar, "Refresh", self.refresh).pack(side="left")
+        self.note = ctk.CTkLabel(
+            bar, text="", text_color=theme.MUTED, font=ctk.CTkFont(family=theme.FONT, size=11)
+        )
         self.note.pack(side="left", padx=12)
 
-        self.tree = ttk.Treeview(self.frame, columns=("tool", "target", "risk", "expires"),
-                                 show="headings", height=12)
+        self.tree = ttk.Treeview(
+            self.frame, columns=("tool", "target", "risk", "expires"),
+            show="headings", height=12, style="Claire.Treeview",
+        )
         for column, label, width in (("tool", "Tool", 160), ("target", "Target", 420),
                                      ("risk", "Risk", 90), ("expires", "Expires in", 100)):
             self.tree.heading(column, text=label)
             self.tree.column(column, width=width, anchor="w")
-        self.tree.pack(fill="both", expand=True)
-        self.preview = tk.Text(self.frame, height=4, wrap="word", relief="flat",
-                               background="#1a2030", foreground="#e8ecf4", state="disabled")
-        self.preview.pack(fill="x", pady=(10, 0))
+        self.tree.pack(fill="both", expand=True, padx=theme.GUTTER)
         self.tree.bind("<<TreeviewSelect>>", self._show_preview)
+
+        holder = ctk.CTkFrame(
+            self.frame, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        holder.pack(fill="x", padx=theme.GUTTER, pady=(10, theme.GUTTER))
+        self.preview = self.text_area(holder, height=4)
+        self.preview.pack(fill="x", padx=6, pady=6)
+        self.preview.configure(state="disabled")
         self.frame.after(1000, self._tick)
 
     def refresh(self) -> None:
@@ -234,7 +429,10 @@ class ApprovalsPage(Page):
             self.tree.insert("", "end", iid=str(item["ref"]),
                              values=(item["tool"], item.get("target") or "", item.get("risk", ""),
                                      f"{item.get('expires_in', 0)}s"))
-        self.note.configure(text="nothing waiting" if not pending else f"{len(pending)} waiting")
+        self.note.configure(
+            text="nothing waiting" if not pending else f"{len(pending)} waiting",
+            text_color=theme.MUTED if not pending else theme.WARN,
+        )
 
     def _show_preview(self, _event=None) -> None:  # noqa: ANN001
         selection = self.tree.selection()
@@ -271,24 +469,49 @@ class ConversationsPage(Page):
 
     def build(self) -> None:
         self.heading(self.title, self.subtitle)
-        split = ttk.PanedWindow(self.frame, orient="horizontal")
-        split.pack(fill="both", expand=True)
+        split = ctk.CTkFrame(self.frame, fg_color="transparent")
+        split.pack(fill="both", expand=True, padx=theme.GUTTER, pady=(0, theme.GUTTER))
+        split.grid_columnconfigure(0, weight=1, uniform="history")
+        split.grid_columnconfigure(1, weight=2, uniform="history")
+        split.grid_rowconfigure(0, weight=1)
 
-        left = ttk.Frame(split)
-        self.listbox = tk.Listbox(left, exportselection=False, relief="flat")
-        self.listbox.pack(fill="both", expand=True)
+        left = ctk.CTkFrame(
+            split, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.listbox = tk.Listbox(
+            left,
+            exportselection=False,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            background=theme.SURFACE,
+            foreground=theme.TEXT,
+            selectbackground=theme.ACCENT_DEEP,
+            selectforeground=theme.TEXT,
+            activestyle="none",
+            font=FONT_SMALL,
+            # A Listbox has no padx/pady options; the frame around it does the spacing.
+        )
+        self.listbox.pack(fill="both", expand=True, padx=10, pady=8)
         self.listbox.bind("<<ListboxSelect>>", self._open)
-        buttons = ttk.Frame(left)
-        buttons.pack(fill="x", pady=(8, 0))
-        ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side="left")
-        ttk.Button(buttons, text="Delete", command=self._delete).pack(side="left", padx=8)
-        split.add(left, weight=1)
+        buttons = ctk.CTkFrame(left, fg_color="transparent")
+        buttons.pack(fill="x", padx=6, pady=(0, 6))
+        self.button(buttons, "Refresh", self.refresh).pack(side="left")
+        self.button(buttons, "Delete", self._delete).pack(side="left", padx=8)
 
-        right = ttk.Frame(split)
-        self.view = tk.Text(right, wrap="word", state="disabled", relief="flat",
-                            background="#12161f", foreground="#e8ecf4")
-        self.view.pack(fill="both", expand=True)
-        split.add(right, weight=2)
+        right = ctk.CTkFrame(
+            split, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        right.grid(row=0, column=1, sticky="nsew")
+        self.view = self.text_area(right)
+        view_bar = ctk.CTkScrollbar(right, command=self.view.yview, fg_color="transparent")
+        self.view.configure(yscrollcommand=view_bar.set)
+        self.view.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        view_bar.pack(side="right", fill="y", padx=(0, 6), pady=6)
+        self.view.configure(state="disabled")
         self.ids: list[str] = []
 
     def refresh(self) -> None:
@@ -331,51 +554,86 @@ class VoicePage(Page):
 
     def build(self) -> None:
         self.heading(self.title, self.subtitle)
-        status = ttk.LabelFrame(self.frame, text="Speech output", padding=12)
-        status.pack(fill="x")
+        body = ctk.CTkScrollableFrame(self.frame, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=theme.GUTTER - 6, pady=(0, 8))
+
+        output = self.card(body)
+        ctk.CTkLabel(
+            output, text="Speech output", text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=13, weight="bold"), anchor="w",
+        ).pack(anchor="w", padx=16, pady=(14, 2))
+
         voices = self.runtime.status()["voices"]
-        self.engine_note = ttk.Label(
-            status,
+        self.engine_note = ctk.CTkLabel(
+            output,
             text=(
                 "eSpeak NG found · voices: " + ", ".join(voices.values())
                 if voices
                 else "No local speech engine found (install espeak-ng)"
             ),
-            style="Muted.TLabel",
+            text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+            anchor="w",
+            justify="left",
+            wraplength=760,
         )
-        self.engine_note.pack(anchor="w")
+        self.engine_note.pack(anchor="w", padx=16)
 
-        row = ttk.Frame(status)
-        row.pack(fill="x", pady=(10, 0))
-        ttk.Label(row, text="Language").pack(side="left")
-        self.language = ttk.Combobox(row, values=["Automatic", "English", "French"], width=12, state="readonly")
+        row = ctk.CTkFrame(output, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(12, 0))
+        ctk.CTkLabel(row, text="Language", text_color=theme.TEXT,
+                     font=ctk.CTkFont(family=theme.FONT, size=12)).pack(side="left")
+        self.language = ctk.CTkSegmentedButton(
+            row,
+            values=["Automatic", "English", "French"],
+            selected_color=theme.ACCENT_DEEP,
+            selected_hover_color=theme.ACCENT_DEEP,
+            unselected_color=theme.SURFACE_HIGH,
+            unselected_hover_color=theme.SURFACE_HOVER,
+            text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
         self.language.set("Automatic")
-        self.language.pack(side="left", padx=8)
-        ttk.Button(row, text="Test the voice", command=self.test_voice).pack(side="left")
-        ttk.Button(row, text="Stop", command=self.runtime.stop_speaking).pack(side="left", padx=8)
+        self.language.pack(side="left", padx=10)
+        self.button(row, "Test the voice", self.test_voice, primary=True).pack(side="left")
+        self.button(row, "Stop", self.runtime.stop_speaking).pack(side="left", padx=8)
 
         preferences = self.runtime.preferences()
         self.pitch = tk.IntVar(value=int(preferences["voice_pitch"]))
         self.rate = tk.IntVar(value=int(preferences["voice_rate"]))
         for label, variable, start, end in (("Pitch", self.pitch, 0, 99), ("Rate", self.rate, 80, 450)):
-            line = ttk.Frame(status)
-            line.pack(fill="x", pady=(8, 0))
-            ttk.Label(line, text=label, width=8).pack(side="left")
-            ttk.Scale(line, from_=start, to=end, variable=variable, orient="horizontal").pack(
-                side="left", fill="x", expand=True)
-            ttk.Label(line, textvariable=variable, width=5).pack(side="left")
+            line = ctk.CTkFrame(output, fg_color="transparent")
+            line.pack(fill="x", padx=16, pady=(10, 0))
+            ctk.CTkLabel(line, text=label, width=54, anchor="w", text_color=theme.MUTED,
+                         font=ctk.CTkFont(family=theme.FONT, size=11)).pack(side="left")
+            ctk.CTkSlider(
+                line, from_=start, to=end, variable=variable,
+                progress_color=theme.ACCENT, button_color=theme.ACCENT,
+                button_hover_color=theme.ACCENT_ALT, fg_color=theme.SURFACE_HIGH,
+            ).pack(side="left", fill="x", expand=True, padx=10)
+            ctk.CTkLabel(line, textvariable=variable, width=40, text_color=theme.TEXT,
+                         font=ctk.CTkFont(family=theme.FONT, size=11)).pack(side="left")
 
-        input_box = ttk.LabelFrame(self.frame, text="Speech input", padding=12)
-        input_box.pack(fill="x", pady=(14, 0))
-        self.mic_note = ttk.Label(input_box, text=self._microphone_note(), style="Muted.TLabel")
-        self.mic_note.pack(anchor="w")
-        row2 = ttk.Frame(input_box)
-        row2.pack(fill="x", pady=(8, 0))
-        ttk.Button(row2, text="Record 5 seconds", command=self.record).pack(side="left")
-        self.transcript_note = ttk.Label(input_box, text="", style="Muted.TLabel", wraplength=760)
-        self.transcript_note.pack(anchor="w", pady=(8, 0))
+        input_box = self.card(body, pady=(0, 12))
+        ctk.CTkLabel(
+            input_box, text="Speech input", text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=13, weight="bold"), anchor="w",
+        ).pack(anchor="w", padx=16, pady=(14, 2))
+        self.mic_note = ctk.CTkLabel(
+            input_box, text=self._microphone_note(), text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11), anchor="w", justify="left", wraplength=760,
+        )
+        self.mic_note.pack(anchor="w", padx=16)
+        row2 = ctk.CTkFrame(input_box, fg_color="transparent")
+        row2.pack(fill="x", padx=16, pady=(10, 0))
+        self.button(row2, "Record 5 seconds", self.record).pack(side="left")
+        self.transcript_note = ctk.CTkLabel(
+            input_box, text="", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11), anchor="w", justify="left", wraplength=760,
+        )
+        self.transcript_note.pack(anchor="w", padx=16, pady=(10, 14))
 
-        ttk.Button(self.frame, text="Save voice settings", command=self.save).pack(anchor="w", pady=(14, 0))
+        self.button(body, "Save voice settings", self.save, primary=True).pack(anchor="w", pady=(0, 14))
 
     def _microphone_note(self) -> str:
         from claireai.voice_input import transcriber_for
@@ -400,18 +658,19 @@ class VoicePage(Page):
             else "Hello, I am Claire. This is what my voice sounds like."
         )
         language = self._language_code()
+        self.transcript_note.configure(text="Speaking …", text_color=theme.ACCENT)
         self.app.submit(
             "speak",
             lambda: self.runtime.speak(sample, language=language),
-            lambda engine: self.transcript_note.configure(text=f"Spoken with {engine}."),
-            lambda error: self.transcript_note.configure(text=f"Voice error: {error}"),
+            lambda engine: self.transcript_note.configure(text=f"Spoken with {engine}.", text_color=theme.OK),
+            lambda error: self.transcript_note.configure(text=f"Voice error: {error}", text_color=theme.DANGER),
         )
 
     def record(self) -> None:
         from claireai.voice_input import SpeechRecognitionUnavailable, transcriber_for
 
         transcriber = transcriber_for(str(self.runtime.data_dir / "models" / "voice" / "asr"))
-        self.transcript_note.configure(text="Recording for five seconds …")
+        self.transcript_note.configure(text="Recording for five seconds …", text_color=theme.ACCENT)
 
         def capture():  # noqa: ANN202
             import subprocess
@@ -433,15 +692,15 @@ class VoicePage(Page):
         self.app.submit(
             "record",
             capture,
-            lambda text: self.transcript_note.configure(text=f"You said: {text}"),
-            lambda error: self.transcript_note.configure(text=f"Speech input error: {error}"),
+            lambda text: self.transcript_note.configure(text=f"You said: {text}", text_color=theme.TEXT),
+            lambda error: self.transcript_note.configure(text=f"Speech input error: {error}", text_color=theme.DANGER),
         )
 
     def save(self) -> None:
         self.runtime.update_preferences(
             {"voice_pitch": int(self.pitch.get()), "voice_rate": int(self.rate.get()), "voice_enabled": True}
         )
-        self.transcript_note.configure(text="Voice settings saved.")
+        self.transcript_note.configure(text="Voice settings saved.", text_color=theme.OK)
 
     def on_show(self) -> None:
         voices = self.runtime.status()["voices"]
@@ -459,50 +718,87 @@ class SettingsPage(Page):
 
     def build(self) -> None:
         self.heading(self.title, self.subtitle)
+        body = ctk.CTkScrollableFrame(self.frame, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=theme.GUTTER - 6, pady=(0, 8))
+
         preferences = self.runtime.preferences()
         control = self.runtime.control()
 
-        form = ttk.LabelFrame(self.frame, text="Assistant", padding=12)
-        form.pack(fill="x")
+        form = self.card(body)
+        ctk.CTkLabel(
+            form, text="Assistant", text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=13, weight="bold"), anchor="w",
+        ).pack(anchor="w", padx=16, pady=(14, 6))
+
         self.owner = tk.StringVar(value=str(preferences["owner_name"]))
         self.style = tk.StringVar(value=str(preferences["response_style"]))
         self.max_tokens = tk.IntVar(value=int(preferences["max_output_tokens"]))
         self.max_steps = tk.IntVar(value=int(preferences["agent_max_steps"]))
         self.voice_enabled = tk.BooleanVar(value=bool(preferences["voice_enabled"]))
 
-        self._field(form, "Owner name", ttk.Entry(form, textvariable=self.owner, width=36))
-        self._field(form, "Response style", ttk.Combobox(form, textvariable=self.style, state="readonly",
-                                                        values=["concise", "balanced", "detailed", "playful"]))
-        self._field(form, "Max answer tokens", ttk.Spinbox(form, from_=8, to=1024, textvariable=self.max_tokens, width=10))
-        self._field(form, "Max tool steps", ttk.Spinbox(form, from_=1, to=24, textvariable=self.max_steps, width=10))
-        self._field(form, "Speak answers", ttk.Checkbutton(form, variable=self.voice_enabled))
+        self._field(form, "Owner name", ctk.CTkEntry(form, textvariable=self.owner, width=280, height=32,
+                                                    corner_radius=theme.RADIUS_SMALL,
+                                                    fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER))
+        self._field(form, "Response style", ctk.CTkOptionMenu(
+            form, variable=self.style, values=["concise", "balanced", "detailed", "playful"],
+            width=180, height=32, corner_radius=theme.RADIUS_SMALL,
+            fg_color=theme.SURFACE_HIGH, button_color=theme.SURFACE_HOVER,
+            button_hover_color=theme.ACCENT_DEEP, text_color=theme.TEXT,
+        ))
+        self._field(form, "Max answer tokens", ctk.CTkEntry(form, textvariable=self.max_tokens, width=110,
+                                                            height=32, corner_radius=theme.RADIUS_SMALL,
+                                                            fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER))
+        self._field(form, "Max tool steps", ctk.CTkEntry(form, textvariable=self.max_steps, width=110,
+                                                         height=32, corner_radius=theme.RADIUS_SMALL,
+                                                         fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER))
+        self._field(form, "Speak answers", ctk.CTkSwitch(form, variable=self.voice_enabled, text="",
+                                                         progress_color=theme.ACCENT))
 
-        switches = ttk.LabelFrame(self.frame, text="Capabilities", padding=12)
-        switches.pack(fill="x", pady=(12, 0))
+        switches = self.card(body)
+        ctk.CTkLabel(
+            switches, text="Capabilities", text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=13, weight="bold"), anchor="w",
+        ).pack(anchor="w", padx=16, pady=(14, 6))
         self.browser = tk.BooleanVar(value=bool(control["browser"]))
         self.improvement = tk.BooleanVar(value=bool(control["self_improvement"]))
         self.shutdown = tk.BooleanVar(value=bool(control["shutdown"]))
-        self._field(switches, "Web tools", ttk.Checkbutton(switches, text="allow browser and downloads",
-                                                          variable=self.browser))
-        self._field(switches, "Self-improvement", ttk.Checkbutton(switches, text="allow training candidates",
-                                                                 variable=self.improvement))
-        self._field(switches, "Assistant", ttk.Checkbutton(switches, text="stopped (emergency switch)",
-                                                           variable=self.shutdown))
+        self._field(switches, "Web tools", ctk.CTkSwitch(
+            switches, text="allow browser and downloads", variable=self.browser, progress_color=theme.ACCENT,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=11)))
+        self._field(switches, "Self-improvement", ctk.CTkSwitch(
+            switches, text="allow training candidates", variable=self.improvement, progress_color=theme.ACCENT,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=11)))
+        self._field(switches, "Assistant", ctk.CTkSwitch(
+            switches, text="stopped (emergency switch)", variable=self.shutdown,
+            progress_color=theme.DANGER, text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=11)))
 
         folders = ", ".join(self.runtime.status()["allowed_folders"]) or "none"
-        ttk.Label(self.frame, text=f"Allowed folders: {folders}", style="Muted.TLabel",
-                  wraplength=800).pack(anchor="w", pady=(12, 0))
-        ttk.Label(self.frame, text="Change folders with CLAIREAI_ALLOWED_FOLDERS; they are never widened from here.",
-                  style="Muted.TLabel", wraplength=800).pack(anchor="w")
+        ctk.CTkLabel(
+            body, text=f"Allowed folders: {folders}", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11), anchor="w", justify="left", wraplength=800,
+        ).pack(anchor="w", padx=16, pady=(0, 2))
+        ctk.CTkLabel(
+            body, text="Change folders with CLAIREAI_ALLOWED_FOLDERS; they are never widened from here.",
+            text_color=theme.MUTED, font=ctk.CTkFont(family=theme.FONT, size=11),
+            anchor="w", justify="left", wraplength=800,
+        ).pack(anchor="w", padx=16)
 
-        ttk.Button(self.frame, text="Apply", command=self.apply).pack(anchor="w", pady=(14, 0))
-        self.result = ttk.Label(self.frame, text="", style="Muted.TLabel")
-        self.result.pack(anchor="w", pady=(6, 0))
+        actions = ctk.CTkFrame(body, fg_color="transparent")
+        actions.pack(anchor="w", pady=(14, 0))
+        self.button(actions, "Apply", self.apply, primary=True).pack(side="left")
+        self.result = ctk.CTkLabel(
+            actions, text="", text_color=theme.MUTED, font=ctk.CTkFont(family=theme.FONT, size=11)
+        )
+        self.result.pack(side="left", padx=12)
 
-    def _field(self, parent: tk.Widget, label: str, widget: tk.Widget) -> None:
-        line = ttk.Frame(parent)
-        line.pack(fill="x", pady=4)
-        ttk.Label(line, text=label, width=20).pack(side="left")
+    def _field(self, parent: tk.Misc, label: str, widget: tk.Widget) -> None:
+        line = ctk.CTkFrame(parent, fg_color="transparent")
+        line.pack(fill="x", padx=16, pady=5)
+        ctk.CTkLabel(
+            line, text=label, width=140, anchor="w", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        ).pack(side="left")
         widget.pack(side="left")
 
     def apply(self) -> None:
@@ -522,9 +818,9 @@ class SettingsPage(Page):
                 shutdown=bool(self.shutdown.get()),
             )
         except (ValueError, OSError) as error:
-            self.result.configure(text=f"Not saved: {error}")
+            self.result.configure(text=f"Not saved: {error}", text_color=theme.DANGER)
             return
-        self.result.configure(text="Saved.")
+        self.result.configure(text="Saved.", text_color=theme.OK)
 
     def on_show(self) -> None:
         control = self.runtime.control()
@@ -539,10 +835,16 @@ class AboutPage(Page):
 
     def build(self) -> None:
         self.heading(self.title, self.subtitle)
-        self.body = tk.Text(self.frame, wrap="word", relief="flat", background="#12161f",
-                            foreground="#e8ecf4", height=20)
-        self.body.pack(fill="both", expand=True)
-        ttk.Button(self.frame, text="Refresh", command=self.refresh).pack(anchor="w", pady=(10, 0))
+        holder = ctk.CTkFrame(
+            self.frame, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        holder.pack(fill="both", expand=True, padx=theme.GUTTER, pady=(0, 10))
+        self.body = self.text_area(holder, height=20)
+        self.body.pack(fill="both", expand=True, padx=6, pady=6)
+        self.body.configure(state="disabled")
+        self.button(self.frame, "Refresh", self.refresh).pack(anchor="w", padx=theme.GUTTER,
+                                                              pady=(0, theme.GUTTER))
 
     def refresh(self) -> None:
         status = self.runtime.status()
@@ -568,9 +870,6 @@ class AboutPage(Page):
         self.body.delete("1.0", "end")
         self.body.insert("1.0", "\n".join(lines))
         self.body.configure(state="disabled")
-
-    def on_show(self) -> None:
-        self.refresh()
 
 
 PAGES: list[type[Page]] = [

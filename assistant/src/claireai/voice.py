@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
-import os
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 MAX_SPOKEN_CHARS = 6000
 MIN_PITCH, MAX_PITCH = 0, 99
@@ -72,12 +73,20 @@ def for_speech(text: str) -> str:
 
 
 def available_voices(engine: str | None = None) -> dict[str, str]:
-    """Languages this host can actually speak, as ``code -> name``."""
+    """Languages this host can actually speak, as ``code -> name``.
+
+    A Piper voice counts on its own: with one installed, speech works even where
+    eSpeak NG is absent.
+    """
+    found: dict[str, str] = {
+        code: name for code, name in SUPPORTED_LANGUAGES.items() if piper_voice_for(code) is not None
+    }
     executable = engine or shutil.which("espeak-ng") or shutil.which("espeak")
     if executable is None:
-        return {}
-    found: dict[str, str] = {}
+        return found
     for code, name in SUPPORTED_LANGUAGES.items():
+        if code in found:
+            continue
         try:
             listing = subprocess.run(
                 [executable, f"--voices={code}"],
@@ -90,6 +99,67 @@ def available_voices(engine: str | None = None) -> dict[str, str]:
         if listing.returncode == 0 and listing.stdout.count(b"\n") > 1:
             found[code] = name
     return found
+
+
+def piper_model_dirs() -> list[Path]:
+    """Where a Piper neural voice may live, most specific first."""
+    override = os.environ.get("CLAIREAI_PIPER_DIR")
+    if override:
+        # An explicit override replaces the search path rather than extending it,
+        # so an operator (or a test) can pin exactly which voices are visible.
+        return [Path(override).expanduser()]
+    dirs: list[Path] = []
+    dirs.append(Path.home() / ".local" / "share" / "ClaireAI" / "models" / "voice" / "piper")
+    # <repo>/runtime-data is the development data directory. voice.py sits at
+    # <repo>/assistant/src/claireai/voice.py, hence parents[3].
+    dirs.append(Path(__file__).resolve().parents[3] / "runtime-data" / "models" / "voice" / "piper")
+    return dirs
+
+
+def piper_voice_for(language: str) -> Path | None:
+    """A Piper ``.onnx`` voice for ``language``, or ``None`` if none is installed.
+
+    Only a model whose own file name carries the language code is accepted, so a
+    French sentence is never handed to an English voice. The ``medium`` voices
+    are preferred because they are the smallest that still sound natural.
+    """
+    if language not in SUPPORTED_LANGUAGES:
+        return None
+    matches: list[Path] = []
+    # Piper ships voices as ``<locale>-<speaker>-<quality>.onnx``, where the
+    # locale starts the file name (``en_US-lessac-medium.onnx``). Accept a bare
+    # language prefix as well as one embedded in the name.
+    patterns = (f"{language}_*.onnx", f"{language}-*.onnx", f"*_{language}_*.onnx")
+    for directory in piper_model_dirs():
+        if not directory.is_dir():
+            continue
+        for pattern in patterns:
+            for candidate in sorted(directory.glob(pattern)):
+                if candidate.with_suffix(".onnx.json").is_file() and candidate not in matches:
+                    matches.append(candidate)
+    if not matches:
+        return None
+    matches.sort(key=lambda path: ("medium" not in path.name, path.name))
+    return matches[0]
+
+
+def synthesize_with_piper(spoken: str, model: Path, *, rate: int = 175) -> bytes:
+    """Render ``spoken`` to WAV bytes with a local neural voice.
+
+    Piper has no pitch control; the rate is expressed as ``length_scale`` so the
+    existing rate slider still changes how fast it talks.
+    """
+    import io
+    import wave
+
+    from piper import PiperVoice, SynthesisConfig
+
+    voice = PiperVoice.load(str(model))
+    length_scale = max(0.5, min(2.5, 175.0 / max(1, rate)))
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        voice.synthesize_wav(spoken, wav, syn_config=SynthesisConfig(length_scale=length_scale))
+    return buffer.getvalue()
 
 
 class VoiceUnavailable(RuntimeError):
@@ -128,29 +198,45 @@ def speak_text(
         raise ValueError("speech text must not be empty")
     chosen = language or detect_language(spoken)
 
-    engine = shutil.which("espeak-ng") or shutil.which("espeak")
-    if engine is None:
-        raise VoiceUnavailable(
-            "offline speech engine not found; install eSpeak NG (plus a local audio player)"
-        )
+    # A neural voice sounds like a person; eSpeak NG sounds like a machine. Use
+    # Piper when a model for this language is installed, and keep eSpeak NG as
+    # the always-available fallback rather than making speech conditional.
+    audio: bytes | None = None
+    engine_name = ""
+    piper_model = piper_voice_for(chosen)
+    if piper_model is not None:
+        try:
+            candidate = synthesize_with_piper(spoken, piper_model, rate=rate)
+            if candidate.startswith(b"RIFF"):
+                audio, engine_name = candidate, "Piper (neural)"
+        except Exception:  # noqa: BLE001 - a broken model must fall back, not crash
+            audio = None
 
-    command = [
-        engine, "--stdout", "--stdin",
-        "-v", chosen,
-        "-p", str(pitch), "-s", str(rate),
-    ]
-    try:
-        synthesized = subprocess.run(
-            command,
-            input=spoken.encode("utf-8"),
-            capture_output=True,
-            timeout=SYNTH_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise VoiceUnavailable(f"offline speech synthesis failed: {type(exc).__name__}") from exc
-    if synthesized.returncode != 0 or not synthesized.stdout.startswith(b"RIFF"):
-        raise VoiceUnavailable("offline speech engine returned no valid WAV audio")
+    engine = shutil.which("espeak-ng") or shutil.which("espeak")
+    if audio is None:
+        if engine is None:
+            raise VoiceUnavailable(
+                "offline speech engine not found; install eSpeak NG or a Piper voice"
+            )
+        command = [
+            engine, "--stdout", "--stdin",
+            "-v", chosen,
+            "-p", str(pitch), "-s", str(rate),
+        ]
+        try:
+            synthesized = subprocess.run(
+                command,
+                input=spoken.encode("utf-8"),
+                capture_output=True,
+                timeout=SYNTH_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise VoiceUnavailable(f"offline speech synthesis failed: {type(exc).__name__}") from exc
+        if synthesized.returncode != 0 or not synthesized.stdout.startswith(b"RIFF"):
+            raise VoiceUnavailable("offline speech engine returned no valid WAV audio")
+        audio = synthesized.stdout
+        engine_name = "eSpeak NG" if engine.endswith("espeak-ng") else "eSpeak"
     if should_stop is not None and should_stop():
         raise VoiceStopped("ClaireAI was stopped while preparing speech output")
 
@@ -164,7 +250,7 @@ def speak_text(
 
         def play_windows_audio() -> None:  # pragma: no cover - Windows-only
             try:
-                winsound.PlaySound(synthesized.stdout, winsound.SND_MEMORY)
+                winsound.PlaySound(audio, winsound.SND_MEMORY)
             except Exception as exc:
                 playback_errors.append(exc)
             finally:
@@ -181,7 +267,7 @@ def speak_text(
                 raise VoiceUnavailable("local audio playback exceeded its time limit")
         if playback_errors:
             raise VoiceUnavailable("Windows could not play the generated speech") from playback_errors[0]
-        return "eSpeak NG" if engine.endswith("espeak-ng") else "eSpeak"
+        return engine_name
 
     players = ("paplay", "pw-play", "aplay")
     player = next((path for name in players if (path := shutil.which(name))), None)
@@ -201,7 +287,7 @@ def speak_text(
     def feed_audio() -> None:
         try:
             assert player_process.stdin is not None
-            player_process.stdin.write(synthesized.stdout)
+            player_process.stdin.write(audio)
             player_process.stdin.close()
         except (BrokenPipeError, OSError):
             return
@@ -226,4 +312,4 @@ def speak_text(
     writer.join(timeout=1)
     if player_process.returncode != 0:
         raise VoiceUnavailable("local audio player could not play the generated speech")
-    return "eSpeak NG" if engine.endswith("espeak-ng") else "eSpeak"
+    return engine_name
