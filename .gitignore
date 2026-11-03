@@ -52,3 +52,4 @@ brain-lab/**/checkpoints/
 
 # Harvested corpora are large and reproducible from their manifests.
 brain-lab/data/gutenberg-*/
+brain-lab/data/cifar10/

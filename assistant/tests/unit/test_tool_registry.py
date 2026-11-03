@@ -32,6 +32,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "find_largest_files",
         "get_file_info",
         "get_page_text",
+        "identify_image",
         "list_folder",
         "move_file",
         "move_to_trash",
@@ -40,6 +41,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "rename_file",
         "search_files",
         "search_web",
+        "see_screen",
         "write_to_file",
     )
     safe = {tool.name for tool in registry if tool.risk == "safe"}
@@ -47,6 +49,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "find_largest_files",
         "get_file_info",
         "get_page_text",  # reads a page already fetched in this task
+        "identify_image",  # reads one file inside the allow-list
         "list_folder",
         "read_text_file",
         "search_files",

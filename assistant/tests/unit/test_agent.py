@@ -206,6 +206,8 @@ async def test_tool_schemas_are_offered_to_the_model(
         "get_page_text",
         "search_web",
         "download_file",
+        "identify_image",
+        "see_screen",
     } == names
 
 

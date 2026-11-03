@@ -30,6 +30,10 @@ voice = ["faster-whisper>=1.1,<2"]
 # The native window draws its own surfaces, so it needs a styling toolkit on top
 # of Tk. Nothing else in the package does.
 desktop = ["customtkinter>=5.2"]
+# Local image understanding. torchvision is deliberately not listed: the wheel
+# that resolves here does not register its operators against the installed torch,
+# and CLIP needs only transformers, Pillow and NumPy.
+vision = ["transformers>=4.40"]
 
 [project.scripts]
 # No arguments starts the local app; any argument is passed to the CLI

@@ -106,6 +106,13 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
         "asking to use the web, which needs its own approval",
     ),
     (
+        "see",
+        r"\b(see|look|identify|recogni[sz]e|describe|what is|what's|whats|show me)\b",
+        r"\b(image|images|picture|pictures|photo|photos|screenshot|screenshots|screen|display|monitor)\b",
+        ("identify_image", "see_screen"),
+        "asking what an image or the screen shows",
+    ),
+    (
         "read",
         r"\b(read|open|summar(y|ise|ize)|what does|contents|show me the text)\b",
         r"\b(file|files|text|content|contents|note|notes|document|it)\b",

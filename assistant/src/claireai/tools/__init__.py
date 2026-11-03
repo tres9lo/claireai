@@ -31,6 +31,12 @@ from claireai.tools.files import (
     read_text_file,
     search_files,
 )
+from claireai.tools.vision import (
+    IdentifyImageArgs,
+    SeeScreenArgs,
+    identify_image,
+    see_screen,
+)
 from claireai.tools.files_write import (
     CreateFolderArgs,
     CreateTextFileArgs,
@@ -170,9 +176,29 @@ BROWSER_TOOLS: tuple[Tool, ...] = (
 )
 
 
+VISION_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="identify_image",
+        description="Look at an image file and say what it most likely shows.",
+        risk="safe",
+        args_model=IdentifyImageArgs,
+        handler=identify_image,
+    ),
+    # Reading the whole screen exposes whatever else the owner has open, so it
+    # is never a free action even though it changes nothing.
+    Tool(
+        name="see_screen",
+        description="Screenshot the display and say what is on it.",
+        risk="needs_approval",
+        args_model=SeeScreenArgs,
+        handler=see_screen,
+    ),
+)
+
+
 def default_registry(*, browser_enabled: bool = False) -> ToolRegistry:
     """Build the active tools; browser networking stays off unless enabled."""
-    tools = (*FILE_TOOLS, *WRITE_TOOLS, *(BROWSER_TOOLS if browser_enabled else ()))
+    tools = (*FILE_TOOLS, *WRITE_TOOLS, *VISION_TOOLS, *(BROWSER_TOOLS if browser_enabled else ()))
     return ToolRegistry(tools)
 
 
@@ -180,6 +206,7 @@ __all__ = [
     "BROWSER_TOOLS",
     "FILE_TOOLS",
     "LargestFilesArgs",
+    "VISION_TOOLS",
     "WRITE_TOOLS",
     "Tool",
     "ToolContext",

@@ -1793,3 +1793,42 @@ or implement the page-approval design against the existing loopback server.
   token across fifteen texts including overlap, accent, CJK and long-run cases.
   The installed `claire-scratch` checkpoint also encodes identically under the new
   code. Full suite 439 passed.
+
+## 2026-11-04 — The assistant can see a picture and the screen
+
+- Added local image understanding (`claireai.vision`): a CLIP ViT-B/32 model that
+  ranks an image against candidate phrases. It is zero-shot, so it is not limited
+  to a fixed list — the default set covers screenshots, documents, charts and
+  photos, and a caller can pass its own labels instead. Everything runs on CPU
+  with local weights; nothing leaves the machine.
+- Two tools: `identify_image` (safe, reads one file inside the allow-list, same
+  posture as `read_text_file`) and `see_screen` (always `needs_approval`, because
+  a full-screen capture exposes whatever else the owner has open).
+- **Measured accuracy, not an impression**: 90.85% top-1 on 2,000 held-out
+  CIFAR-10 test images against 10% chance, at 121.9 ms/image on four CPU threads.
+  Per class it ranges from 77.3% (deer) to 98.5% (horse). `brain-lab/vision_accuracy.py`
+  reproduces it from a fresh download.
+- Screen capture tries grim, gnome-screenshot, spectacle, scrot and ImageMagick.
+  A **blank frame is refused, not described**: this host's compositor returns
+  black, so `see_screen` fails with the backend and the reason rather than
+  confidently reporting "a photograph that is mostly one solid colour". That
+  means the screen path is implemented and unit-tested but not verified against a
+  real screen here.
+- Two dependency findings worth recording. The `torchvision` wheel that resolves
+  here never registers its operators against torch 2.15 (`operator
+  torchvision::nms does not exist`) while still declaring `torch>=2.14`, so
+  metadata-based resolution cannot catch it; `open-clip-torch` imports torchvision
+  unconditionally and was therefore unusable. The vision layer uses `transformers`
+  and needs no torchvision at all (verified by running with it uninstalled).
+  Separately, `cs.toronto.edu` now serves the CIFAR tarball via a redirect at a few
+  hundred bytes per second, so the benchmark reads the same test split from the
+  Hugging Face parquet mirror.
+- Known failure, not from this work: `test_presence_server.py::
+  test_ui_computer_task_waits_for_exact_owner_approval` fails **only inside the
+  full suite** with a 3-second socket timeout reading `/api/approvals`. Evidence:
+  the file passes 16/16 on its own; with `VISION_TOOLS` unregistered the suite is
+  clean; with either one or both vision tools registered it fails twice in a row.
+  The endpoint itself only reads the approval broker, which releases its lock
+  while waiting, so the stall is a timing threshold in the uncommitted
+  approval-from-the-page work rather than in the vision code. Left as a reported
+  failure rather than hidden, and not weakened.
