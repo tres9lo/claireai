@@ -33,14 +33,13 @@ policy. Either call the interpreter directly
 ## 3. Train a local scratch checkpoint
 
 ```powershell
-New-Item -ItemType Directory -Force brain-lab\data\raw
 $env:CLAIREAI_DATA_DIR = "$PWD\runtime-data"
-# Add licensed UTF-8 .txt training files, then:
-python brain-lab\train.py brain-lab\data\raw --steps 1000
+# Pipeline smoke only; the included synthetic corpus is not enough for a useful model.
+python brain-lab\train.py brain-lab\data\bootstrap-v1\text --steps 1000
 ```
 
 The transformer is randomly initialized. Training speed and assistant quality
-depend on the corpus and hardware; no model weights or corpus are included.
+depend on the corpus and hardware; no pretrained model weights are included.
 
 ## 4. Run
 

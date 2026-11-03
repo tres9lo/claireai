@@ -9,5 +9,8 @@ description = "ClaireAI from-scratch research transformer"
 requires-python = ">=3.11"
 dependencies = ["torch>=2.2"]
 
+[project.optional-dependencies]
+vision = ["Pillow>=10"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,25 @@
+{
+  "dataset": "claireai-bootstrap-1",
+  "license": "MIT",
+  "source": "Original synthetic examples and SVG screenshots generated locally by this repository; no third-party material or user data.",
+  "generator_seed": 20261103,
+  "counts_by_split": {
+    "train": 256,
+    "validation": 32,
+    "test": 32
+  },
+  "counts_by_family": {
+    "read_only_tool": 80,
+    "approval_safety": 80,
+    "factual_reporting": 80,
+    "visual_grounding": 80
+  },
+  "examples_sha256": "566acd21ef5d96fda35439476f6da4ed4650ba13423f31eb6a5ad5787bbd3bed",
+  "image_count": 80,
+  "training_entrypoint": "brain-lab/train.py <output>/text",
+  "limitations": [
+    "Synthetic template data validates the training pipeline; it does not represent real-world coverage.",
+    "The current language model consumes the textual accessibility listing, not the paired SVG pixels.",
+    "No capability claim should be based on training loss or this bootstrap corpus alone."
+  ]
+}

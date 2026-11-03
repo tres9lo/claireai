@@ -77,7 +77,7 @@ class ImprovementLedger:
             "parent_checkpoint": str(Path(parent).resolve()),
             "training_loss": manifest.get("training_loss"),
             "validation_loss": manifest.get("validation_loss"),
-            "corpus": manifest.get("corpus", []),
+            "corpus": manifest.get("training_corpus", manifest.get("corpus", [])),
         })
         return candidate_id
 

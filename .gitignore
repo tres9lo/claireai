@@ -47,4 +47,5 @@ trash/
 *.bin
 brain-lab/data/raw/
 brain-lab/data/processed/
+brain-lab/data/external/
 brain-lab/**/checkpoints/

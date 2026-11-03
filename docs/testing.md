@@ -146,3 +146,14 @@ Rules for the case file:
   and design around it (deterministic code instead of free-form model output).
 - Keep cases small and unambiguous; a flaky case usually means the prompt or the
   output contract is ambiguous, not that the model is random.
+
+## Dataset and visual-grounding experiments
+
+`brain-lab/build_dataset.py` creates the tracked MIT synthetic starter corpus.
+Its train, validation and test files are separate; `train.py` learns tokenizer
+merges only from train and never reads test. For external image experiments,
+`brain-lab/fetch_gui_images.py` pins and verifies the synthetic-only licensed
+subset, then `brain-lab/vision_train.py` trains a separate random-init CNN and
+reports click-within-target metrics on held-out screenshots. That visual model
+is not integrated into chat or screen control; its metrics are research results,
+not a product capability claim.

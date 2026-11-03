@@ -23,6 +23,8 @@ def main() -> int:
     parser.add_argument("corpus", type=Path, help="directory containing licensed .txt files")
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--validation-batches", type=int, default=4, help="held-out batches per validation measurement")
+    parser.add_argument("--log-interval", type=int, default=100, help="training steps between validation reports")
     parser.add_argument("--context", type=int, default=256)
     parser.add_argument("--vocab-size", type=int, default=512)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -31,12 +33,39 @@ def main() -> int:
     parser.add_argument("--improvement", action="store_true", help="continue the active checkpoint and log a candidate (requires UI opt-in)")
     parser.add_argument("--continue-from", type=Path, help="parent checkpoint to continue training from")
     args = parser.parse_args()
-    if args.steps < 1 or args.batch_size < 1:
-        parser.error("steps and batch-size must be positive")
-    files = sorted(args.corpus.rglob("*.txt")) if args.corpus.is_dir() else []
-    if not files:
+    if min(args.steps, args.batch_size, args.validation_batches, args.log_interval) < 1:
+        parser.error("steps, batch-size, validation-batches, and log-interval must be positive")
+    train_dir = args.corpus / "train"
+    validation_dir = args.corpus / "validation"
+    if train_dir.is_dir() or validation_dir.is_dir():
+        if not train_dir.is_dir() or not validation_dir.is_dir():
+            parser.error("split corpus requires both train/ and validation/ directories")
+        train_files = sorted(train_dir.rglob("*.txt"))
+        validation_files = sorted(validation_dir.rglob("*.txt"))
+        if not train_files or not validation_files:
+            parser.error("train/ and validation/ must each contain at least one .txt file")
+        train_docs = [(path, path.read_text(encoding="utf-8")) for path in train_files]
+        validation_docs = [(path, path.read_text(encoding="utf-8")) for path in validation_files]
+        train_texts = [doc for _, doc in train_docs]
+        validation_texts = [doc for _, doc in validation_docs]
+        training_sources = [(str(path.relative_to(args.corpus)), text) for path, text in train_docs]
+        validation_sources = [(str(path.relative_to(args.corpus)), text) for path, text in validation_docs]
+    else:
+        files = sorted(args.corpus.rglob("*.txt")) if args.corpus.is_dir() else []
+        if not files:
+            parser.error(f"no .txt training files found under {args.corpus}")
+        docs = [(path, path.read_text(encoding="utf-8")) for path in files]
+        flat_text = "\n\n".join(doc for _, doc in docs)
+        train_end = int(len(flat_text) * 0.8)
+        validation_end = int(len(flat_text) * 0.9)
+        train_text = flat_text[:train_end]
+        validation_text = flat_text[train_end:validation_end]
+        train_texts = [train_text]
+        validation_texts = [validation_text]
+        training_sources = [(f"{args.corpus.name}#train-80pct", train_text)]
+        validation_sources = [(f"{args.corpus.name}#validation-10pct", validation_text)]
+    if not train_texts:
         parser.error(f"no .txt training files found under {args.corpus}")
-    docs = [(path, path.read_text(encoding="utf-8")) for path in files]
     settings = None
     if args.improvement:
         from claireai.config import Settings
@@ -59,12 +88,19 @@ def main() -> int:
         parent = None
         parent_payload = None
         parent_manifest = None
-        tokenizer = BytePairTokenizer.train([doc for _, doc in docs], vocab_size=args.vocab_size)
-    tokens = torch.tensor([token for _, doc in docs for token in tokenizer.encode(doc)], dtype=torch.long)
-    if len(tokens) < 2 * (args.context + 1):
-        parser.error(f"corpus has {len(tokens)} tokens; need at least {2 * (args.context + 1)} for train/validation splits")
-    split = int(len(tokens) * 0.9)
-    train_tokens, validation_tokens = tokens[:split], tokens[split:]
+        tokenizer = BytePairTokenizer.train(train_texts, vocab_size=args.vocab_size)
+    train_tokens = torch.tensor(
+        [token for text in train_texts for token in tokenizer.encode(text)], dtype=torch.long
+    )
+    validation_tokens = torch.tensor(
+        [token for text in validation_texts for token in tokenizer.encode(text)], dtype=torch.long
+    )
+    minimum = args.context + 2
+    if len(train_tokens) < minimum or len(validation_tokens) < minimum:
+        parser.error(
+            f"need at least {minimum} tokens in each train and validation split; "
+            f"got {len(train_tokens)} and {len(validation_tokens)}"
+        )
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -87,10 +123,11 @@ def main() -> int:
     def validation_loss():
         model.eval()
         with torch.inference_mode():
-            losses = [model(*batch_from(validation_tokens))[1].item() for _ in range(10)]
+            losses = [model(*batch_from(validation_tokens))[1].item() for _ in range(args.validation_batches)]
         model.train()
         return sum(losses) / len(losses)
 
+    last_validation_loss = float("nan")
     for step in range(1, args.steps + 1):
         x, y = batch_from(train_tokens)
         _, loss = model(x, y)
@@ -98,8 +135,9 @@ def main() -> int:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        if step == 1 or step % 100 == 0 or step == args.steps:
-            print(f"step {step}/{args.steps} train_loss={loss.item():.4f} validation_loss={validation_loss():.4f}")
+        if step == 1 or step % args.log_interval == 0 or step == args.steps:
+            last_validation_loss = validation_loss()
+            print(f"step {step}/{args.steps} train_loss={loss.item():.4f} validation_loss={last_validation_loss:.4f}")
 
     if settings is None:
         from claireai.config import Settings
@@ -122,13 +160,14 @@ def main() -> int:
         "steps": args.steps,
         "parent_checkpoint": str(parent.resolve()) if parent else None,
         "training_loss": float(loss.item()),
-        "validation_loss": validation_loss(),
-        "corpus": [
-            {
-                "file": str(path.relative_to(args.corpus)),
-                "sha256": hashlib.sha256(text.encode()).hexdigest(),
-            }
-            for path, text in docs
+        "validation_loss": last_validation_loss,
+        "training_corpus": [
+            {"file": name, "sha256": hashlib.sha256(text.encode()).hexdigest()}
+            for name, text in training_sources
+        ],
+        "validation_corpus": [
+            {"file": name, "sha256": hashlib.sha256(text.encode()).hexdigest()}
+            for name, text in validation_sources
         ],
     }
     torch.save({"state_dict": model.state_dict(), "manifest": manifest}, output)

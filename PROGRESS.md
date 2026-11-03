@@ -1,5 +1,61 @@
 # Progress log
 
+## 2026-11-03 — First locally authored and licensed computer-use corpus
+
+- Generated and committed 320 MIT-licensed synthetic examples: read-only tool
+  routing, approval refusals, factual reports and screenshot-grounding prompts,
+  with 80 original SVG workspace images. The deterministic builder records
+  sample/source hashes and separate train (256), validation (32) and test (32)
+  splits.
+- Reworked `train.py` so BPE merges are learned from train only, validation is
+  held out, test data is never read for training, and validation work is
+  configurable. A 2-step CPU run produced a checkpoint and confirmed its
+  manifest only includes train/validation sources.
+- Downloaded 110 synthetic PNGs (2.2 MB) from GUI-Primitives at pinned revision
+  `a940226b327770dee78e821ff3fc3aa575a73be1`. The card lists CC BY 4.0 for its
+  synthetic content. Real application screenshots are excluded. 113 samples
+  remain for training, 16 for validation, 127 human-verified clean samples are
+  held out, and 440 pool annotations sharing held-out screenshots are omitted.
+  Every image has a local SHA-256 record and source attribution; downloaded data
+  stays outside Git.
+- Added `ScratchGrounder`, a separately initialized CNN plus text embedding, and
+  `vision_train.py`. A two-epoch wiring run used all 113 image samples; held-out
+  accuracy was 1/127 (0.8%). A 20-epoch CPU run is saved at the ignored
+  `runtime-data/models/claire-vision-grounder.pt`: train loss 0.0071, best
+  validation loss 0.0138, clean held-out click accuracy 8/127 (6.3%). This is a
+  measured baseline but still a poor result, not a usable screen agent. The
+  vision checkpoint is not connected to chat or computer control, and the
+  language model remains text-only.
+- Next: improve image resolution/augmentation and dataset coverage, integrate a
+  visual input path into `Brain`, then implement an owner-gated screenshot tool.
+
+## 2026-11-03 — Synthetic computer-assistant dataset and split-aware training
+
+- Created `brain-lab/data/bootstrap-v1/`: 320 original examples under the
+  project MIT license, with 80 paired SVG workspace screenshots and annotations.
+  Families cover read-only tool routing, explicit-approval refusals, factual
+  reports, and spatial UI grounding. The manifest records provenance, split
+  counts and content hashes; no third-party or personal content was used.
+- Added `brain-lab/build_dataset.py` to recreate the dataset deterministically.
+- Updated the trainer to learn BPE merges from `train/` only, measure on
+  `validation/`, and ignore `test/`. Flat text corpora retain their older
+  development convenience path.
+- Verified all 80 SVG hashes and split counts. Ran two training steps against
+  the generated corpus and confirmed the checkpoint manifest includes the train
+  and validation files, not the test file. This verifies plumbing only; two
+  steps on synthetic templates do not produce a useful assistant.
+- Limitation: the current model is text-only. Grounding examples train on their
+  structured accessibility descriptions; paired SVGs are prepared for a later
+  visual encoder and do not yet teach pixel-level recognition.
+
+### Next
+
+1. Add native image input and evaluate on held-out generated screens before
+   integrating real screen capture.
+2. Implement an owner-granted screenshot capability and visible capture state.
+3. Add licensed local speech capture and speech output after text and screen
+   workflows have reliable evaluations.
+
 ## 2026-11-03 — Owner direction: scratch brain and local controls (first slice)
 
 **Requested direction:** Train ClaireAI's model from random initialization, remove

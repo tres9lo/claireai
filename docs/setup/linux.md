@@ -49,15 +49,16 @@ uv pip install --python assistant/.venv/bin/python -e ./brain-lab
 Use the CPU wheel for this host; PyTorch's official installer provides a CPU
 compute-platform option for pip. See [PyTorch Start Locally](https://pytorch.org/get-started/locally/).
 
-Add only licensed plain-text training material under `brain-lab/data/raw/`.
-Record the source and terms in `docs/model-and-data-licenses.md` and a tracked
-manifest before training. The corpus is intentionally not bundled. The initial
-transformer is randomly initialized and experimental; a training run alone does
-not establish useful chat or tool-use quality.
+The repository includes `brain-lab/data/bootstrap-v1/`, a small synthetic MIT-
+licensed starter corpus with generated SVG workspace screens. It checks the
+training pipeline but is far too small and template-based to create a useful
+assistant. Add only licensed plain-text material under `brain-lab/data/raw/`;
+record the source and terms before using it. The split-aware trainer learns its
+tokenizer from `train/`, validates on `validation/`, and ignores `test/`.
 
 ```bash
 export CLAIREAI_DATA_DIR=./runtime-data
-assistant/.venv/bin/python brain-lab/train.py brain-lab/data/raw --steps 1000
+assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text --steps 1000
 ```
 
 The resulting checkpoint is stored under `runtime-data/models/` and ignored by

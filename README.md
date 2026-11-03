@@ -44,6 +44,8 @@ The result is an assistant you can actually point at real folders, because the b
 | Browser tools, disabled until enabled in the local control panel | ✅ |
 | Runtime stop switch and browser access control panel | ✅ first version |
 | OS family detection (Linux/Windows first targets) | ✅ detection only |
+| Reproducible MIT synthetic task corpus + split-aware text training | ✅ starter data |
+| Random-init visual-grounding prototype using attributed online synthetic images | 🧪 research only; not integrated |
 | Licensed corpus, trained capable assistant, TTS voice controls | 🚧 not included yet |
 | FastAPI service · Playwright engine · Tauri desktop shell | 🚧 planned |
 | Camera, screen, cursor and keyboard control | 🚧 specified, not built |
@@ -95,7 +97,7 @@ Read [docs/architecture/threat-model.md](docs/architecture/threat-model.md) for 
 
 ## Quick start (Linux)
 
-Requires **Python 3.11+**, PyTorch, and a licensed text corpus. The scratch model starts with random weights; it is a research prototype and will not behave like a pretrained assistant until trained and evaluated on substantial task-specific data.
+Requires **Python 3.11+** and PyTorch. The scratch model starts with random weights; it is a research prototype and will not behave like a capable assistant until trained and evaluated on substantial task-specific data.
 
 ```bash
 git clone https://github.com/tres9lo/claireai.git
@@ -107,10 +109,10 @@ uv pip install --python assistant/.venv/bin/python --index-url https://download.
 uv pip install --python assistant/.venv/bin/python -e "assistant[dev,model]"
 uv pip install --python assistant/.venv/bin/python -e ./brain-lab
 
-# 2. Add licensed .txt training data under brain-lab/data/raw/ (not committed)
-# Then train a small CPU checkpoint. Increase --steps after confirming the first run.
+# 2. Train on the included synthetic starter corpus (pipeline demo, not enough
+#    data for useful capability). Add licensed corpora for serious experiments.
 export CLAIREAI_DATA_DIR=./runtime-data
-assistant/.venv/bin/python brain-lab/train.py brain-lab/data/raw --steps 1000
+assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text --steps 1000
 
 # 3. Ask one question; the turn is logged to SQLite
 CLAIREAI_DATA_DIR=./runtime-data \
@@ -154,10 +156,14 @@ assistant/.venv/bin/python -m claireai.cli --summary-at 18:00
 assistant/.venv/bin/python scripts/presence_preview.py --data-dir ./runtime-data
 
 # Self-improvement: enable it in the HUD, then train an isolated candidate
-assistant/.venv/bin/python brain-lab/train.py brain-lab/data/raw --steps 200 --improvement
+assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text --steps 200 --improvement
 
 # Diagnostics
 assistant/.venv/bin/python scripts/doctor.py
+
+# Optional visual prototype (downloaded image data; kept separate from chat)
+uv pip install --python assistant/.venv/bin/python -e "brain-lab[vision]"
+assistant/.venv/bin/python brain-lab/vision_train.py --epochs 20
 ```
 
 ## Architecture
