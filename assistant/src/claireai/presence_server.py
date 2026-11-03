@@ -1,23 +1,14 @@
-"""Local event server for the presence renderer (Month 1, Week 4 groundwork).
+"""Loopback HUD and same-origin local APIs for ClaireAI.
 
-Deliberately dependency-free: Python's standard library serves the HUD and the
-event stream, so the renderer can be run and inspected before the desktop shell
-(Rust + npm) is installed. When the Tauri window exists it will consume the same
-contract over the same loopback API.
-
-Security posture:
-
-* binds to loopback only unless the caller explicitly says otherwise;
-* serves one static HTML file, one generated read-only page and JSON state,
-  nothing from disk by request path;
-* no CORS headers, no cookies, no auth bypass — it is a local view of local state;
-* it holds no capability: the stream it serves is read-only, ``/today`` opens
-  SQLite with ``mode=ro``, and there is no POST handler to approve or invoke
-  anything. The generated page carries a strict CSP and no JavaScript.
+The text chat and transcription endpoints use local models but do not invoke
+computer tools. Control APIs are limited to explicit owner settings, while
+``/today`` remains read-only and carries a strict CSP.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import ipaddress
 import sqlite3
@@ -41,6 +32,7 @@ from claireai.storage import (
     DirectiveRepository,
     PreferenceRepository,
 )
+from claireai.voice_input import SpeechRecognitionUnavailable
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 POLL_SECONDS = 0.2
@@ -67,6 +59,40 @@ def _handler_factory(
     database_path: Path | None = None,
     control_path: Path | None = None,
 ) -> type[BaseHTTPRequestHandler]:
+    voice_state_lock = threading.Lock()
+    voice_state_timer: threading.Timer | None = None
+    voice_state_generation = 0
+
+    def set_voice_state(listening: bool) -> None:
+        nonlocal voice_state_timer, voice_state_generation
+        with voice_state_lock:
+            voice_state_generation += 1
+            generation = voice_state_generation
+            if voice_state_timer is not None:
+                voice_state_timer.cancel()
+                voice_state_timer = None
+            stream.emit(
+                "listening" if listening else "idle",
+                detail={"label": "push-to-talk"} if listening else {"label": "ready"},
+                active={"microphone": listening},
+            )
+            if listening:
+                def expire_listening() -> None:
+                    nonlocal voice_state_timer
+                    with voice_state_lock:
+                        if generation != voice_state_generation:
+                            return
+                        voice_state_timer = None
+                        stream.emit(
+                            "idle", detail={"label": "ready"}, active={"microphone": False}
+                        )
+
+                # If a tab disappears without its stop request, do not leave a
+                # stale microphone indicator active indefinitely.
+                voice_state_timer = threading.Timer(20.0, expire_listening)
+                voice_state_timer.daemon = True
+                voice_state_timer.start()
+
     class PresenceHandler(BaseHTTPRequestHandler):
         server_version = "ClaireAIPresence/0.1"
 
@@ -109,6 +135,7 @@ def _handler_factory(
             allowed_posts = {
                 "/control", "/improvements", "/api/directives",
                 "/api/preferences", "/api/conversations", "/api/voice-preview", "/api/chat",
+                "/api/voice-model", "/api/transcribe", "/api/voice-state",
             }
             if request_path not in allowed_posts or control_path is None:
                 self._send(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n")
@@ -125,7 +152,9 @@ def _handler_factory(
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                body_limit = 65536 if request_path.startswith("/api/") else 1024
+                body_limit = 15 * 1024 * 1024 if request_path == "/api/transcribe" else (
+                    65536 if request_path.startswith("/api/") else 1024
+                )
                 if not 1 <= length <= body_limit:
                     raise ValueError("invalid body size")
                 body = json.loads(self.rfile.read(length))
@@ -158,6 +187,9 @@ def _handler_factory(
             except BrainError as exc:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain; charset=utf-8", str(exc).encode()[:512])
                 return
+            except SpeechRecognitionUnavailable as exc:
+                self._send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain; charset=utf-8", str(exc).encode()[:512])
+                return
             self._send(HTTPStatus.OK, "application/json", json.dumps(result, sort_keys=True).encode())
 
         def _same_origin_api(self) -> bool:
@@ -171,6 +203,17 @@ def _handler_factory(
 
         def _api_get(self, path: str, query: str) -> None:
             assert database_path is not None
+            if path == "/api/voice-status":
+                from claireai.voice_input import transcriber_for
+                data_dir = control_path.parent if control_path is not None else Path(database_path).parent.parent
+                transcriber = transcriber_for(str(data_dir / "models" / "voice" / "asr"))
+                payload = {
+                    "runtime_available": transcriber.runtime_available,
+                    "model_installed": transcriber.installed,
+                    "model": "Whisper tiny (multilingual, local CPU)",
+                }
+                self._send(HTTPStatus.OK, "application/json", json.dumps(payload).encode())
+                return
             conn = open_read_only(database_path)
             if conn is None:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain; charset=utf-8", b"local database unavailable\n")
@@ -204,6 +247,54 @@ def _handler_factory(
             database = Database(database_path)
             conn = database.connect()
             try:
+                if path == "/api/voice-state":
+                    listening = body.get("listening")
+                    if type(listening) is not bool:
+                        raise ValueError("listening must be true or false")
+                    if listening and RuntimeControl(control_path).read()["shutdown"]:
+                        raise BrainStopped("ClaireAI is stopped in the local control panel.")
+                    set_voice_state(listening)
+                    return {"listening": listening}
+                if path in {"/api/voice-model", "/api/transcribe"}:
+                    from claireai.voice_input import (
+                        MAX_AUDIO_BYTES,
+                        SUPPORTED_AUDIO_TYPES,
+                        SpeechRecognitionUnavailable,
+                        transcriber_for,
+                    )
+                    if RuntimeControl(control_path).read()["shutdown"]:
+                        raise BrainStopped("ClaireAI is stopped in the local control panel.")
+                    data_dir = Path(control_path).parent
+                    transcriber = transcriber_for(str(data_dir / "models" / "voice" / "asr"))
+                    if path == "/api/voice-model":
+                        transcriber.install()
+                        return {
+                            "installed": transcriber.installed,
+                            "model": "Whisper tiny (multilingual, local CPU)",
+                        }
+                    if not transcriber.installed:
+                        raise SpeechRecognitionUnavailable(
+                            "install the local speech model from the voice panel first"
+                        )
+                    mime_type = body.get("content_type")
+                    encoded = body.get("audio_base64")
+                    if not isinstance(mime_type, str) or mime_type.split(";", 1)[0].lower() not in SUPPORTED_AUDIO_TYPES:
+                        raise ValueError("unsupported browser audio format")
+                    if not isinstance(encoded, str) or len(encoded) > ((MAX_AUDIO_BYTES + 2) // 3) * 4 + 8:
+                        raise ValueError("audio payload is invalid or too large")
+                    try:
+                        audio = base64.b64decode(encoded, validate=True)
+                    except (binascii.Error, ValueError) as exc:
+                        raise ValueError("audio payload is not valid base64") from exc
+                    if len(audio) > MAX_AUDIO_BYTES:
+                        raise ValueError("audio payload is too large")
+                    text = transcriber.transcribe(
+                        audio,
+                        content_type=mime_type.split(";", 1)[0].lower(),
+                    )
+                    if RuntimeControl(control_path).read()["shutdown"]:
+                        raise BrainStopped("ClaireAI was stopped during speech transcription.")
+                    return {"text": text}
                 if path == "/api/chat":
                     message = body.get("message")
                     conversation_id = body.get("conversation_id")

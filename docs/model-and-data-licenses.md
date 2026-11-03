@@ -25,7 +25,21 @@ player. See the [upstream project](https://github.com/espeak-ng/espeak-ng) and
 If eSpeak NG or a compatible system audio player is absent, speech preview
 reports that condition; text chat remains available. This is basic synthetic
 speech, not a custom-trained voice. Speech recognition and wake-word support
-remain unselected.
+are separate local features.
+
+### Local speech recognition (optional)
+
+The optional `assistant[voice]` extra uses `faster-whisper` (MIT) and, only when
+the owner selects **Install speech model** in the local UI, downloads
+`Systran/faster-whisper-tiny` (model card reports MIT) into ClaireAI's local
+data directory. This is an auxiliary speech-to-text model; ClaireAI's assistant
+language model remains randomly initialized and trained in `brain-lab/`. The
+upstream sources are [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+and the [tiny multilingual model card](https://huggingface.co/Systran/faster-whisper-tiny).
+The model repository is resolved by Hugging Face at installation time and is
+not yet pinned to a commit hash; this limits bit-for-bit reproducibility. Audio
+is submitted only to this local process and decoded from memory; this feature
+does not retain the recording.
 
 ## Training data (`brain-lab/`)
 

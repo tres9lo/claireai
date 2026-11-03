@@ -129,6 +129,11 @@
         <h2 id="history-title">Local conversation history</h2>
         <p>Conversation text stays in ClaireAI's local database. This UI chat uses the local text model; computer actions still use the separately gated agent flow.</p>
         <div class="field"><label for="chat-message">Message ClaireAI</label><textarea id="chat-message" maxlength="6000" placeholder="Ask ClaireAI something…"></textarea></div>
+        <div class="control-row">
+          <div><strong>Local speech input</strong><br /><span id="voice-input-state">Checking speech model…</span></div>
+          <div><button id="push-to-talk" type="button" disabled>Start push-to-talk</button> <button id="voice-model-install" type="button">Install speech model</button></div>
+        </div>
+        <p>Microphone access starts only when you press the button. Recordings are limited to 15 seconds, transcribed locally, and discarded. Review the transcript before sending.</p>
         <button id="chat-send" type="button">Send message</button><button id="new-conversation" type="button">New conversation</button>
         <p id="chat-status" role="status" aria-live="polite"></p>
         <p>Select a conversation to continue it, review its messages, or delete it.</p>
@@ -189,7 +194,14 @@
       const historyStatus = document.getElementById("history-status");
       const chatMessage = document.getElementById("chat-message");
       const chatStatus = document.getElementById("chat-status");
+      const pushToTalkButton = document.getElementById("push-to-talk");
+      const voiceModelInstall = document.getElementById("voice-model-install");
+      const voiceInputState = document.getElementById("voice-input-state");
       let activeConversationId = null;
+      let microphoneStream = null;
+      let mediaRecorder = null;
+      let audioChunks = [];
+      let recordingTimer = null;
       let controls = { shutdown: false, browser: false, self_improvement: false };
 
       let current = { state: "idle", taskId: null, detail: {}, active: {}, seq: 0 };
@@ -366,6 +378,137 @@
         return response.json();
       }
 
+      async function loadVoiceInput() {
+        try {
+          const state = await api("/api/voice-status");
+          if (!state.runtime_available) {
+            voiceInputState.textContent = "Speech runtime unavailable; install ClaireAI's voice extra during setup.";
+            voiceModelInstall.disabled = true;
+            return;
+          }
+          voiceInputState.textContent = state.model_installed
+            ? `${state.model} ready · audio stays local`
+            : `${state.model} is not installed · download it to this device`;
+          pushToTalkButton.disabled = !state.model_installed;
+          voiceModelInstall.disabled = state.model_installed;
+          if (state.model_installed) voiceModelInstall.textContent = "Speech model installed";
+        } catch (error) {
+          voiceInputState.textContent = `Speech status unavailable: ${error.message}`;
+          pushToTalkButton.disabled = true;
+        }
+      }
+
+      voiceModelInstall.addEventListener("click", async () => {
+        voiceModelInstall.disabled = true;
+        voiceInputState.textContent = "Downloading and loading the local speech model…";
+        try {
+          const result = await api("/api/voice-model", "POST", { install: true });
+          voiceInputState.textContent = `${result.model} installed locally.`;
+          voiceModelInstall.textContent = "Speech model installed";
+          pushToTalkButton.disabled = !result.installed;
+        } catch (error) {
+          voiceInputState.textContent = `Could not install speech model: ${error.message}`;
+          voiceModelInstall.disabled = false;
+        }
+      });
+
+      async function setMicrophoneIndicator(listening) {
+        await api("/api/voice-state", "POST", { listening });
+      }
+
+      function releaseMicrophone() {
+        if (recordingTimer) clearTimeout(recordingTimer);
+        recordingTimer = null;
+        if (microphoneStream) microphoneStream.getTracks().forEach((track) => track.stop());
+        microphoneStream = null;
+        pushToTalkButton.disabled = false;
+        pushToTalkButton.textContent = "Start push-to-talk";
+        pushToTalkButton.setAttribute("aria-pressed", "false");
+        void setMicrophoneIndicator(false).catch(() => {});
+      }
+
+      async function transcribeRecording(blob) {
+        pushToTalkButton.disabled = true;
+        if (!blob.size) { voiceInputState.textContent = "No audio captured; try again or type your message."; return; }
+        voiceInputState.textContent = "Transcribing locally…";
+        chatStatus.textContent = "Audio is being processed locally. It is not saved.";
+        try {
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onerror = () => reject(new Error("could not read the recording"));
+            reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
+            reader.readAsDataURL(blob);
+          });
+          const result = await api("/api/transcribe", "POST", {
+            content_type: blob.type.split(";", 1)[0] || "audio/webm",
+            audio_base64: dataUrl,
+          });
+          chatMessage.value = result.text;
+          chatMessage.focus();
+          voiceInputState.textContent = "Transcript ready. Review or edit it, then press Send message.";
+          chatStatus.textContent = "Transcript was not sent automatically.";
+        } catch (error) {
+          voiceInputState.textContent = `Transcription failed: ${error.message}`;
+          chatStatus.textContent = "The recording was discarded. You can try again or type a message.";
+        } finally {
+          audioChunks = [];
+          pushToTalkButton.disabled = false;
+        }
+      }
+
+      async function startPushToTalk() {
+        if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+          voiceInputState.textContent = "This browser does not support local microphone recording.";
+          return;
+        }
+        pushToTalkButton.disabled = true;
+        try {
+          microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          await setMicrophoneIndicator(true);
+          const mimeType = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"]
+            .find((type) => MediaRecorder.isTypeSupported(type));
+          mediaRecorder = mimeType ? new MediaRecorder(microphoneStream, { mimeType }) : new MediaRecorder(microphoneStream);
+          audioChunks = [];
+          mediaRecorder.addEventListener("dataavailable", (event) => { if (event.data.size) audioChunks.push(event.data); });
+          mediaRecorder.addEventListener("stop", () => {
+            const recording = new Blob(audioChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+            releaseMicrophone();
+            void transcribeRecording(recording);
+          }, { once: true });
+          mediaRecorder.start();
+          pushToTalkButton.textContent = "Stop recording";
+          pushToTalkButton.setAttribute("aria-pressed", "true");
+          voiceInputState.textContent = "Listening · press Stop recording or wait for the 15-second limit.";
+          pushToTalkButton.disabled = false;
+          recordingTimer = setTimeout(() => stopPushToTalk(), 15000);
+        } catch (error) {
+          releaseMicrophone();
+          voiceInputState.textContent = `Microphone unavailable: ${error.message}`;
+          pushToTalkButton.disabled = false;
+        }
+      }
+
+      function stopPushToTalk() {
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          pushToTalkButton.disabled = true;
+          mediaRecorder.stop();
+        } else {
+          releaseMicrophone();
+        }
+      }
+
+      pushToTalkButton.addEventListener("click", () => {
+        if (mediaRecorder && mediaRecorder.state === "recording") stopPushToTalk();
+        else void startPushToTalk();
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden && mediaRecorder?.state === "recording") stopPushToTalk();
+      });
+      window.addEventListener("pagehide", () => {
+        if (mediaRecorder?.state === "recording") mediaRecorder.stop();
+        releaseMicrophone();
+      });
+
       async function loadPreferences() {
         try {
           const values = await api("/api/preferences");
@@ -525,6 +668,7 @@
       shutdownButton.addEventListener("click", () => {
         const stop = !controls.shutdown;
         if (stop && !window.confirm("Stop ClaireAI? Model generation stops at the next token. A current tool operation may finish; no later model or tool step will start.")) return;
+        if (stop && mediaRecorder?.state === "recording") stopPushToTalk();
         updateControls({ shutdown: stop });
       });
       improvementToggle.addEventListener("click", () => {
@@ -535,6 +679,7 @@
       loadControls();
       loadImprovements();
       loadPreferences();
+      loadVoiceInput();
       loadDirectives();
       loadConversations();
       setInterval(loadImprovements, 10000);

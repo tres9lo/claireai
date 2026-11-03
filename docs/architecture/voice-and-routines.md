@@ -60,9 +60,12 @@ text are never captured into a routine.
 
 ## Current implementation evidence
 
-- The repository has optional eSpeak NG speech output, but no microphone capture,
-  speech recognition, wake-word engine, speaker enrollment, vocal approval or
-  routine recorder/replayer yet.
+- The local HUD now has opt-in push-to-talk capture and transcript review, and
+  can install/use an optional local Whisper tiny speech-recognition model. The
+  user still presses Send; this local chat path does not invoke computer tools.
+- There is no wake-word engine, speaker enrollment, vocal approval or routine
+  recorder/replayer yet. eSpeak NG output remains optional and separately
+  installed.
 - The active development host is a Wayland session. The session portal advertises
   ScreenCast and Screenshot, but no screenshot tool is implemented. The normal
   screen-observation path should use the user-granted ScreenCast stream so frames
@@ -73,8 +76,7 @@ text are never captured into a routine.
   be manually tested on a host with a microphone; mocked tests are not platform
   evidence.
 
-The implementation sequence is: microphone permission and visible capture;
-push-to-talk; local transcription and UI confirmation; wake-word detection and
-false-activation evaluation; voice enrollment and spoof testing; request-bound
-spoken consent; reviewed routine capture and replay. See `ROADMAP.md` for the
-acceptance gate and licensing constraints.
+The implementation sequence is: live microphone acceptance on Linux and
+Windows; wake-word detection and false-activation evaluation; voice enrollment
+and spoof testing; request-bound spoken consent; reviewed routine capture and
+replay. See `ROADMAP.md` for the acceptance gate and licensing constraints.

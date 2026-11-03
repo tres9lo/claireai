@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import base64
 import json
 import threading
 import time
@@ -227,6 +228,89 @@ def test_local_ui_saves_directives_preferences_and_conversation_history(data_ser
         assert response.status == 403
     finally:
         connection.close()
+
+
+def test_push_to_talk_state_and_transcription_stay_local(data_server, monkeypatch) -> None:  # noqa: ANN001
+    path, instance = data_server
+    stream = PresenceStream()
+    instance.shutdown()
+    instance.server_close()
+    control_path = path.parent.parent / "data" / "runtime-control.json"
+    instance = build_server(
+        stream,
+        html_path=HTML,
+        port=0,
+        database_path=path,
+        control_path=control_path,
+    )
+    thread = threading.Thread(target=instance.serve_forever, args=(0.05,), daemon=True)
+    thread.start()
+    host, port = instance.server_address[:2]
+    origin = f"http://{host}:{port}"
+    observed = {}
+
+    class StubTranscriber:
+        runtime_available = True
+        installed = True
+
+        def transcribe(self, audio, *, content_type):  # noqa: ANN001
+            observed.update(audio=audio, content_type=content_type)
+            return "transcribed locally"
+
+    monkeypatch.setattr(
+        "claireai.voice_input.transcriber_for", lambda _path: StubTranscriber()
+    )
+    connection = http.client.HTTPConnection(host, port, timeout=3)
+    headers = {"Origin": origin, "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"}
+    try:
+        connection.request("GET", "/api/voice-status")
+        response = connection.getresponse()
+        status = json.loads(response.read())
+        assert response.status == 200 and status["model_installed"]
+
+        connection.request(
+            "POST", "/api/voice-state", json.dumps({"listening": True}),
+            {**headers, "Origin": "http://attacker.invalid", "Sec-Fetch-Site": "cross-site"},
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 403 and not stream.snapshot().active["microphone"]
+
+        connection.request("POST", "/api/voice-state", json.dumps({"listening": True}), headers)
+        response = connection.getresponse()
+        assert response.status == 200 and json.loads(response.read())["listening"]
+        assert stream.snapshot().state == "listening"
+        assert stream.snapshot().active["microphone"] is True
+
+        audio = b"browser-memory-audio"
+        connection.request(
+            "POST",
+            "/api/transcribe",
+            json.dumps({
+                "content_type": "audio/webm;codecs=opus",
+                "audio_base64": base64.b64encode(audio).decode(),
+            }),
+            headers,
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read()) == {"text": "transcribed locally"}
+        assert observed == {"audio": audio, "content_type": "audio/webm"}
+        conn = Database(path).connect()
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+        connection.request("POST", "/api/voice-state", json.dumps({"listening": False}), headers)
+        response = connection.getresponse()
+        assert response.status == 200
+        assert stream.snapshot().active["microphone"] is False
+    finally:
+        connection.close()
+        instance.shutdown()
+        instance.server_close()
+        thread.join(timeout=2)
 
 
 def test_web_chat_uses_local_brain_and_persists_both_sides(data_server, monkeypatch) -> None:  # noqa: ANN001

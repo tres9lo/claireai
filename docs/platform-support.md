@@ -14,7 +14,7 @@ Last updated: 2026-11-03 (scratch model and local opt-in control groundwork).
 | Presence renderer (visual state sync) | 🟨 canvas 2D v0 preview verified over HTTP on Linux (SSE state stream, indicators, 30 fps cap); WebGL scene and Tauri window ⛔ | 🟨 unit tests only; preview never opened there | ⛔ optional mirror later |
 | Camera / screen capture | ⛔ Phase 2, deny-by-default; this machine is **Wayland** and has `/dev/video0`–`/dev/video1` | ⛔ never run | ⛔ Android APIs only |
 | Cursor / keyboard control | ⛔ Phase 2, `dangerous`; on Wayland needs the portal or `ydotool` (neither installed here) — may be unsupported | ⛔ never run | ⛔ not planned |
-| Push-to-talk voice | ⛔ Phase 2 | ⛔ never run | ⛔ later |
+| Push-to-talk voice | 🟨 UI, local transcription API and safety bounds implemented; no microphone device on this host, so live capture is unverified | 🟨 unit tests only; live microphone path unverified | ⛔ later |
 | Wake-word detection | ⛔ no "Hey Claire" model exists yet; treat as pending | ⛔ never run | ⛔ separate implementation, may not be permitted in background |
 | Daily summary and local log | ✅ log, `--summary`, `/summary` and `--summary-at` (no model needed) | ⛔ never run | ⛔ client phase |
 | Installer / package | ⛔ not started | ⛔ not started | ⛔ not started |

@@ -22,6 +22,7 @@ py -3 -m venv assistant\.venv
 python -m pip install -U pip
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -e "assistant[dev,model]"
+pip install -e "assistant[voice]" # optional local speech input
 pip install -e .\brain-lab
 ```
 

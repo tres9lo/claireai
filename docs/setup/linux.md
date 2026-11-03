@@ -43,6 +43,7 @@ Resolved versions from this install are frozen in `assistant/requirements.lock.t
 ```bash
 uv pip install --python assistant/.venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch
 uv pip install --python assistant/.venv/bin/python -e "assistant[model]"
+uv pip install --python assistant/.venv/bin/python -e "assistant[voice]"  # optional local speech input
 uv pip install --python assistant/.venv/bin/python -e ./brain-lab
 ```
 

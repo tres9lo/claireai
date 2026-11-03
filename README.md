@@ -45,6 +45,7 @@ The result is an assistant you can actually point at real folders, because the b
 | Runtime stop switch and browser access control panel | ✅ first version |
 | Local web chat, stored conversation history, owner directives and UI preferences | ✅ first version |
 | Optional offline speech output with UI pitch/rate controls | ✅ eSpeak NG required |
+| Push-to-talk local speech transcription in the HUD | ✅ first version; optional Whisper weights installed from the UI |
 | OS family detection (Linux/Windows first targets) | ✅ detection only |
 | Reproducible MIT synthetic task corpus + split-aware text training | ✅ starter data |
 | Random-init visual-grounding prototype using attributed online synthetic images | 🧪 research only; not integrated |

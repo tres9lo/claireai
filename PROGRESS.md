@@ -1638,3 +1638,29 @@ or implement the page-approval design against the existing loopback server.
   through the UI with explicit microphone status, then add wake-word detection
   behind the same local audio interface. Live audio acceptance needs a host with
   a microphone; mocked tests alone will not satisfy the platform gate.
+
+## 2026-11-03 — Local push-to-talk transcription (first version)
+
+- Added a push-to-talk control to the local chat UI. The browser requests
+  microphone access only after a direct button click, records audio-only for at
+  most 15 seconds, turns off the microphone when recording stops or the page is
+  hidden, and displays the returned transcript for editing. Sending the message
+  remains a separate user action.
+- Added same-origin local endpoints to show speech-model status, explicitly
+  install the multilingual Whisper tiny model, update the visible listening
+  indicator, and transcribe bounded audio. The backend limits payload to 10 MiB
+  and 20 seconds, decodes from memory, and does not store the recording. The
+  model is an optional auxiliary ASR component; the ClaireAI language model
+  remains the from-scratch `brain-lab` model.
+- Added `assistant[voice]` for faster-whisper. Model weights are downloaded
+  only after the owner selects Install in the UI and are stored under the
+  local ClaireAI data directory. The upstream model repo is currently not pinned
+  to a commit hash, a reproducibility limitation recorded in the license file.
+- Full suite passed after the final changes: 347 tests. Python compilation,
+  embedded-JavaScript syntax checking and `git diff --check` passed. The current host has no
+  microphone device, so live recording is not verified. Installing the optional
+  runtime stalled while holding the environment lock for over 30 minutes; the
+  install was interrupted, and no runtime package or model weights were added.
+- Not included: hands-free wake word, voice identity, spoken approvals, or
+  speech-triggered tool execution. The transcript currently enters local text
+  chat, which does not invoke computer tools.
