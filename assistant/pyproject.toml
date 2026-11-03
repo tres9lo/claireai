@@ -29,7 +29,11 @@ model = ["torch>=2.2"]
 voice = ["faster-whisper>=1.1,<2"]
 
 [project.scripts]
-claireai = "claireai.cli:main"
+# No arguments starts the local app; any argument is passed to the CLI
+# unchanged, so `claireai --once "..."` and friends keep working.
+claireai = "claireai.app:main"
+claireai-desktop = "claireai.desktop.app:main"
+claireai-ui = "claireai.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claireai"]

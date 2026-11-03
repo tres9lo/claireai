@@ -43,7 +43,11 @@ def test_voice_pipes_text_to_local_engine_and_audio_to_player(monkeypatch) -> No
 
     assert speak_text("Hello Ange", pitch=63, rate=190) == "eSpeak NG"
     synth_command, synth_options = calls[0]
-    assert synth_command == ["/opt/bin/espeak-ng", "--stdout", "--stdin", "-p", "63", "-s", "190"]
+    # English text is spoken with the English voice, never the default voice of
+    # whatever locale the engine happens to start in.
+    assert synth_command == [
+        "/opt/bin/espeak-ng", "--stdout", "--stdin", "-v", "en", "-p", "63", "-s", "190"
+    ]
     assert synth_options["input"] == b"Hello Ange"
     assert calls[1][0] == ["/usr/bin/paplay", "-"]
     assert calls[1][1]["stdin"] is not None

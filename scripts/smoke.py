@@ -92,6 +92,23 @@ async def _run(args: argparse.Namespace) -> int:
         temporary = tempfile.TemporaryDirectory(prefix="claireai-smoke-")
         data_dir = Path(temporary.name)
 
+    # A smoke run in a fresh temporary directory has no checkpoint, which made
+    # the model check fail on every machine that does have one. Copy the active
+    # checkpoint in so the check exercises the real runtime; nothing is written
+    # back to the real data directory.
+    if temporary is not None and not args.skip_model:
+        import shutil as _shutil
+
+        candidates = [
+            Settings().resolved_model_checkpoint,
+            Path(__file__).resolve().parents[1] / "runtime-data" / "models" / "claire-scratch.pt",
+        ]
+        source = next((path for path in candidates if path.is_file()), None)
+        if source is not None:
+            destination = data_dir / "models" / "claire-scratch.pt"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(source, destination)
+
     workspace = data_dir / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "alpha.txt").write_text("alpha", encoding="utf-8")

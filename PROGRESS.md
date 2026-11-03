@@ -1664,3 +1664,63 @@ or implement the page-approval design against the existing loopback server.
 - Not included: hands-free wake word, voice identity, spoken approvals, or
   speech-triggered tool execution. The transcript currently enters local text
   chat, which does not invoke computer tools.
+
+## 2026-11-03 — One command to start the app
+
+- Added `claireai.app`: prepares the data directory, migrates the database,
+  binds the loopback server on the first free port (8765 upward), prints the
+  address and the data directory, opens a browser only for a real terminal, and
+  serves until Ctrl+C. `CLAIREAI_DATA_DIR` and `--data-dir` are honoured;
+  `--no-browser` / `CLAIREAI_NO_BROWSER=1` print the address instead of opening.
+- `claireai` now starts the app with no arguments and passes any other flag to
+  the existing CLI unchanged, so `--once`, `--summary`, `--summary-at` and the
+  rest keep working. `--cli` / `-i` keeps the terminal chat, and
+  `python -m claireai` follows the same rule.
+- Added `scripts/start.sh`: creates the virtual environment on first run (uv or
+  `python3 -m venv`), never runs sudo, defaults the data directory to
+  `./runtime-data` when it exists, and execs the app. The README quick start now
+  opens with it.
+- Ten new unit tests; full suite 358 passed. Verified live on this host: the app
+  serves the page (200, 45 KB), `/healthz` returns `ok`, `/today` returns 200,
+  and `./scripts/start.sh --no-browser --port 8898` serves 200.
+- Known gap, not caused by this work: `scripts/smoke.py` reports the scratch
+  checkpoint missing because it runs in an empty temporary data directory. With
+  `--skip-model` it passes 11/11. Fixed in the next entry.
+
+## 2026-11-03 — Native desktop, language-aware speech, autostart, corpus harvester
+
+- Added a native desktop app (`claireai-desktop`, `claireai.desktop`): seven
+  separate pages — Chat, Activity, Approvals, Conversations, Voice, Settings,
+  About — behind a sidebar, built on Tk 8.6 because it ships with Python and
+  needs no new dependency on this host (no PySide6, no GTK). Work that can block
+  runs on a worker thread and returns through a queue, so the window never
+  freezes during a model turn or a tool call.
+- Split the desktop app into a headless core (`desktop.runtime.DesktopRuntime`)
+  and a thin view layer, so the behaviour is tested without a display. The core
+  drives the same `ScratchBrain`, `agent.run_task`, `cli.ask` and approval broker
+  as the terminal and the page, rather than a parallel implementation.
+- Fixed a real voice defect: every reply was spoken with an English voice. The
+  voice layer now takes a `language`, detects it from the text (accented
+  characters and function words, English winning ties), strips markdown, code
+  and URLs before speaking, and checks the host's installed `espeak-ng` voices
+  first. French is never spoken with an English voice again.
+- Added `claireai.autostart`: writes `~/.config/autostart/claireai.desktop` on
+  Linux and refuses on Windows and macOS instead of guessing. The launcher uses
+  `sys.executable` as-is; resolving the symlink pointed at the system python and
+  dropped the virtual environment.
+- Added `brain-lab/harvest_corpus.py`: bounded public-text harvesting with a
+  robots.txt check (an unreachable robots.txt is a refusal, not permission), a
+  byte cap, paragraph filtering that keeps paragraph boundaries, and a per-document
+  hash, date and licence note in a manifest. Seven unit tests cover the refusals.
+- Fixed `scripts/smoke.py`: it copied a synthetic config but no weights, so the
+  model checks failed for a reason that had nothing to do with the code. It now
+  copies the real checkpoint into its temporary data directory. 14/14 pass with
+  no skip flag; the full suite is 398 passed.
+- Trained the scratch model for 2500 further steps on the same bootstrap corpus
+  (validation loss 0.1861 -> 0.0945). Loss fell, but sampled output got worse,
+  not better: longer training on a 20,000-character corpus is memorisation, and
+  the corpus mixes system prompts, tool JSON and screenshot listings. The sample
+  replies from both checkpoints are incoherent, so the installed checkpoint was
+  left alone and nothing is claimed about conversational ability. This model
+  cannot converse at any step count; the corpus and the architecture are the
+  limit, not the schedule.

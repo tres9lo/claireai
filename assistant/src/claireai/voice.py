@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import os
@@ -14,6 +15,81 @@ MIN_PITCH, MAX_PITCH = 0, 99
 MIN_RATE, MAX_RATE = 80, 450
 SYNTH_TIMEOUT_SECONDS = 30
 PLAYBACK_TIMEOUT_SECONDS = 90
+
+# Only languages with a voice on the host are offered; both are checked before
+# use. French read with an English voice is the defect this fixes.
+SUPPORTED_LANGUAGES = {"en": "English", "fr": "French"}
+FRENCH_MARKERS = frozenset(
+    "le la les un une des du de et est je tu il elle nous vous ils elles pas que qui "
+    "pour avec dans sur ce cette ces mais ou au aux etre avoir bonjour merci oui non "
+    "tres aussi toujours maintenant aujourd hui tout tous faire peut plus bien".split()
+)
+ENGLISH_MARKERS = frozenset(
+    "the and is are you i to of in that it for with on this be have not do what how "
+    "please thanks hello yes no very also always now today my your we they can more "
+    "all make get want like just about there when why where who".split()
+)
+_FRENCH_LETTERS = "àâçéèêëîïôûùüÿœæ"
+
+
+def detect_language(text: str) -> str:
+    """Pick ``en`` or ``fr`` for a piece of text.
+
+    An accented letter settles it; otherwise the more frequent function words
+    win, with English as the tie-break because the assistant's instructions and
+    most of its answers are English. This is a voice choice, not a language
+    model: it never changes what ClaireAI says.
+    """
+    lowered = text.lower()
+    if any(letter in lowered for letter in _FRENCH_LETTERS):
+        return "fr"
+    words = re.findall(r"[a-z']+", lowered)
+    if not words:
+        return "en"
+    french = sum(1 for word in words if word in FRENCH_MARKERS)
+    english = sum(1 for word in words if word in ENGLISH_MARKERS)
+    return "fr" if french > english else "en"
+
+
+def for_speech(text: str) -> str:
+    """Turn an answer into something worth hearing.
+
+    Markdown is meant to be seen: fences, backticks, headings, emphasis, list
+    bullets and link syntax all get read out as punctuation otherwise. Code and
+    URLs are dropped rather than spelled out letter by letter.
+    """
+    cleaned = re.sub(r"```.*?```", " Code block omitted. ", text, flags=re.DOTALL)
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", cleaned)
+    cleaned = re.sub(r"https?://\S+", " a link ", cleaned)
+    cleaned = re.sub(r"^\s{0,3}#{1,6}\s*", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"(\*\*|__|\*|_)(.*?)\1", r"\2", cleaned)
+    cleaned = re.sub(r"^\s*[-*+]\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*>\s?", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"[|]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def available_voices(engine: str | None = None) -> dict[str, str]:
+    """Languages this host can actually speak, as ``code -> name``."""
+    executable = engine or shutil.which("espeak-ng") or shutil.which("espeak")
+    if executable is None:
+        return {}
+    found: dict[str, str] = {}
+    for code, name in SUPPORTED_LANGUAGES.items():
+        try:
+            listing = subprocess.run(
+                [executable, f"--voices={code}"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if listing.returncode == 0 and listing.stdout.count(b"\n") > 1:
+            found[code] = name
+    return found
 
 
 class VoiceUnavailable(RuntimeError):
@@ -29,13 +105,15 @@ def speak_text(
     *,
     pitch: int = 50,
     rate: int = 175,
+    language: str | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """Speak text locally, returning the engine name used.
 
-    Synthesized WAV bytes are piped directly to the host audio player; they are
-    never written to disk. Text is sent on stdin and is not treated as a shell
-    command or markup.
+    ``language`` is ``en`` or ``fr``; ``None`` classifies the text first so a
+    French answer is never read with an English voice. Synthesized WAV bytes are
+    piped directly to the host audio player; they are never written to disk.
+    Text is sent on stdin and is not treated as a shell command or markup.
     """
     if type(pitch) is not int or not MIN_PITCH <= pitch <= MAX_PITCH:
         raise ValueError(f"pitch must be an integer from {MIN_PITCH} to {MAX_PITCH}")
@@ -43,9 +121,12 @@ def speak_text(
         raise ValueError(f"rate must be an integer from {MIN_RATE} to {MAX_RATE}")
     if not isinstance(text, str):
         raise TypeError("speech text must be a string")
-    spoken = text.strip()[:MAX_SPOKEN_CHARS]
+    if language is not None and language not in SUPPORTED_LANGUAGES:
+        raise ValueError("language must be en, fr, or None")
+    spoken = for_speech(text)[:MAX_SPOKEN_CHARS]
     if not spoken:
         raise ValueError("speech text must not be empty")
+    chosen = language or detect_language(spoken)
 
     engine = shutil.which("espeak-ng") or shutil.which("espeak")
     if engine is None:
@@ -53,7 +134,11 @@ def speak_text(
             "offline speech engine not found; install eSpeak NG (plus a local audio player)"
         )
 
-    command = [engine, "--stdout", "--stdin", "-p", str(pitch), "-s", str(rate)]
+    command = [
+        engine, "--stdout", "--stdin",
+        "-v", chosen,
+        "-p", str(pitch), "-s", str(rate),
+    ]
     try:
         synthesized = subprocess.run(
             command,

@@ -1,5 +1,5 @@
-"""``python -m claireai`` entry point."""
+"""``python -m claireai`` entry point: start the app, or run a CLI flag."""
 
-from claireai.cli import main
+from claireai.app import main
 
 raise SystemExit(main())

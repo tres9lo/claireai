@@ -119,8 +119,8 @@ sudo apt install espeak-ng pulseaudio-utils
 #    data for useful capability). Add licensed corpora for serious experiments.
 export CLAIREAI_DATA_DIR=./runtime-data
 assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text --steps 1000
-# Start the local UI/control panel (local chat, history, preferences, directives)
-assistant/.venv/bin/python scripts/presence_preview.py
+# Start the app: chat, history, preferences, approvals, controls. One command.
+./scripts/start.sh
 
 # 3. Ask one question; the turn is logged to SQLite
 CLAIREAI_DATA_DIR=./runtime-data \
@@ -133,6 +133,30 @@ CLAIREAI_ALLOWED_FOLDERS='["~/Downloads"]' \
 ```
 
 Windows setup uses the same Python and CPU training path; see [docs/setup/windows.md](docs/setup/windows.md).
+
+### The desktop app
+
+The native window is built on Tk, which ships with Python: nothing to install,
+no browser, no loopback web server, no JavaScript. It opens on **Chat** and has
+seven separate screens in the sidebar — Chat, Activity, Approvals, History,
+Voice, Settings and About — each with its own job rather than one long page.
+
+```bash
+assistant/.venv/bin/claireai-desktop      # or: ./scripts/start.sh --desktop
+```
+
+- **Chat** runs real agent turns; write actions wait in **Approvals** until you
+  press Approve, and the sidebar shows how many are waiting.
+- **Activity** lists every task with its status, and the error text when one failed.
+- **Voice** speaks in English or French (the language is detected from the text,
+  or chosen by hand), and records from the microphone when a speech model is
+  installed.
+- **Settings** holds the same preferences as the web UI, including the emergency
+  stop switch; it shares the same database, so the CLI sees them immediately.
+
+The window can start with your session: `claireai --install-autostart` writes
+`~/.config/autostart/claireai.desktop`, which is the only file it ever adds
+there, and `--uninstall-autostart` removes exactly that file.
 
 ### Granting a folder
 
@@ -160,8 +184,23 @@ assistant/.venv/bin/python -m claireai.cli --summary
 # Daily summary at 18:00 local time
 assistant/.venv/bin/python -m claireai.cli --summary-at 18:00
 
-# Local HUD and runtime controls at http://127.0.0.1:8765/
-assistant/.venv/bin/python scripts/presence_preview.py --data-dir ./runtime-data
+# The whole app in one command (creates the venv on first run, then opens it)
+./scripts/start.sh
+
+# The native desktop window: no browser, no local web server
+./scripts/start.sh --desktop
+
+# Start ClaireAI with your desktop session (XDG autostart), and undo it
+assistant/.venv/bin/claireai --install-autostart
+assistant/.venv/bin/claireai --autostart-status
+assistant/.venv/bin/claireai --uninstall-autostart
+
+# Same thing without opening a browser, or on another port
+./scripts/start.sh --no-browser
+./scripts/start.sh --port 9000
+
+# Terminal chat instead of the app
+./scripts/start.sh --cli
 
 # Self-improvement: enable it in the HUD, then train an isolated candidate
 assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text --steps 200 --improvement
