@@ -1769,3 +1769,27 @@ or implement the page-approval design against the existing loopback server.
   constraint is data, not patience. A 4,000-step run at 1.5 M parameters over
   the new corpus was started and is still running; its numbers are reported when
   it finishes, and no claim about conversational ability is made until then.
+
+## 2026-11-04 — Tokenising a corpus now takes a minute, not half an hour
+
+- Rewrote the BPE core. Both halves rescanned the entire corpus once per merge,
+  which made the cost `merges x corpus`: at 766 merges over 4.6 MB the trainer sat
+  for over half an hour before the first training step. A sequence is now a linked
+  list with an index of adjacent pairs, so a merge costs only the places that pair
+  actually occurs.
+- Measured on this host, same 400 KB sample and same settings as before the change:
+  training a 1024-vocabulary tokenizer went from **121.0 s to 5.1 s** (23.8x) and
+  encoding 100 KB went from **28.1 s to 0.34 s** (82.7x). On the real corpus it is
+  now 41 s to train and 15 s to encode 4.6 MB into 1,710,819 tokens, against
+  roughly 33 minutes of preparation for the previous run — about 35x end to end.
+- The output is unchanged, which is the part that matters: checkpoints record
+  their merge list, so a different tokenizer would have silently degraded the
+  model they were trained with. Merge ranks are still applied in ascending order
+  and occurrences are still merged left to right, so overlapping runs resolve
+  identically (``aaa`` merges once, at the left).
+- Proved rather than asserted: the previous algorithm is kept verbatim in
+  `tests/unit/test_tokenizer.py` as a reference, and 25 tests compare the two. They
+  agree on every learned merge across four vocabulary sizes and on every encoded
+  token across fifteen texts including overlap, accent, CJK and long-run cases.
+  The installed `claire-scratch` checkpoint also encodes identically under the new
+  code. Full suite 439 passed.
