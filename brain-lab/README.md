@@ -30,6 +30,48 @@ assistant/.venv/bin/python brain-lab/fetch_gui_images.py
 Those image/annotation pairs are prepared for the visual model stage. The
 current transformer is text-only, so do not merge them into its text corpus.
 
+## Train a conversation model (recommended)
+
+`train.py` treats the corpus as one long document. That is enough for prose, but
+it teaches a chat model to continue the document instead of answering: replies
+run into the next `SYSTEM:` block and the prompt itself is trained as a target.
+`train_chat.py` fixes the things that mattered most:
+
+- one example per assistant turn, rendered by `claire_brain.prompt` — the same
+  code `ScratchBrain` uses at inference;
+- EOS after every reply, so the model learns where a turn ends;
+- the prompt is masked from the loss, so capacity goes to replies;
+- long prompts drop the oldest turns, never the system prompt or current request.
+
+Build the conversation corpus and train:
+
+```bash
+assistant/.venv/bin/python brain-lab/build_chat_dataset.py
+assistant/.venv/bin/python brain-lab/train_chat.py \
+  --corpus brain-lab/data/chat-v2 --steps 6000 \
+  --output runtime-data/models/claire-chat-v2.pt
+```
+
+The builder mixes original synthetic templates (small talk, refusals, intent
+routing, slot extraction, tool-call transcripts, summaries and in-context
+recall), Dolly 15k, TinyStories and the repository's bootstrap examples. It
+removes any user turn that exactly matches a prompt in either fixed suite
+(`scripts/model_eval_cases.json` or `scripts/conversation_cases.json`), so both
+evaluations stay held out.
+
+Measure it with both suites:
+
+```bash
+assistant/.venv/bin/python scripts/eval_model.py \
+  --model-checkpoint runtime-data/models/claire-chat-v2.pt --runs 1
+assistant/.venv/bin/python scripts/conversation_eval.py \
+  --model-checkpoint runtime-data/models/claire-chat-v2.pt
+```
+
+`eval_model.py` checks one-shot formatting and safety. `conversation_eval.py`
+runs multi-turn conversations and injects tool results; both score with plain
+code, never with another model.
+
 ## Train the visual-grounding prototype
 
 The isolated CNN+text component is also initialized from random weights. It

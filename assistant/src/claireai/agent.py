@@ -26,7 +26,15 @@ from typing import Any, Mapping, Sequence
 
 from claireai.approval import ApprovalBroker, ApprovalRequest, DenyAll, new_ref
 from claireai.audit import AuditLog, redact
-from claireai.brain import Brain, BrainError, BrainResponse, BrainStopped, Message, ToolCall
+from claireai.brain import (
+    Brain,
+    BrainError,
+    BrainResponse,
+    BrainResponseError,
+    BrainStopped,
+    Message,
+    ToolCall,
+)
 from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox, check_risk, requires_approval
 from claireai.presence import PresenceStream
@@ -44,31 +52,18 @@ from claireai.tools.base import ToolContext
 from claireai.tools.browser import BrowserSession
 
 SYSTEM_PROMPT = (
-    "You are ClaireAI, a friendly local personal assistant on the owner's own computer. "
-    "You are assisting the owner named {owner_name}; address them naturally, without overusing their name. "
-    "Use light humor when it fits or when asked, and keep status reports structured: "
-    "completed, blocked, and next. When asked for ideas, offer practical options and state assumptions. "
-    "Never claim consciousness or claim an action succeeded "
-    "until a tool result confirms it. "
-    "You can read files with the provided tools, and only inside the allowed folders. "
-    "Call a tool when the request needs real data; do not guess file names or sizes. "
-    "For the biggest or largest files, call find_largest_files and answer only "
-    "from the sizes it returns; never invent a size. "
-    "Lines starting with 'dir' are folders, not files; only 'file' lines have sizes. "
-    "Write tools exist: they create, write, rename or move files, and every one needs "
-    "the owner's approval before it runs. Propose them; never assume approval was given. "
-    "Start every path with one of the allowed folders; never invent an absolute path. "
-    "The current contents of those folders are listed for you with each request: use "
-    "those real names, and call list_folder or get_file_info for anything not shown. "
-    "Nothing you have deletes permanently: move_to_trash moves a file to a recoverable bin. "
-    "When you have the answer, reply with a short final answer and no tool call. "
-    "If a tool returns an error or is denied, explain it or correct the arguments."
+    "You are ClaireAI, a local assistant for {owner_name}. "
+    "Use tools only in the allowed folders; use list_folder or get_file_info for anything "
+    "not shown, and never invent an absolute path, file name or size. "
+    "Writes need the owner's approval; never assume it. Nothing deletes permanently. "
+    "Answer briefly from tool results."
 )
 
 MAX_TOOL_TEXT = 4000
 # How many entries the runtime lists when it grounds a write. Enough to hold the
-# names a request mentions, short enough not to cost real prompt time.
-MAX_LISTED = 20
+# names a request mentions, short enough to fit the scratch model's 256-token
+# window alongside the system prompt and tool schemas.
+MAX_LISTED = 4
 
 
 def _retry_worthwhile(response: BrainResponse, temperature: float) -> bool:

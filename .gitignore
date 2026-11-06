@@ -52,4 +52,8 @@ brain-lab/**/checkpoints/
 
 # Harvested corpora are large and reproducible from their manifests.
 brain-lab/data/gutenberg-*/
+brain-lab/data/chat-mix/
 brain-lab/data/cifar10/
+
+# Generated conversation corpus (rebuilt by brain-lab/build_chat_dataset.py)
+brain-lab/data/chat-v2/

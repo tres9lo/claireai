@@ -74,6 +74,7 @@ def main() -> int:
     if not train_texts:
         parser.error(f"no .txt training files found under {args.corpus}")
     settings = None
+    parent = args.continue_from
     if args.improvement:
         from claireai.config import Settings
         from claireai.runtime_control import RuntimeControl
@@ -83,18 +84,25 @@ def main() -> int:
         if not RuntimeControl(settings.control_state_path).read()["self_improvement"]:
             parser.error("self-improvement is disabled; enable it in the local presence UI first")
         parent = args.continue_from or settings.resolved_model_checkpoint
+    parent_payload = None
+    parent_manifest = None
+    if parent is not None:
+        if not args.improvement and args.output is None:
+            # Without --improvement the default output *is* the installed checkpoint, so
+            # a continuation that forgot --output would silently replace the model in use.
+            parser.error("--continue-from needs an explicit --output unless --improvement is set")
         try:
             parent_payload = torch.load(parent, map_location="cpu", weights_only=True)
             parent_manifest = parent_payload["manifest"]
             tokenizer = BytePairTokenizer(merges=[tuple(pair) for pair in parent_manifest["tokenizer_merges"]])
         except (OSError, KeyError, TypeError, ValueError) as exc:
             parser.error(f"cannot load parent scratch checkpoint: {exc}")
-        if tokenizer.vocab_size > args.vocab_size:
-            parser.error("--vocab-size must be at least the parent tokenizer vocabulary")
+        if tokenizer.vocab_size != args.vocab_size:
+            # A continuation must keep the parent's tokenizer: its token ids are what the
+            # weights were trained against, so a different vocabulary would be nonsense.
+            print(f"note: reusing the parent tokenizer, so --vocab-size {args.vocab_size} becomes {tokenizer.vocab_size}")
+            args.vocab_size = tokenizer.vocab_size
     else:
-        parent = None
-        parent_payload = None
-        parent_manifest = None
         tokenizer = BytePairTokenizer.train(train_texts, vocab_size=args.vocab_size)
     train_tokens = torch.tensor(
         [token for text in train_texts for token in tokenizer.encode(text)], dtype=torch.long

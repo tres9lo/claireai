@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from claireai.agent import AgentEmptyReply, AgentStepLimit, run_task, system_message
 from claireai.approval import ApprovalDecision
 from claireai.audit import AuditLog
-from claireai.brain import BrainResponse, BrainStopped, BrainUnavailable, ToolCall
+from claireai.brain import BrainResponse, BrainResponseError, BrainStopped, BrainUnavailable, ToolCall
 from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox
 from claireai.presence import PresenceStream
@@ -179,6 +179,30 @@ async def test_the_tool_result_is_fed_back_to_the_model(
     assert "big.iso" in second[-1].content
     # The assistant message that proposed the call stays in the model history.
     assert any(message.tool_calls for message in second)
+
+
+async def test_disabled_browser_before_a_proposed_action_fails_the_task(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    """Regression: the guard raised an undefined name, so nothing recorded the failure.
+
+    The model may propose a browser call and the owner may switch browser access
+    off between the proposal and the action. That must end as a failed task with
+    an audit row, not as a ``NameError`` escaping the ``except BrainError``
+    handler with the task stuck in ``running``.
+    """
+    RuntimeControl(agent_settings.control_state_path).update({"browser": False})
+    brain = ScriptedBrain([tool_call("open_url", url="https://example.com")])
+
+    with pytest.raises(BrainResponseError, match="browser access was disabled"):
+        await run_task(settings=agent_settings, conn=conn, brain=brain, request="open example.com")
+
+    task = TaskRepository(conn).recent(1)[0]
+    assert task.status == "failed"
+    assert "browser access was disabled" in (task.error or "")
+    rows = AuditLog(conn).for_task(task.id)
+    assert rows[-1].action == "agent.run"
+    assert rows[-1].status == "failed"
 
 
 async def test_tool_schemas_are_offered_to_the_model(

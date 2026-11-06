@@ -23,6 +23,18 @@ ClaireAI takes the opposite position: **the model is untrusted, the runtime is t
 
 The result is an assistant you can actually point at real folders, because the blast radius is defined in code rather than in a prompt.
 
+## The plan, stated plainly
+
+ClaireAI is built around one idea: **you should own the assistant and the data it touches.** Three things follow from that, in this order.
+
+1. **A small local model I train myself.** The default brain is a from-scratch transformer trained on this machine, in `brain-lab/`. It is small on purpose: it fits in RAM on a laptop with no GPU, it runs with the network cable unplugged, and nothing it reads is sent anywhere. Today it holds short conversations, does simple arithmetic, routes intents, extracts slots, emits tool-call JSON and refuses the unsafe requests covered in this repository. It is not a general-purpose assistant, and this README will not pretend otherwise.
+2. **Connectors, for when I want more brain than my laptop can hold.** The `Brain` interface is deliberately provider-neutral, so a Claude, ChatGPT or local-Ollama adapter is a new class rather than a rewrite. The validation, folder allow-list, approval flow and audit log do not change, because the model was never the thing enforcing them. **Those connectors are not built yet** — when they are, this section will say so, and the model that answers will be a setting you can see.
+3. **An assistant I do not have to worry about.** Deny-by-default folders, no permanent deletes, approvals a model cannot fake, an audit log the database will not let you edit, and inference that never leaves the machine. That is the property worth having, and it is where most of the effort in this project goes.
+
+### On the model work, honestly
+
+I am not a model-training expert. I am learning this in public: every training run in this repository is measured, and the runs that did not work are documented in [PROGRESS.md](PROGRESS.md) rather than quietly deleted. If you know more about training small transformers than I do — data mixing, curriculum, tokenizer design, evaluation that is more than loss going down — I would genuinely like your pointers. Open an issue with what you would change, or a pull request that makes the numbers better; both are the fastest way to move this project forward.
+
 ## What works today
 
 | Capability | Status |
@@ -122,10 +134,16 @@ sudo apt install pulseaudio-utils            # for paplay; espeak-ng as fallback
 #   https://huggingface.co/rhasspy/piper-voices  →  en/en_US/lessac/medium,
 #   fr/fr_FR/siwis/medium. Each voice needs its .onnx and .onnx.json side by side.
 
-# 2. Train on the included synthetic starter corpus (pipeline demo, not enough
-#    data for useful capability). Add licensed corpora for serious experiments.
+# 2. Build the conversation corpus and train the chat model.  The included
+#    synthetic starter exercises the pipeline but is not enough for a generally
+#    capable assistant; add licensed Dolly 15k / TinyStories files under
+#    brain-lab/data/external/chat-sources/ for broader language.  The builder
+#    records every source and hash.
 export CLAIREAI_DATA_DIR=./runtime-data
-assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text --steps 1000
+assistant/.venv/bin/python brain-lab/build_chat_dataset.py
+assistant/.venv/bin/python brain-lab/train_chat.py \
+  --corpus brain-lab/data/chat-v2 --steps 6000 \
+  --output runtime-data/models/claire-chat-v2.pt
 # Start the app: chat, history, preferences, approvals, controls. One command.
 ./scripts/start.sh
 
@@ -232,7 +250,7 @@ assistant/.venv/bin/python brain-lab/vision_train.py --epochs 20
 assistant/      Python runtime: config, storage, audit, brain, tools, CLI
 desktop/        Presence HUD (canvas 2D) and the future Tauri shell
 docs/           Setup, architecture, platform support, licenses
-scripts/        doctor.py, eval_model.py, smoke.py, presence_preview.py
+scripts/        doctor.py, eval_model.py, conversation_eval.py, smoke.py, presence_preview.py
 runtime-data/   Local only, git-ignored: databases, logs, downloads, trash
 ```
 

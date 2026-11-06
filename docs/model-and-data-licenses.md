@@ -65,6 +65,33 @@ for evaluation. The raw download is git-ignored. The current model does not yet
 consume pixels, so these online images are staged for the vision-training slice
 and are not fed to the text-only trainer.
 
+### Chat corpus (`brain-lab/data/chat-mix/`)
+
+Built by `brain-lab/build_chat_corpus.py`, which mixes four sources into the
+runtime's `SYSTEM:`/`USER:`/`ASSISTANT:` prompt shape. Only the builder and its
+manifest are tracked; the corpora themselves are git-ignored, and no third-party
+text is redistributed with this repository or bundled in an installer.
+
+| Source | Version / split | Licence | Source URL | Checked | Redistribution of the text |
+| --- | --- | --- | --- | --- | --- |
+| Databricks Dolly 15k | `databricks-dolly-15k.jsonl`, main branch | CC BY-SA 3.0 | <https://huggingface.co/datasets/databricks/databricks-dolly-15k> | 2026-11-04 | Allowed with attribution and share-alike; **not redistributed here** |
+| TinyStories v2 (GPT-4) | `TinyStoriesV2-GPT4-valid.txt` | CDLA-Sharing 1.0 | <https://huggingface.co/datasets/roneneldan/TinyStories> | 2026-11-04 | Allowed with attribution and share-alike; **not redistributed here** |
+| ClaireAI bootstrap | `bootstrap-v1` | MIT | generated in this repository | 2026-11-04 | Yes |
+| Project Gutenberg prose | nine public-domain books | public domain (US) | <https://www.gutenberg.org/> | 2026-11-04 | Yes; Gutenberg trademark terms still apply to the name |
+
+Both upstream licences are **share-alike**, which has a consequence worth stating
+plainly: a checkpoint trained on this mixture is plausibly a derivative work of
+Dolly and TinyStories, so the resulting weights inherit CC BY-SA 3.0 and
+CDLA-Sharing 1.0 obligations. That is acceptable for a model trained locally and
+kept locally, and it is the reason the trained candidate in
+`runtime-data/models/candidates/` is not published, bundled or committed. Before
+any redistribution, re-read both licences and attribute accordingly.
+
+The trainer's manifest for each checkpoint records the SHA-256 of every corpus
+file it read, so a shipped model can be traced to exact source bytes. Dolly
+responses are truncated to fit a 256-token context, which makes this a
+*subset-and-truncate* use rather than a reproduction of the datasets.
+
 Any later external dataset must have its source, licence, retrieval date, size,
 and processing steps recorded in `brain-lab/data/manifests/` before use. Raw
 downloads and user data remain git-ignored.

@@ -66,6 +66,8 @@
       .wide { grid-column: 1 / -1; }
       .list-row { border-top: 1px solid var(--line); padding: 10px 0; text-align: left; }
       .list-row button { min-height: 36px; border: 1px solid #465673; border-radius: 7px; background: #172238; color: var(--ink); padding: 5px 10px; cursor: pointer; margin: 6px 6px 0 0; }
+      .approval-card { border: 1px solid var(--approval); border-radius: 10px; padding: 12px; margin: 10px 0; overflow-wrap: anywhere; }
+      .approval-card pre { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
       .history-layout { display: grid; grid-template-columns: minmax(150px, .7fr) 1.3fr; gap: 14px; }
       #conversation-list, #conversation-view, #directive-list { max-height: 360px; overflow: auto; }
       #conversation-view { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 8px; background: #080d16; padding: 12px; text-align: left; }
@@ -127,15 +129,16 @@
       </section>
       <section class="controls" aria-labelledby="history-title">
         <h2 id="history-title">Local conversation history</h2>
-        <p>Conversation text stays in ClaireAI's local database. This UI chat uses the local text model; computer actions still use the separately gated agent flow.</p>
+        <p>Conversation text stays in ClaireAI's local database. Use Computer task to run tools in your allowed folders; actions that need approval appear below with their exact details.</p>
         <div class="field"><label for="chat-message">Message ClaireAI</label><textarea id="chat-message" maxlength="6000" placeholder="Ask ClaireAI something…"></textarea></div>
         <div class="control-row">
           <div><strong>Local speech input</strong><br /><span id="voice-input-state">Checking speech model…</span></div>
           <div><button id="push-to-talk" type="button" disabled>Start push-to-talk</button> <button id="voice-model-install" type="button">Install speech model</button></div>
         </div>
         <p>Microphone access starts only when you press the button. Recordings are limited to 15 seconds, transcribed locally, and discarded. Review the transcript before sending.</p>
-        <button id="chat-send" type="button">Send message</button><button id="new-conversation" type="button">New conversation</button>
+        <button id="chat-send" type="button">Send message</button> <button id="agent-task" type="button">Run computer task</button> <button id="new-conversation" type="button">New conversation</button>
         <p id="chat-status" role="status" aria-live="polite"></p>
+        <div id="approval-inbox" aria-live="polite"></div>
         <p>Select a conversation to continue it, review its messages, or delete it.</p>
         <div class="history-layout"><div id="conversation-list" aria-live="polite">Loading history…</div><div id="conversation-view">Select a conversation.</div></div>
         <p id="history-status" role="status" aria-live="polite"></p>
@@ -194,6 +197,7 @@
       const historyStatus = document.getElementById("history-status");
       const chatMessage = document.getElementById("chat-message");
       const chatStatus = document.getElementById("chat-status");
+      const approvalInbox = document.getElementById("approval-inbox");
       const pushToTalkButton = document.getElementById("push-to-talk");
       const voiceModelInstall = document.getElementById("voice-model-install");
       const voiceInputState = document.getElementById("voice-input-state");
@@ -638,6 +642,49 @@
         } catch (error) { chatStatus.textContent = `Chat unavailable: ${error.message}`; }
         finally { document.getElementById("chat-send").disabled = false; }
       });
+      document.getElementById("agent-task").addEventListener("click", async () => {
+        const message = chatMessage.value.trim();
+        if (!message) { chatStatus.textContent = "Enter a computer task first."; return; }
+        const button = document.getElementById("agent-task");
+        button.disabled = true;
+        chatStatus.textContent = "Computer task running. Review any requested approval below.";
+        try {
+          const result = await api("/api/agent-task", "POST", { message, conversation_id: activeConversationId });
+          activeConversationId = result.conversation_id;
+          chatMessage.value = "";
+          await showConversation(activeConversationId);
+          await loadConversations();
+          chatStatus.textContent = `Task complete (${result.steps.length} tool steps); saved locally. ${result.content}`;
+        } catch (error) { chatStatus.textContent = `Computer task stopped: ${error.message}`; }
+        finally { button.disabled = false; await loadApprovals(); }
+      });
+      async function loadApprovals() {
+        try {
+          const requests = await api("/api/approvals");
+          approvalInbox.replaceChildren();
+          if (!requests.length) return;
+          const heading = document.createElement("h3"); heading.textContent = "Approval requested"; approvalInbox.append(heading);
+          for (const request of requests) {
+            const card = document.createElement("section"); card.className = "approval-card";
+            const title = document.createElement("strong"); title.textContent = `${request.tool} · ${request.risk} · expires in ${request.expires_in}s`; card.append(title);
+            const details = document.createElement("pre");
+            details.textContent = `Target: ${request.target || "none"}\nArguments: ${JSON.stringify(request.arguments, null, 2)}\nEffect: ${request.preview || request.description}\nReference: ${request.ref}`;
+            card.append(details);
+            for (const [label, approved] of [["Approve this action", true], ["Deny", false]]) {
+              const decision = document.createElement("button"); decision.type = "button"; decision.textContent = label;
+              decision.addEventListener("click", async () => {
+                if (approved && !window.confirm(`Allow exactly this action?\n\n${request.description}`)) return;
+                decision.disabled = true;
+                try { await api("/api/approvals", "POST", { ref: request.ref, approved }); await loadApprovals(); }
+                catch (error) { chatStatus.textContent = `Approval could not be recorded: ${error.message}`; await loadApprovals(); }
+              });
+              card.append(decision);
+            }
+            approvalInbox.append(card);
+          }
+        } catch (error) { approvalInbox.textContent = `Approval inbox unavailable: ${error.message}`; }
+      }
+      window.setInterval(loadApprovals, 700);
       chatMessage.addEventListener("keydown", (event) => {
         if ((event.ctrlKey || event.metaKey) && event.key === "Enter") document.getElementById("chat-send").click();
       });

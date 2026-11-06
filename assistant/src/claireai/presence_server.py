@@ -1,8 +1,7 @@
 """Loopback HUD and same-origin local APIs for ClaireAI.
 
-The text chat and transcription endpoints use local models but do not invoke
-computer tools. Control APIs are limited to explicit owner settings, while
-``/today`` remains read-only and carries a strict CSP.
+Tool use from the HUD runs through the normal agent and an exact-action owner
+approval inbox. ``/today`` remains read-only and carries a strict CSP.
 """
 
 from __future__ import annotations
@@ -26,13 +25,16 @@ from claireai.improvements import ImprovementError, ImprovementLedger
 from claireai.today import open_read_only, render_today, render_unavailable
 from claireai.config import Settings
 from claireai.brain import BrainError, BrainStopped, ScratchBrain
+from claireai.agent import AgentError
 from claireai.storage import (
     ConversationRepository,
     Database,
     DirectiveRepository,
     PreferenceRepository,
+    transaction,
 )
 from claireai.voice_input import SpeechRecognitionUnavailable
+from claireai.ui_approval import LocalUIApprovalBroker
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 POLL_SECONDS = 0.2
@@ -62,6 +64,9 @@ def _handler_factory(
     voice_state_lock = threading.Lock()
     voice_state_timer: threading.Timer | None = None
     voice_state_generation = 0
+    approval_broker = LocalUIApprovalBroker(
+        should_stop=lambda: control_path is None or RuntimeControl(control_path).read()["shutdown"]
+    )
 
     def set_voice_state(listening: bool) -> None:
         nonlocal voice_state_timer, voice_state_generation
@@ -136,6 +141,7 @@ def _handler_factory(
                 "/control", "/improvements", "/api/directives",
                 "/api/preferences", "/api/conversations", "/api/voice-preview", "/api/chat",
                 "/api/voice-model", "/api/transcribe", "/api/voice-state",
+                "/api/agent-task", "/api/approvals",
             }
             if request_path not in allowed_posts or control_path is None:
                 self._send(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n")
@@ -187,6 +193,9 @@ def _handler_factory(
             except BrainError as exc:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain; charset=utf-8", str(exc).encode()[:512])
                 return
+            except AgentError as exc:
+                self._send(HTTPStatus.UNPROCESSABLE_ENTITY, "text/plain; charset=utf-8", str(exc).encode()[:512])
+                return
             except SpeechRecognitionUnavailable as exc:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain; charset=utf-8", str(exc).encode()[:512])
                 return
@@ -203,6 +212,9 @@ def _handler_factory(
 
         def _api_get(self, path: str, query: str) -> None:
             assert database_path is not None
+            if path == "/api/approvals":
+                self._send(HTTPStatus.OK, "application/json", json.dumps(approval_broker.pending()).encode())
+                return
             if path == "/api/voice-status":
                 from claireai.voice_input import transcriber_for
                 data_dir = control_path.parent if control_path is not None else Path(database_path).parent.parent
@@ -247,6 +259,10 @@ def _handler_factory(
             database = Database(database_path)
             conn = database.connect()
             try:
+                if path == "/api/approvals":
+                    ref, approved = body.get("ref"), body.get("approved")
+                    approval_broker.decide_in_ui(ref, approved=approved)
+                    return {"decided": True, "ref": ref, "approved": approved}
                 if path == "/api/voice-state":
                     listening = body.get("listening")
                     if type(listening) is not bool:
@@ -347,6 +363,66 @@ def _handler_factory(
 
                     import asyncio
                     return asyncio.run(run_chat())
+                if path == "/api/agent-task":
+                    message = body.get("message")
+                    conversation_id = body.get("conversation_id")
+                    if not isinstance(message, str) or not message.strip() or len(message) > 6000:
+                        raise ValueError("message must contain 1–6000 characters")
+                    if conversation_id is not None and not isinstance(conversation_id, str):
+                        raise ValueError("conversation id must be a string")
+                    data_dir = Path(control_path).parent
+                    if RuntimeControl(control_path).read()["shutdown"]:
+                        raise BrainStopped("ClaireAI is stopped in the local control panel.")
+                    settings_data = PreferenceRepository(conn).effective(Settings(data_dir=data_dir))
+                    settings = Settings(_env_file=None, data_dir=data_dir, **settings_data)
+                    if conversation_id is None:
+                        with transaction(conn):
+                            conversation_id = ConversationRepository(conn).create()
+                    brain = ScratchBrain(
+                        checkpoint=settings.resolved_model_checkpoint,
+                        max_output_tokens=settings.max_output_tokens,
+                        control_path=settings.control_state_path,
+                    )
+
+                    async def run_agent_task():
+                        try:
+                            health = await brain.health()
+                            if not health.available or not health.model_present:
+                                raise BrainError(health.detail or "local scratch model is unavailable")
+                            from claireai.agent import run_task
+                            from claireai.tools import default_registry
+                            from claireai.cli import _speak_answer
+                            outcome = await run_task(
+                                settings=settings,
+                                conn=conn,
+                                brain=brain,
+                                request=message.strip(),
+                                registry=default_registry(browser_enabled=RuntimeControl(control_path).read()["browser"]),
+                                approvals=approval_broker,
+                                presence=stream,
+                                device="local-ui",
+                                conversation_id=conversation_id,
+                            )
+                            if settings.voice_enabled:
+                                from argparse import Namespace
+                                _speak_answer(
+                                    args=Namespace(device="local-ui", voice=None, voice_pitch=None, voice_rate=None),
+                                    settings=settings, conn=conn, task_id=outcome.task_id, text=outcome.content,
+                                )
+                            return {
+                                "conversation_id": conversation_id,
+                                "task_id": outcome.task_id,
+                                "model": outcome.model,
+                                "content": outcome.content,
+                                "duration_ms": outcome.duration_ms,
+                                "route": outcome.route,
+                                "steps": [step.__dict__ for step in outcome.steps],
+                            }
+                        finally:
+                            await brain.aclose()
+
+                    import asyncio
+                    return asyncio.run(run_agent_task())
                 if path == "/api/preferences":
                     return PreferenceRepository(conn).update(body)
                 if path == "/api/voice-preview":

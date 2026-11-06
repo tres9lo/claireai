@@ -200,7 +200,10 @@ async def run_cases(brain: Brain, cases: Sequence[EvalCase], *, runs: int = 3) -
                     [
                         Message(role="system", content=case.system),
                         Message(role="user", content=case.prompt),
-                    ]
+                    ],
+                    # Capability cases are scored deterministically; sampling
+                    # noise would turn a stable pass into a flaky failure.
+                    temperature=0.0,
                 )
                 reply = response.content
             except BrainError as exc:

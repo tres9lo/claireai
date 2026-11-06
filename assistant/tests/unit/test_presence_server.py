@@ -14,8 +14,8 @@ import pytest
 from claireai.presence import PresenceStream
 from claireai.presence_server import build_server
 from claireai.improvements import ImprovementLedger
-from claireai.brain import BrainHealth, BrainResponse
-from claireai.storage import ConversationRepository, Database, TaskRepository, transaction
+from claireai.brain import BrainHealth, BrainResponse, ToolCall
+from claireai.storage import ConversationRepository, Database, PreferenceRepository, TaskRepository, transaction
 
 HTML = Path(__file__).resolve().parents[3] / "desktop" / "presence" / "index.html"
 
@@ -355,6 +355,103 @@ def test_web_chat_uses_local_brain_and_persists_both_sides(data_server, monkeypa
         assert [row["content"] for row in messages] == ["hello", "local answer"]
     finally:
         connection.close()
+
+
+def test_ui_computer_task_waits_for_exact_owner_approval(data_server, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    path, instance = data_server
+    host, port = instance.server_address[:2]
+    origin = f"http://{host}:{port}"
+    allowed = tmp_path / "owner-files"
+    allowed.mkdir()
+    target = allowed / "new-folder"
+    db = Database(path)
+    conn = db.connect()
+    try:
+        PreferenceRepository(conn).update({"allowed_folders": [str(allowed)]})
+    finally:
+        conn.close()
+
+    class StubBrain:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            self.calls = 0
+
+        async def health(self):
+            return BrainHealth(True, True, detail="test")
+
+        async def generate(self, messages, tools=None, *, temperature=None):  # noqa: ANN001
+            self.calls += 1
+            if self.calls == 1:
+                return BrainResponse(
+                    content="", model="test-scratch",
+                    tool_calls=(ToolCall(name="create_folder", arguments={"path": str(target)}),),
+                )
+            return BrainResponse(content="Created the folder.", model="test-scratch")
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr("claireai.presence_server.ScratchBrain", StubBrain)
+    headers = {"Origin": origin, "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"}
+    outcome: dict[str, object] = {}
+
+    def run_task_request() -> None:
+        connection = http.client.HTTPConnection(host, port, timeout=8)
+        try:
+            connection.request("POST", "/api/agent-task", json.dumps({"message": "make a folder"}), headers)
+            response = connection.getresponse()
+            outcome["status"] = response.status
+            outcome["body"] = response.read()
+        except Exception as exc:  # noqa: BLE001
+            outcome["error"] = exc
+        finally:
+            connection.close()
+
+    worker = threading.Thread(target=run_task_request, daemon=True)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 5
+        pending = []
+        while time.monotonic() < deadline:
+            status, _, body = _get(instance, "/api/approvals")
+            assert status == 200
+            pending = json.loads(body)
+            if pending:
+                break
+            time.sleep(0.02)
+        assert len(pending) == 1
+        approval = pending[0]
+        assert approval["tool"] == "create_folder"
+        assert approval["target"] == str(target)
+        assert approval["arguments"] == {"path": str(target), "parents": True}
+        assert not target.exists()
+
+        approval_headers = {**headers, "Host": f"{host}:{port}"}
+        connection = http.client.HTTPConnection(host, port, timeout=3)
+        try:
+            connection.request("POST", "/api/approvals", json.dumps({"ref": "wrong", "approved": True}), approval_headers)
+            response = connection.getresponse(); response.read()
+            assert response.status == 400
+            connection.request("POST", "/api/approvals", json.dumps({"ref": approval["ref"], "approved": True}), approval_headers)
+            response = connection.getresponse(); decision = json.loads(response.read())
+            assert response.status == 200 and decision["approved"] is True
+        finally:
+            connection.close()
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert "error" not in outcome
+        assert outcome["status"] == 200
+        result = json.loads(outcome["body"])
+        assert result["content"] == "Created the folder."
+        assert target.is_dir()
+    finally:
+        if worker.is_alive():
+            # Do not strand the server worker if an assertion above fails.
+            pending = json.loads(_get(instance, "/api/approvals")[2])
+            if pending:
+                connection = http.client.HTTPConnection(host, port, timeout=2)
+                connection.request("POST", "/api/approvals", json.dumps({"ref": pending[0]["ref"], "approved": False}), headers)
+                response = connection.getresponse(); response.read(); connection.close()
+            worker.join(timeout=2)
 
 
 def test_there_is_no_way_to_post_an_approval(data_server) -> None:  # noqa: ANN001

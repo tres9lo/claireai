@@ -5,6 +5,44 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Fixed — a disabled browser no longer crashes the agent loop
+
+- `claireai.agent` now imports `BrainResponseError`. Switching browser access off
+  between a model proposal and the action it proposes raised `NameError`, which
+  the `except BrainError` handler could not catch, so the task was never marked
+  failed, no audit row was written and the caller saw a traceback. It now fails
+  the task with the real reason, and a regression test asserts the failed status
+  and the audit row (issue #1).
+
+### Changed — scratch model conversation training
+
+- `brain-lab/build_chat_dataset.py` builds one record per assistant turn in the
+  exact runtime prompt shape, mixes original synthetic small talk, refusals,
+  intent routing, slot extraction, tool transcripts, summaries and in-context
+  recall with Dolly 15k, TinyStories and the bootstrap corpus, and removes every
+  user turn that exactly matches a prompt in either evaluation suite.
+- `brain-lab/train_chat.py` trains with EOS after every reply and masks the
+  prompt from the loss, so capacity goes to replies instead of re-learning the
+  prompt. It drops the oldest turns when a prompt is too long, saves a resumable
+  partial checkpoint every evaluation interval, and keeps the best validation
+  weights. `brain-lab/promote_partial.py` turns a partial into a loadable
+  checkpoint after an interrupted run.
+- `claire_brain.prompt` is now the single prompt renderer used by training and
+  inference; assistant tool calls render as the same `<tool_call>` text the
+  model was trained on.
+- `claire_brain.model` initialises weights at GPT-2 scale, supports a masked
+  loss, and applies top-p and repetition penalties during generation. The old
+  default init produced logits in the tens (initial loss ~88 instead of
+  ~ln(vocab)), which made a small model spend thousands of steps shrinking its
+  own output.
+- `claireai.brain.ScratchBrain` keeps the system prompt and current request when
+  a prompt exceeds the context window, caps the offered tool block, and accepts
+  a bare JSON tool call only when its name is one of the tools actually offered.
+- The agent system prompt is compact enough to fit the scratch model's 256-token
+  window alongside tool schemas and a grounded folder listing.
+- `scripts/conversation_eval.py` runs held-out multi-turn cases, injects tool
+  results and scores every reply with deterministic code.
+
 ### Added — Month 1, Week 4: read-only today page and retention
 
 - `claireai.today` and a `/today` route on the existing loopback server: the
