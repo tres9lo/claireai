@@ -60,8 +60,10 @@ def robots_allows(url: str) -> bool:
     if not parser.mtime():
         # robots.txt could not be reached at all.
         return False
-    if not parser.default_entry:
-        return True
+    # Ask the parser, and nothing else. ``default_entry`` is not a reliable
+    # signal that the file had no groups: Python 3.14 can leave it unset while
+    # ``can_fetch`` still applies a parsed ``User-agent: *`` block, and treating
+    # that as blanket permission let a disallowed path through.
     return parser.can_fetch(USER_AGENT, url)
 
 

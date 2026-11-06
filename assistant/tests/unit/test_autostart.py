@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import platform
 import sys
 from pathlib import Path
 
 import pytest
 
 from claireai import autostart
+
+# These exercise the XDG desktop-entry writer. The module refuses on Windows and
+# macOS by design, so there is nothing for them to install there.
+pytestmark = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="autostart writes XDG desktop entries, which exist on Linux sessions only",
+)
 
 
 def test_install_writes_a_desktop_entry_pointing_at_this_environment(monkeypatch, tmp_path) -> None:

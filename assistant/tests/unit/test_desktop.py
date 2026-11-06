@@ -161,6 +161,7 @@ def _tk_root():
 
 
 def test_every_page_is_its_own_screen(tmp_path) -> None:
+    pytest.importorskip("customtkinter")
     from claireai.desktop.app import ClaireDesktop
     from claireai.desktop.pages import PAGES
 
@@ -179,6 +180,7 @@ def test_every_page_is_its_own_screen(tmp_path) -> None:
 
 
 def test_the_chat_page_appends_and_resets(tmp_path) -> None:
+    pytest.importorskip("customtkinter")
     from claireai.desktop.app import ClaireDesktop
     from claireai.desktop.pages import ChatPage
 

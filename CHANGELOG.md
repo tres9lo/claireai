@@ -12,6 +12,15 @@ nothing has been released yet.
   3/13 format cases (was 0/13) and 9/21 held-out conversation cases (was 1/21).
   Free-form prose is still incoherent; the measured numbers and the rollback
   checkpoint are recorded in `PROGRESS.md`.
+- Fixed a real safety bug in `brain-lab/harvest_corpus.py`: `robots_allows`
+  treated an unset `RobotFileParser.default_entry` as blanket permission, and
+  Python 3.14 leaves that attribute unset while still applying a parsed
+  `User-agent: *` block, so a `Disallow:`d path was fetched. It now asks
+  `can_fetch` after confirming robots.txt was actually read.
+- Tests that assume a Linux session or an optional extra now skip instead of
+  failing on the wrong platform: the XDG autostart tests, the widget tests that
+  need `customtkinter`, and the POSIX audio-playback tests (Windows uses
+  `winsound` and a real device).
 - CI was failing on every runner before a single test ran: `test_tokenizer.py`
   imports `claire_brain`, which the workflow never installed, and
   `test_vision.py` imports `PIL`. The workflow now installs `./brain-lab` with

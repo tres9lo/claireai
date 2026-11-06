@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
 
 from claireai.voice import VoiceUnavailable, speak_text
+
+# These four cover the paplay / pw-play / aplay playback path. Windows playback
+# goes through winsound and needs a real audio device, so the assumption under
+# test (a POSIX player process) does not hold on a hosted Windows runner.
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="covers the POSIX audio-playback path; Windows uses winsound and a real device",
+)
 
 
 def test_voice_pipes_text_to_local_engine_and_audio_to_player(monkeypatch) -> None:
