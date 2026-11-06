@@ -5,6 +5,20 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Changed — the installed scratch checkpoint now answers, and CI installs what it tests
+
+- Installed the 6,000-step conversation checkpoint as
+  `runtime-data/models/claire-scratch.{pt,json}`. On identical settings it scores
+  3/13 format cases (was 0/13) and 9/21 held-out conversation cases (was 1/21).
+  Free-form prose is still incoherent; the measured numbers and the rollback
+  checkpoint are recorded in `PROGRESS.md`.
+- CI was failing on every runner before a single test ran: `test_tokenizer.py`
+  imports `claire_brain`, which the workflow never installed, and
+  `test_vision.py` imports `PIL`. The workflow now installs `./brain-lab` with
+  `--no-deps` (its tokenizer and prompt renderer are pure Python, so no torch
+  wheel is needed on four runners) and `Pillow` is a dev dependency, so the
+  blank-frame refusal tests run in CI rather than being skipped.
+
 ### Fixed — a disabled browser no longer crashes the agent loop
 
 - `claireai.agent` now imports `BrainResponseError`. Switching browser access off

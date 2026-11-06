@@ -24,6 +24,10 @@ dependencies = [
 dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
+  # Building test images for the vision layer. Pillow is small, is not on the
+  # runtime path, and lets the blank-frame refusal tests run in CI instead of
+  # being skipped there.
+  "Pillow>=10",
 ]
 model = ["torch>=2.2"]
 voice = ["faster-whisper>=1.1,<2"]

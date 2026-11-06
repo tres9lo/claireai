@@ -1,5 +1,55 @@
 # Progress log
 
+## 2026-11-06 — The scratch model answers instead of continuing the document
+
+- **Root cause, confirmed.** The model was trained on concatenated documents, so
+  it learned to continue text rather than to reply. That is why an 8,000-step run
+  on the old mix improved bits/char on unseen Moby-Dick from 17.95 to 3.28 and
+  still scored 0/13 on the format cases: it had become a better document
+  predictor, not an assistant. Its greedy output collapsed into repetitions of a
+  single token pair.
+- **New pipeline.** `brain-lab/build_chat_dataset.py` builds 5,585 train and 294
+  validation records with one record per assistant turn, and removes any user
+  turn that exactly matches a prompt in either evaluation suite, so nothing is
+  trained on what it is scored on. `brain-lab/train_chat.py` ends every reply
+  with EOS, masks the prompt out of the loss, drops the oldest turns when a
+  prompt overflows the 256-token window, and keeps the best-validation weights.
+  `claire_brain.prompt` is the single renderer used by training and inference.
+- **The run.** 6,000 steps, 4 layers / 192 width / 6 heads / 1024 vocab / 256
+  context = 2,022,528 parameters, on 4,563 examples. Best validation loss
+  **3.7670** (perplexity 43.25) at step 5,500; the last 500 steps moved the
+  validation loss to 3.7722, so the curve had flattened.
+- **Head to head, identical settings, same host:**
+
+  | Suite | Installed baseline | New checkpoint |
+  | --- | --- | --- |
+  | `eval_model.py` (13 cases, 1 run) | 0/13 cases, 0/13 checks | **3/13 cases, 3/13 checks** |
+  | `conversation_eval.py` (21 held-out multi-turn cases) | 1/21 | **9/21** |
+
+- **Decision: installed.** `runtime-data/models/claire-scratch.{pt,json}` is now
+  the 6,000-step chat checkpoint; the previous bootstrap checkpoint is kept at
+  `runtime-data/models/candidates/claire-scratch-bootstrap-1000.{pt,json}` for
+  rollback. Verified through the real runtime, not just the file copy: a CLI turn
+  reports `claire-chat-v2` as its model and is logged to SQLite.
+- **What it still cannot do, stated plainly.** Free-form prose is not coherent.
+  Asked "hello, what can you do?" the installed model answers with ungrammatical
+  fragments. Name recall across turns, the largest-file question and most tool
+  calls still fail, and malformed tool-call JSON (a `"tool"` key where `"name"`
+  belongs) is the most common failure. It succeeds on the narrow shapes it was
+  trained on — summary headings, refusals, one-sentence answers — which is
+  exactly what 2M parameters and 5,585 records can hold.
+- **The limit is data and scale, not patience.** Validation loss flattened at
+  3.7670 over the last 1,000 steps, so another 6,000 steps on this corpus would
+  buy nothing. The next real gains are a larger model, a larger licensed corpus,
+  and narrower tasks; that is written down here rather than left as a promise.
+- **CI was red on all four runners and is fixed.** Collection failed on two
+  modules: `tests/unit/test_tokenizer.py` imports `claire_brain`, which the
+  workflow never installed, and `tests/unit/test_vision.py` imports `PIL`. The
+  tokenizer and prompt renderer are pure Python, so the workflow now installs
+  `./brain-lab` with `--no-deps` — real coverage without a torch wheel on four
+  runners — and `Pillow` moved into `assistant[dev]`, which lets the blank-frame
+  refusal tests run in CI instead of being skipped.
+
 ## 2026-11-03 — Owner stop interrupts generation and exits the CLI
 
 - The HUD Stop control is now checked between autoregressive model tokens, so
