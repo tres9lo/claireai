@@ -212,10 +212,16 @@ def main() -> int:
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--context", type=int, default=256)
-    parser.add_argument("--vocab-size", type=int, default=1024)
-    parser.add_argument("--width", type=int, default=192)
-    parser.add_argument("--layers", type=int, default=4)
-    parser.add_argument("--heads", type=int, default=6)
+    parser.add_argument(
+        "--vocab-size", type=int, default=1024,
+        help="vocabulary size for the tokenizer and the model embeddings",
+    )
+    parser.add_argument(
+        "--width", type=int, default=192)
+    parser.add_argument(
+        "--layers", type=int, default=4)
+    parser.add_argument(
+        "--heads", type=int, default=6)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--min-learning-rate", type=float, default=3e-5)
     parser.add_argument("--warmup", type=int, default=100)

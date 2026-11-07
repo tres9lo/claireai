@@ -36,7 +36,12 @@ from claireai.routing import route as _route
 from claireai.tools import default_registry as _default_registry
 
 ROOT = Path(__file__).resolve().parent
-DATASET_VERSION = "claireai-chat-v9"
+DATASET_VERSION = "claireai-chat-v10"
+
+# NOTE: the corpus builder is vocabulary- and context-agnostic. It emits JSONL
+# records; the larger vocab (4096) and longer context (512) for chat-v10 are
+# traits of the training run, not of the corpus. If a future builder ever needs to
+# hold a prompt out of a larger-vocabulary corpus, add that here.
 SEED = 20261106
 
 # The system prompt is the runtime's own, not a paraphrase of it.  This file used
@@ -1655,7 +1660,7 @@ def build(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v9")
+    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v10")
     parser.add_argument("--dolly", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "dolly-15k.jsonl")
     parser.add_argument("--stories", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "tinystories-valid.txt")
     parser.add_argument("--bootstrap", type=Path, default=ROOT / "data" / "bootstrap-v1" / "examples.jsonl")

@@ -14,3 +14,15 @@ vision = ["Pillow>=10"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+claire_brain = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["../assistant/tests", "tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E","F","I","UP","B","SIM","TCH","ISC","G"]
