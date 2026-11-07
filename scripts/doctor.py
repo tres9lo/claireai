@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
 
 from claireai.doctor import collect, format_text, report_as_dict
 

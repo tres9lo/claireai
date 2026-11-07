@@ -92,9 +92,3 @@ def render_prompt(
     # itself, so training and inference agree on where the reply starts.
     parts.append("ASSISTANT: ")
     return "\n".join(parts)
-
-
-def assistant_reply(prompt: str, content: str) -> str:
-    """The text a model should produce after ``prompt`` (leading space included)."""
-    del prompt
-    return content

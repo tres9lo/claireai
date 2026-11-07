@@ -1,5 +1,191 @@
 # Progress log
 
+## 2026-11-07 (later) — A workspace calendar, and a corpus rebuilt to choose tools
+
+- **Calendar.** `list_appointments` (safe) and `add_appointment`
+  (approval-gated) read and write an `appointments` table added by
+  `migrations/0003_appointments.sql`. `what's on tomorrow` is answered by the
+  runtime from rows in about 8 ms (model `claireai-runtime`, audit target
+  `calendar`), not by the model: chat-v4 has no calendar in its prompt, so its
+  only possible answer is an invented meeting. The phrase is resolved by
+  `claireai.dates`, so `tomorrow`, `last friday` and `2026-11-07` mean the same
+  thing here, in chat and in the summary.
+- **Refusals, not guesses.** A day it cannot read is an error rather than
+  "today", and a start time that is not 24-hour `HH:MM` is refused, because a
+  misfiled appointment is worse than a question. Phrases whose day is not a day
+  (`what's on the news`) are left to the model instead of being forced onto
+  today.
+- **Verified end to end:** with one row seeded, `claireai --once "what's on
+  tomorrow"` → `Sunday, 8 November 2026:` / `- 14:00 Dentist at Kigali`, 8 ms,
+  0 model steps, and the answer is logged as a task with the runtime as model.
+- **Routing was hiding the right tool.** Auditing the new corpus against
+  `route()` found 207 tool records whose request routed to a set that excluded the
+  tool that answers it: "show me what report.pdf says" → `list_folder`, "what is
+  in Pictures" → the vision tools, "replace the contents of notes.txt" →
+  `read_text_file`, and every browser request unroutable because the builder
+  routed against the file-only registry. Routing only narrows what the model
+  *sees*, so this is an accuracy bug rather than a permission one — but a small
+  model cannot call a tool it was never shown. Fixed with a `read_contents`
+  intent, two ordering changes and the browser-enabled registry during corpus
+  build; misses are 5 of 7,117 and eight phrases are regression-tested in
+  `test_routing.py`.
+- **Dead code removed:** two module functions that nothing called
+  (`claireai.vision.model_status`, `claire_brain.prompt.assistant_reply`) and
+  eight unused imports an AST scan found across `assistant/src`, `brain-lab` and
+  `scripts`.
+- **chat-v6 was trained and not installed.** A warm start from chat-v4 (3,000
+  steps, LR 1.5e-4, the routed-subset corpus) scored tool calls **70/138** (v4:
+  66), eval cases **6/13** (v4: 5) and conversation cases **13/21** (v4: **14/21**
+  at the same `--runs 3`). Four more tool checks and one more eval case against
+  one fewer conversation case is not the clean win the install gate asks for, so
+  `claire-scratch.{pt,json}` is unchanged and chat-v6 stays in
+  `runtime-data/models/` as a candidate.
+- **One conversation run is not a measurement.** `conversation_eval.py` samples
+  at temperature 0.2: v6's first run read 10/21 and v4's baseline 11/21, but both
+  at `--runs 3` are 13/21 and 14/21. The gate now compares checkpoints at the
+  same run count, and a one-case gap is treated as noise rather than progress.
+- **The intermittent 404 was not a routing bug.** `test_unknown_paths_are_404`
+  failed once in a full run and would not fail again: 18 full-suite runs, 22
+  file-only runs and 8 runs under a six-way CPU load all passed, so the assertion
+  was left alone rather than loosened. Reading the handler did find a real defect
+  beside it: `/events` looped forever, so a closed preview left a thread writing
+  into a dead socket until a write happened to fail. Teardown now sets `closing`,
+  the stream test closes its response, and the handler returns. If the 404 fails
+  again, its traceback is the next thing to read; nothing so far points at path
+  handling, and every response already sends `Content-Length`.
+- **Corpus rebalanced (chat-v5).** chat-v4 emitted readable calls (66/138) but
+  chose the wrong tool — `read_text_file` for "list my folder". Two causes were
+  proven: the corpus system prompt had drifted from
+  `claireai.agent.system_message`, and 109 paths with `~/Downloads/notes.txt` in
+  7% of tool records let the model memorise entities instead of choosing tools.
+  The corpus now imports the runtime prompt, varies only the folder clause, draws
+  from ~520 paths, gives each tool its own wording family and fills quotas
+  without cycling the same bucket: 13,980 train records, 6,897 tool records
+  (49%), 2,284 distinct prompts, 0 ambiguous labels.
+- **chat-v5 was trained and is not installed.** 6,000 steps at the same shape as
+  v4 (5 layers, width 224, context 288, 3.34M parameters), measured with the same
+  settings: tool calls **31/138** (v4: 66/138), stable cases 0/16, conversation
+  **9/21** (v4: 11/21), corpus gate **4/13** (v4: 5/13). The replies are readable
+  `<tool_call>` JSON but collapse onto `read_text_file` for almost every request,
+  so cleaner data did not survive a 6,000-step budget. The honest reading is
+  capacity and steps, not corpus shape: a 3.34M model does not learn to
+  discriminate 15 tools across ~520 entities from 6,900 tool records in 6,000
+  steps. `claire-scratch.*` therefore stays on chat-v4, and the v5 corpus plus the
+  generator that produced it stay in the repository for a longer run rather than
+  being deleted.
+- **What this says about the next attempt:** more steps (or a smaller tool set per
+  route, which is what `routing` already does deterministically) before more data.
+  The measurement scripts now catch this kind of regression in minutes, which is
+  the part worth keeping.
+
+## 2026-11-07 — Dates are code, not model output
+
+- **The measurement that decided the design.** Asked `what is the date today`
+  through `--once`, the installed chat-v4 checkpoint answered *"I created the
+  mall to the allty\":\"finto helpoose your you want me your you will buse only
+  know you first."* — 1,030 ms, no date in it. Asking a model without a clock what
+  day it is has exactly one failure mode, and the owner cannot see it.
+- **The runtime answers instead.** `claireai.dates` resolves the phrase and both
+  chat paths (`ask` for the CLI and the local web UI, `run_task` for `--once` and
+  UI tasks) return the answer before the model is called: ~20 ms, an audit row
+  with action `runtime.answer`, and model `claireai-runtime` in the task line.
+  Same reasoning as the daily summary, which was already built by code.
+- **What it reads:** `today`, `now`, `tonight`, `yesterday`, `tomorrow`,
+  `3 days ago`, `in 2 weeks`, `a week ago`, `last friday`, `next monday`, a bare
+  weekday (the most recent), `2026-11-06`, `6 Nov 2026`, `Nov 6 2026`, and
+  `3 november`. Politeness is stripped, so "hey claire, what is the date today
+  please" works. What it refuses: `06/11/2026` — 6 November to one reader, 11
+  June to another, so it is an error, not a guess.
+- **`--summary` learned the same phrases**, so `--summary yesterday` and
+  `/summary 3 days ago` work; the interactive `/summary` accepts an argument for
+  the first time.
+- **Verified:** full suite green (556 tests), and on this machine
+  `--once "what is the date today"` → `Today is Saturday, 7 November 2026.`
+  (`claireai-runtime`, 20 ms) and `--summary "3 days ago"` →
+  `runtime-data/summaries/2026-11-04.md`.
+- **Not done in that change:** alarms and reminders still need a scheduler and a
+  delivery path. The calendar the date module was built for landed the same day
+  (see the later entry above) with storage, two tools and an approval gate, but
+  nothing yet notifies you when an appointment is due.
+
+## 2026-11-06 (later) — Tool calls work; the tool *choice* is the next limit
+
+**Short version.** The installed checkpoint now emits tool calls the runtime can
+read every time (66/138 checks, was 3/138), conversation accuracy rose from 9/21
+to 11/21, and three opt-in connectors (Claude, ChatGPT, Ollama) were added. What
+is still wrong is *which* tool it picks: it reaches for `read_text_file` when
+asked to list a folder. The cause is now known, and it is data shape, not the
+prompt.
+
+### Two root causes, both measured rather than guessed
+
+1. **The corpus and the runtime disagreed about the system prompt.** The corpus
+   carried a hand-written sentence; `claireai.agent` sent a different one. Same
+   weights, two prompts: with the corpus sentence the model emitted
+   `list_folder({"path":"~/Downloads"})` correctly, with the runtime sentence it
+   produced `I can .`. A 3.3M-parameter model does not generalise across that.
+   `build_chat_dataset.py` now imports `claireai.agent.system_message`, varies
+   only the folder clause, and `assistant/tests/unit/test_corpus_prompt.py` fails
+   if the two drift again.
+2. **109 distinct paths across 6,241 tool records.** The most frequent path,
+   `~/Downloads/notes.txt`, appears in 7% of them. Checked for label conflicts
+   first — 326 distinct tool prompts, zero ambiguous — so the labels are clean;
+   the model still collapsed onto a memorised call and emitted
+   `read_text_file(~/Documents/notes.txt)` for "what is inside my Downloads
+   folder". It does this even when that is the only tool offered, so this is not
+   a tool-discrimination failure. It is a narrow-entity prior at this capacity.
+
+### Measurements, same host, same settings
+
+| Suite | chat-v2 (was installed) | chat-v3 | chat-v4 (now installed) |
+| --- | --- | --- | --- |
+| `eval_model.py` (13 cases, 1 run) | 3/13 | 6/13 | 5/13 |
+| `conversation_eval.py` (21 cases) | 9/21 | 9/21 | **11/21** |
+| `tool_call_eval.py` (16 cases × 3 runs, 138 checks) | 3/92 | 3/138 | **66/138** |
+
+chat-v4 emits a readable call in 14 of 16 cases and a correct name+arguments in
+only one (`file-info`). The 66 checks are mostly `format` and `name`-correct with
+wrong arguments or the right arguments under the wrong tool. That distinction is
+why the suite scores three checks rather than one: "it emits JSON now" and "it
+does the right thing" are different results, and the first one is not a
+substitute for the second.
+
+### Decision: chat-v4 installed
+
+`runtime-data/models/claire-scratch.{pt,json}` is now chat-v4: 5 layers, width
+224, 288 context, 1,152 vocab, 3.34M parameters, best validation loss 1.3826 at
+step 5,500 of 6,000. Rollback is `claire-chat-v2.{pt,json}`, still in place.
+The full suite (556 tests) and the 14-check smoke run pass on the installed
+checkpoint; `smoke.py` reports 14 passed, 0 failed.
+
+### Two trainer bugs found by this run
+
+- `train_chat.py` bound a local named `sample` for the tokenizer-fit text, which
+  shadowed the `sample()` function used for the probe printout. Every completed
+  run crashed there — after ~80 minutes, **before** `torch.save`, so no
+  checkpoint was written. Weights were recovered from the `.partial` file through
+  the existing `--resume` path; the variable is renamed.
+- A resumed run with no steps left wrote `training_loss: NaN`, which is not
+  valid strict JSON. It now writes `null`.
+
+### Connectors
+
+Claude, ChatGPT and Ollama adapters are in `claireai.brain`, constructed through
+`build_brain`, documented in `docs/connectors.md`. `scratch` remains the default
+and the only provider that makes no network request; each connector is a setting
+the owner writes, and the audit row names the provider that answered. No live API
+keys were available, so the tests drive `httpx.MockTransport`: they prove the
+wire format and parsing, not that a vendor is reachable. `scripts/doctor.py` is
+the check that needs credentials.
+
+### Next single task
+
+Rebalance the tool bucket: raise its weight, cut the 14,000 Dolly records that
+teach prose to a model that needs to route, and split the narrow path set into a
+larger generated pool of filenames and folders so "emit the path I memorised"
+stops being a viable strategy. `tool_call_eval.py` is the acceptance measure, and
+66/138 is the number to beat.
+
 ## 2026-11-06 — The scratch model answers instead of continuing the document
 
 - **Root cause, confirmed.** The model was trained on concatenated documents, so

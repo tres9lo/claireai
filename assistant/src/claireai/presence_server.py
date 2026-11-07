@@ -24,7 +24,7 @@ from claireai.runtime_control import RuntimeControl
 from claireai.improvements import ImprovementError, ImprovementLedger
 from claireai.today import open_read_only, render_today, render_unavailable
 from claireai.config import Settings
-from claireai.brain import BrainError, BrainStopped, ScratchBrain
+from claireai.brain import BrainError, BrainStopped, build_brain
 from claireai.agent import AgentError
 from claireai.storage import (
     ConversationRepository,
@@ -323,16 +323,12 @@ def _handler_factory(
                         raise BrainStopped("ClaireAI is stopped in the local control panel.")
                     settings = PreferenceRepository(conn).effective(Settings(data_dir=data_dir))
                     settings = Settings(_env_file=None, data_dir=data_dir, **settings)
-                    brain = ScratchBrain(
-                        checkpoint=settings.resolved_model_checkpoint,
-                        max_output_tokens=settings.max_output_tokens,
-                        control_path=settings.control_state_path,
-                    )
+                    brain = build_brain(settings)
 
                     async def run_chat():
                         health = await brain.health()
                         if not health.available or not health.model_present:
-                            raise BrainError(health.detail or "local scratch model is unavailable")
+                            raise BrainError(health.detail or "the configured brain is unavailable")
                         try:
                             from claireai.cli import ask, _speak_answer
                             turn = await ask(
@@ -378,17 +374,13 @@ def _handler_factory(
                     if conversation_id is None:
                         with transaction(conn):
                             conversation_id = ConversationRepository(conn).create()
-                    brain = ScratchBrain(
-                        checkpoint=settings.resolved_model_checkpoint,
-                        max_output_tokens=settings.max_output_tokens,
-                        control_path=settings.control_state_path,
-                    )
+                    brain = build_brain(settings)
 
                     async def run_agent_task():
                         try:
                             health = await brain.health()
                             if not health.available or not health.model_present:
-                                raise BrainError(health.detail or "local scratch model is unavailable")
+                                raise BrainError(health.detail or "the configured brain is unavailable")
                             from claireai.agent import run_task
                             from claireai.tools import default_registry
                             from claireai.cli import _speak_answer
@@ -525,7 +517,9 @@ def _handler_factory(
                 self.wfile.write(b"retry: 1000\n\n")
                 self.wfile.flush()
                 last = -1
-                while True:
+                # A closed preview must not leave this thread writing to a dead
+                # socket: teardown sets `closing` and the loop returns.
+                while not getattr(self.server, "closing", False):
                     snapshot = stream.snapshot()
                     if snapshot.seq != last:
                         last = snapshot.seq
@@ -568,6 +562,15 @@ def build_server(
     )
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
+    server.closing = False  # read by the /events loop
+
+    close = server.server_close
+
+    def closing_close() -> None:
+        server.closing = True
+        close()
+
+    server.server_close = closing_close  # type: ignore[method-assign]
     return server
 
 

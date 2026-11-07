@@ -30,18 +30,49 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from claire_brain.prompt import tool_block
+from claireai.agent import system_message as _runtime_system_message
+from claireai.permissions import Sandbox as _Sandbox
+from claireai.routing import route as _route
+from claireai.tools import default_registry as _default_registry
 
 ROOT = Path(__file__).resolve().parent
-DATASET_VERSION = "claireai-chat-v2"
+DATASET_VERSION = "claireai-chat-v6"
 SEED = 20261106
 
-BASE_SYSTEM = (
-    "You are ClaireAI, a local personal assistant on the owner's own computer. "
-    "Be friendly, concise and factual. Never claim an action succeeded without a "
-    "tool result. Destructive or external actions need the owner's explicit approval."
-)
+# The system prompt is the runtime's own, not a paraphrase of it.  This file used
+# to carry a hand-written sentence while `claireai.agent` sent a different one,
+# and a 3.3M-parameter model does not generalise across that gap: with the
+# runtime prompt the model produced gibberish, and with the training prompt it
+# produced correct calls (measured on chat-v3, 2026-11-06).  Importing the real
+# one makes that drift impossible rather than merely discouraged.
+RUNTIME_SYSTEM = _runtime_system_message(_Sandbox(roots=())).content
 
+# The owner's configured folders change the last sentence.  Several tails are
+# used so the model learns the sentence, not one particular ending.
+FOLDER_TAILS = (
+    "none configured.",
+    "~/Downloads.",
+    "~/Downloads, ~/Documents.",
+    "~/Downloads, ~/Documents, ~/Desktop.",
+)
+_SYSTEM_RNG = random.Random(SEED + 1)
+
+BASE_SYSTEM = RUNTIME_SYSTEM
 TOOL_SYSTEM = BASE_SYSTEM + "\n{tools}"
+
+# The runtime sentence without its folder clause.  Records that describe real
+# folders supply their own clause, so they start from here rather than from a
+# prompt that already names a folder list.
+SYSTEM_PREFIX = RUNTIME_SYSTEM.split(" Allowed folders:")[0]
+
+
+def assistant_system() -> str:
+    """The exact system message the runtime sends, with a folder-tail variant.
+
+    Split on the folder clause rather than matching its wording, so a change to
+    ``Sandbox.describe`` cannot silently turn this into a no-op (it did once).
+    """
+    return f"{SYSTEM_PREFIX} Allowed folders: {_SYSTEM_RNG.choice(FOLDER_TAILS)}"
 
 # Compact descriptions used by the runtime (claireai.brain.scratch).  Keep the
 # wording identical so training and inference do not disagree about the prompt.
@@ -107,12 +138,79 @@ def tool_schemas(names: Iterable[str]) -> list[dict[str, Any]]:
 
 
 def tool_system(names: Iterable[str], extra: str = "") -> str:
-    prefix = BASE_SYSTEM + (f"\n{extra}" if extra else "")
+    # A record that carries its own grounding block also carries its own folder
+    # clause; adding a second one would contradict the paths it lists.
+    base = SYSTEM_PREFIX if extra.startswith("Allowed folders:") else assistant_system()
+    prefix = base + (f"\n{extra}" if extra else "")
     return prefix + "\n" + tool_block(tool_schemas(names))
 
 
-def tool_call(name: str, arguments: dict[str, Any]) -> str:
-    return "<tool_call>" + json.dumps({"name": name, "arguments": arguments}, separators=(",", ":")) + "</tool_call>"
+# The runtime narrows the tool list per request (`claireai.routing`). A record
+# whose prompt routes to four tools should show the model four tools, because at
+# inference that is all it will be offered: training on all fifteen and serving
+# four is the same training/serving drift the system prompt suffered once.
+# Browser tools are enabled here on purpose: the corpus teaches calls to them, so
+# their records must see the browser set the runtime offers when browsing is on.
+_ROUTING_REGISTRY = _default_registry(browser_enabled=True)
+
+
+def routed_tools(prompt: str) -> tuple[tuple[str, ...], bool]:
+    """The tools the runtime offers for ``prompt``, limited to the ones described here."""
+    plan = _route(prompt, _ROUTING_REGISTRY)
+    offered = tuple(name for name in plan.tools if name in TOOL_LINES)
+    return offered, plan.narrowed
+
+
+def _called_tool(reply: str) -> str | None:
+    start = reply.find("<tool_call>")
+    if start == -1:
+        return None
+    body = reply[start + len("<tool_call>") : reply.find("</tool_call>", start)]
+    try:
+        return str(json.loads(body)["name"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _replace_tool_block(system: str, names: Iterable[str]) -> str:
+    """Swap the tool list while keeping the folder grounding that precedes it."""
+    marker = "\nTOOLS: "
+    index = system.find(marker)
+    prefix = system if index == -1 else system[:index]
+    return prefix + "\n" + tool_block(tool_schemas(names))
+
+
+def refocus_tool_prompts(
+    records: list[dict[str, Any]], stats: dict[str, int]
+) -> list[dict[str, Any]]:
+    """Offer each tool-call record only the tools its own prompt would route to.
+
+    A record whose routed set omits the tool it answers is left exactly as
+    generated and counted as a routing miss: rewriting it would teach the model to
+    answer with a tool it was never shown.
+    """
+    out: list[dict[str, Any]] = []
+    for record in records:
+        user = next((item["content"] for item in record["messages"] if item["role"] == "user"), "")
+        reply = next(
+            (item["content"] for item in record["messages"] if item["role"] == "assistant"), ""
+        )
+        name = _called_tool(reply)
+        if name is None:
+            out.append(record)
+            continue
+        offered, narrowed = routed_tools(user)
+        if name not in offered:
+            stats["routing_miss"] = stats.get("routing_miss", 0) + 1
+            out.append(record)
+            continue
+        key = "records_narrowed" if narrowed else "records_full"
+        stats[key] = stats.get(key, 0) + 1
+        out.append({**record, "system": _replace_tool_block(record["system"], offered)})
+    return out
+
+
+def tool_call(name: str, arguments: dict[str, Any]) -> str:    return "<tool_call>" + json.dumps({"name": name, "arguments": arguments}, separators=(",", ":")) + "</tool_call>"
 
 
 # ---------------------------------------------------------------------------
@@ -209,33 +307,33 @@ MULTI_TURN = [
 def smalltalk(rng: random.Random) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for q in GREETINGS:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(GREETING_REPLIES))]))
+        out.append(record(assistant_system(), [(q, rng.choice(GREETING_REPLIES))]))
     for q in IDENTITY_Q:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(IDENTITY_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(IDENTITY_A))]))
     for q in CAPABILITY_Q:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(CAPABILITY_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(CAPABILITY_A))]))
     for q in THANKS_Q:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(THANKS_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(THANKS_A))]))
     for q in BYE_Q:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(BYE_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(BYE_A))]))
     for q in HOW_Q:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(HOW_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(HOW_A))]))
     for q in JOKE_Q:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(JOKE_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(JOKE_A))]))
     for q, a in MATH:
-        out.append(record(BASE_SYSTEM, [(q, a)]))
+        out.append(record(assistant_system(), [(q, a)]))
     for q in UNKNOWN_Q:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(UNKNOWN_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(UNKNOWN_A))]))
     for q in PREFERENCE_Q:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(PREFERENCE_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(PREFERENCE_A))]))
     for q in CLARIFY_Q:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(CLARIFY_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(CLARIFY_A))]))
     for turns in MULTI_TURN:
-        out.append(record(BASE_SYSTEM, list(turns)))
+        out.append(record(assistant_system(), list(turns)))
     # Variations with polite prefixes and punctuation.
     prefixes = ["", "hey, ", "please ", "could you ", "can you ", "quick question: "]
     for base in GREETINGS[:5] + THANKS_Q[:4] + BYE_Q[:4]:
-        out.append(record(BASE_SYSTEM, [(rng.choice(prefixes) + base, rng.choice(GREETING_REPLIES + THANKS_A + BYE_A))]))
+        out.append(record(assistant_system(), [(rng.choice(prefixes) + base, rng.choice(GREETING_REPLIES + THANKS_A + BYE_A))]))
     return out
 
 
@@ -321,7 +419,7 @@ def safety(rng: random.Random) -> list[dict[str, Any]]:
             [(q, rng.choice(PRIVATE_A))],
         ))
     for q in HARM:
-        out.append(record(BASE_SYSTEM, [(q, rng.choice(HARM_A))]))
+        out.append(record(assistant_system(), [(q, rng.choice(HARM_A))]))
     return out
 
 
@@ -467,58 +565,115 @@ def slot_tasks(rng: random.Random) -> list[dict[str, Any]]:
     return out
 
 
-JSON_TOOL_CASES = [
-    (
-        "You may call one tool. Tools: list_folder(path: string) lists a folder and returns file sizes; move_file(source: string, destination: string) moves a file. Reply only with JSON: {\"tool\": \"<name>\", \"arguments\": {<arguments>}}.",
-        "what is taking up space in my Downloads folder",
-        {"tool": "list_folder", "arguments": {"path": "~/Downloads"}},
-    ),
-    (
-        "You may call one tool. Tools: list_folder(path: string) lists a folder and returns file sizes; move_file(source: string, destination: string) moves a file. Reply only with JSON: {\"tool\": \"<name>\", \"arguments\": {<arguments>}}.",
-        "move quarterly-report.pdf into my Documents folder",
-        {"tool": "move_file", "arguments": {"source": "quarterly-report.pdf", "destination": "~/Documents"}},
-    ),
-    (
-        "You may call one tool. Tools: find_largest_files(path: string, limit: integer) returns the biggest files under a folder, biggest first. list_folder(path: string) lists one folder. Reply only with JSON: {\"tool\": \"<name>\", \"arguments\": {<arguments>}}.",
-        "which files are the biggest inside my Downloads folder",
-        {"tool": "find_largest_files", "arguments": {"path": "~/Downloads", "limit": 5}},
-    ),
-    (
-        "You may call one tool. Tools: search_files(path: string, pattern: string) searches a folder tree for file names matching a glob. list_folder(path: string) lists one folder. Reply only with JSON: {\"tool\": \"<name>\", \"arguments\": {<arguments>}}.",
-        "find every pdf inside my Documents folder",
-        {"tool": "search_files", "arguments": {"path": "~/Documents", "pattern": "*.pdf"}},
-    ),
-    (
-        "You may call one tool. Tools: create_text_file(path: string, content: string) creates a new text file; read_text_file(path: string) reads one. Write tools need the owner's approval. Reply only with JSON: {\"tool\": \"<name>\", \"arguments\": {<arguments>}}.",
-        "write a file called todo.txt in my Documents folder saying buy milk",
-        {"tool": "create_text_file", "arguments": {"path": "~/Documents/todo.txt", "content": "buy milk"}},
-    ),
-    (
-        "You may call one tool. Tools: read_text_file(path: string) reads a text file; get_file_info(path: string) returns size and modified time. Reply only with JSON: {\"tool\": \"<name>\", \"arguments\": {<arguments>}}.",
-        "read my notes.txt file",
-        {"tool": "read_text_file", "arguments": {"path": "~/Documents/notes.txt"}},
-    ),
-    (
-        "You may call one tool. Tools: create_folder(path: string) creates a folder; list_folder(path: string) lists one. Write tools need the owner's approval. Reply only with JSON: {\"tool\": \"<name>\", \"arguments\": {<arguments>}}.",
-        "make a new folder called reports in Documents",
-        {"tool": "create_folder", "arguments": {"path": "~/Documents/reports"}},
-    ),
-    (
-        "You may call one tool. Tools: move_to_trash(path: string) moves a file to a recoverable trash folder. Reply only with JSON: {\"tool\": \"<name>\", \"arguments\": {<arguments>}}.",
-        "delete old-report.pdf",
-        {"tool": "move_to_trash", "arguments": {"path": "~/Downloads/old-report.pdf"}},
-    ),
-]
+# One canonical reply shape: the ``<tool_call>`` tag the runtime parser reads,
+# rendered by ``tool_call`` under the same TOOLS block the runtime sends.  An
+# earlier mix also taught a bare ``{"tool": ...}`` object under a different
+# system prompt, and the model reproduced that shape with the wrong key under
+# the runtime prompt — which is why a disallowed name was the most common failure.
+TOOL_REQUESTS: dict[str, list[tuple[str, dict[str, Any]]]] = {
+    "list_folder": [
+        ("what is inside my Downloads folder", {"path": "~/Downloads"}),
+        ("list the files in my Documents folder", {"path": "~/Documents"}),
+        ("show me what is on my Desktop", {"path": "~/Desktop"}),
+        ("what does the projects folder contain", {"path": "~/Projects"}),
+        ("list everything in my Pictures folder", {"path": "~/Pictures"}),
+        ("what files are in the archive folder", {"path": "~/Documents/archive"}),
+    ],
+    "get_file_info": [
+        ("how big is report.pdf", {"path": "~/Documents/report.pdf"}),
+        ("when was notes.txt last changed", {"path": "~/Documents/notes.txt"}),
+        ("give me the details of budget.xlsx", {"path": "~/Documents/budget.xlsx"}),
+        ("what type of file is video.mp4", {"path": "~/Downloads/video.mp4"}),
+        ("how large is invoice-2026.pdf", {"path": "~/Downloads/invoice-2026.pdf"}),
+    ],
+    "read_text_file": [
+        ("read my notes.txt file", {"path": "~/Documents/notes.txt"}),
+        ("show me what is in todo.txt", {"path": "~/Documents/todo.txt"}),
+        ("open the file readme.md and read it", {"path": "~/Projects/readme.md"}),
+        ("read out the contents of draft.txt", {"path": "~/Desktop/draft.txt"}),
+        ("what does budget.txt say", {"path": "~/Documents/budget.txt"}),
+    ],
+    "search_files": [
+        ("find every pdf in my Documents folder", {"path": "~/Documents", "pattern": "*.pdf"}),
+        ("search for files named report", {"path": "~/Documents", "pattern": "report*"}),
+        ("locate all images in Downloads", {"path": "~/Downloads", "pattern": "*.png"}),
+        ("which files match invoice", {"path": "~/Downloads", "pattern": "invoice*"}),
+        ("find all text files on my Desktop", {"path": "~/Desktop", "pattern": "*.txt"}),
+    ],
+    "find_largest_files": [
+        ("which files are the biggest in my Downloads folder", {"path": "~/Downloads", "limit": 5}),
+        ("what is taking up space in Documents", {"path": "~/Documents", "limit": 3}),
+        ("find the largest files on my Desktop", {"path": "~/Desktop", "limit": 10}),
+        ("what are the biggest files in my Pictures folder", {"path": "~/Pictures", "limit": 5}),
+    ],
+    "create_folder": [
+        ("make a new folder called reports in Documents", {"path": "~/Documents/reports"}),
+        ("create a folder named archive on my Desktop", {"path": "~/Desktop/archive"}),
+        ("make a projects folder in Documents", {"path": "~/Documents/projects"}),
+        ("create a new folder called invoices in Downloads", {"path": "~/Downloads/invoices"}),
+    ],
+    "create_text_file": [
+        ("write a file called todo.txt in my Documents folder saying buy milk", {"path": "~/Documents/todo.txt", "content": "buy milk"}),
+        ("create notes.md with a shopping list", {"path": "~/Documents/notes.md", "content": "milk, eggs, bread"}),
+        ("save the text hello world to hello.txt", {"path": "~/Documents/hello.txt", "content": "hello world"}),
+        ("make a file called draft.txt on my Desktop with the text first draft", {"path": "~/Desktop/draft.txt", "content": "first draft"}),
+    ],
+    "write_to_file": [
+        ("add milk to my todo.txt", {"path": "~/Documents/todo.txt", "content": "milk", "append": True}),
+        ("replace the contents of notes.txt with a new list", {"path": "~/Documents/notes.txt", "content": "call the dentist"}),
+        ("append today to my journal.txt", {"path": "~/Documents/journal.txt", "content": "2026-11-06: trained the model", "append": True}),
+    ],
+    "rename_file": [
+        ("rename report.pdf to final-report.pdf", {"path": "~/Documents/report.pdf", "new_name": "final-report.pdf"}),
+        ("rename draft.txt to notes.txt", {"path": "~/Desktop/draft.txt", "new_name": "notes.txt"}),
+        ("call budget.xlsx finances.xlsx instead", {"path": "~/Documents/budget.xlsx", "new_name": "finances.xlsx"}),
+    ],
+    "move_file": [
+        ("move quarterly-report.pdf into my Documents folder", {"source": "~/Downloads/quarterly-report.pdf", "destination": "~/Documents/quarterly-report.pdf"}),
+        ("put budget.xlsx in Documents", {"source": "~/Downloads/budget.xlsx", "destination": "~/Documents/budget.xlsx"}),
+        ("move notes.txt to my Desktop", {"source": "~/Documents/notes.txt", "destination": "~/Desktop/notes.txt"}),
+        ("transfer report.pdf into the archive folder", {"source": "~/Documents/report.pdf", "destination": "~/Documents/archive/report.pdf"}),
+    ],
+    "move_to_trash": [
+        ("delete old-report.pdf", {"path": "~/Downloads/old-report.pdf"}),
+        ("remove draft.txt", {"path": "~/Desktop/draft.txt"}),
+        ("throw away the old archive folder", {"path": "~/Documents/old-archive"}),
+        ("trash old.zip", {"path": "~/Downloads/old.zip"}),
+    ],
+    "open_url": [
+        ("open example.com and tell me what is there", {"url": "https://example.com"}),
+        ("fetch the page at example.org/news", {"url": "https://example.org/news"}),
+    ],
+    "get_page_text": [
+        ("show me the text of that page again", {}),
+        ("repeat the page contents", {}),
+    ],
+    "search_web": [
+        ("search the web for python asyncio tutorials", {"query": "python asyncio tutorial"}),
+        ("look up the weather in kigali", {"query": "weather kigali"}),
+    ],
+    "download_file": [
+        ("download example.com/report.pdf into Downloads", {"url": "https://example.com/report.pdf", "path": "~/Downloads/report.pdf"}),
+    ],
+}
 
 
-def json_tool_tasks(rng: random.Random) -> list[dict[str, Any]]:
+def canonical_tool_tasks(rng: random.Random) -> list[dict[str, Any]]:
+    """Single-tool and pick-one-of-three requests in the runtime's own format."""
     out: list[dict[str, Any]] = []
-    for system, prompt, payload in JSON_TOOL_CASES:
-        out.append(record(system, [(prompt, json.dumps(payload))]))
-        # Paraphrases with the same answer shape.
-        for prefix in ("please ", "could you ", "I want you to "):
-            if rng.random() < 0.3:
-                out.append(record(system, [(prefix + prompt, json.dumps(payload))]))
+    names = list(TOOL_REQUESTS)
+    for name, requests in TOOL_REQUESTS.items():
+        others = [other for other in names if other != name]
+        for prompt, arguments in requests:
+            reply = tool_call(name, arguments)
+            out.append(record(tool_system([name]), [(prompt, reply)]))
+            # Offered beside two neighbours, the skill measured in the field: the
+            # model has to pick the right tool instead of the only one present.
+            offered = [*rng.sample(others, k=2), name]
+            out.append(record(tool_system(offered), [(prompt, reply)]))
+            for prefix in ("please ", "could you ", "I want you to "):
+                if rng.random() < 0.4:
+                    out.append(record(tool_system([name]), [(prefix + prompt, reply)]))
     return out
 
 
@@ -748,17 +903,17 @@ def smalltalk_expanded(rng: random.Random) -> list[dict[str, Any]]:
     openers = ["", "hey Claire, ", "hi Claire, ", "Claire, ", "quick one: ", "sorry to bother you, "]
     for q in GREETINGS:
         for opener in openers[:4]:
-            out.append(record(BASE_SYSTEM, [(opener + q, rng.choice(GREETING_REPLIES))]))
+            out.append(record(assistant_system(), [(opener + q, rng.choice(GREETING_REPLIES))]))
     for q in CAPABILITY_Q:
         for opener in openers[:3]:
-            out.append(record(BASE_SYSTEM, [(opener + q, rng.choice(CAPABILITY_A))]))
+            out.append(record(assistant_system(), [(opener + q, rng.choice(CAPABILITY_A))]))
     for q in THANKS_Q:
-        out.append(record(BASE_SYSTEM, [("okay, " + q, rng.choice(THANKS_A))]))
-        out.append(record(BASE_SYSTEM, [(q + "!", rng.choice(THANKS_A))]))
+        out.append(record(assistant_system(), [("okay, " + q, rng.choice(THANKS_A))]))
+        out.append(record(assistant_system(), [(q + "!", rng.choice(THANKS_A))]))
     # Multi-turn variants: greet, ask, thank, leave.
     for greeting in GREETINGS[:5]:
         for question in CAPABILITY_Q[:3]:
-            out.append(record(BASE_SYSTEM, [
+            out.append(record(assistant_system(), [
                 (greeting, rng.choice(GREETING_REPLIES)),
                 (question, rng.choice(CAPABILITY_A)),
                 (rng.choice(THANKS_Q), rng.choice(THANKS_A)),
@@ -881,17 +1036,125 @@ def slots_expanded(rng: random.Random) -> list[dict[str, Any]]:
     return out
 
 
-def json_tools_expanded(rng: random.Random) -> list[dict[str, Any]]:
+FILE_TOKENS = (".pdf", ".txt", ".xlsx", ".md", ".mp4", ".zip", ".png", ".docx", ".pptx")
+
+
+def tool_calls_expanded(rng: random.Random) -> list[dict[str, Any]]:
+    """The same requests over other file names, still in the canonical shape."""
     out: list[dict[str, Any]] = []
-    for system, prompt, payload in JSON_TOOL_CASES:
-        for file in FILES[:4]:
-            variant = dict(payload)
-            if "arguments" in variant and "source" in variant["arguments"]:
-                variant["arguments"] = dict(variant["arguments"], source=file)
-                out.append(record(system, [(prompt.replace("quarterly-report.pdf", file), json.dumps(variant))]))
-            elif "arguments" in variant and "path" in variant["arguments"] and variant["arguments"]["path"].endswith(".txt"):
-                variant["arguments"] = dict(variant["arguments"], path=variant["arguments"]["path"].replace("notes.txt", file))
-                out.append(record(system, [(prompt.replace("notes.txt", file), json.dumps(variant))]))
+    names = list(TOOL_REQUESTS)
+    for name, requests in TOOL_REQUESTS.items():
+        others = [other for other in names if other != name]
+        for prompt, arguments in requests:
+            for file in FILES[:5]:
+                variant: dict[str, Any] = {}
+                for key, value in arguments.items():
+                    if isinstance(value, str) and ":/" not in value and value.endswith(FILE_TOKENS):
+                        variant[key] = value.rsplit("/", 1)[0] + "/" + file
+                    else:
+                        variant[key] = value
+                if variant == arguments:
+                    continue
+                user = prompt
+                for original in ("report.pdf", "notes.txt", "draft.txt", "budget.xlsx", "old-report.pdf", "video.mp4", "invoice-2026.pdf"):
+                    user = user.replace(original, file)
+                offered = [*rng.sample(others, k=2), name]
+                out.append(record(tool_system(offered), [(user, tool_call(name, variant))]))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Tool choice: many entities, one unambiguous tool per wording
+# ---------------------------------------------------------------------------
+
+# The chat-v4 corpus held 109 distinct paths across 6,241 tool records, and
+# ``~/Downloads/notes.txt`` alone appeared in 7% of them.  At 3.3M parameters the
+# model learned to emit that path instead of reading the request: asked to list a
+# folder it answered ``read_text_file(~/Documents/notes.txt)``, even when that was
+# the only tool offered.  The pool below is generated rather than hand-listed so
+# that memorising an entity is not a strategy: ~120 file paths over 14 folders,
+# each with its own extension and, sometimes, a year suffix.
+FOLDER_PATHS = (
+    "~/Downloads",
+    "~/Documents",
+    "~/Desktop",
+    "~/Pictures",
+    "~/Projects",
+    "~/Videos",
+    "~/Documents/archive",
+    "~/Documents/invoices",
+    "~/Documents/reports",
+    "~/Desktop/drafts",
+    "~/Downloads/incoming",
+    "~/Projects/claireai",
+    "~/Projects/atlas",
+    "~/Documents/notes",
+)
+FILE_STEMS = (
+    "report", "budget", "notes", "invoice", "photo", "slides", "todo", "draft",
+    "summary", "receipt", "screenshot", "contract", "plan", "minutes", "backup",
+    "export", "scan", "letter", "schedule", "log",
+)
+FILE_EXTENSIONS = (".pdf", ".txt", ".xlsx", ".md", ".docx", ".pptx", ".png", ".jpg", ".csv", ".zip")
+
+
+def _file_pool() -> tuple[str, ...]:
+    pool: list[str] = []
+    total = len(FILE_STEMS) * 6
+    for index in range(total):
+        stem = FILE_STEMS[index % len(FILE_STEMS)]
+        folder = FOLDER_PATHS[(index * 3) % len(FOLDER_PATHS)]
+        extension = FILE_EXTENSIONS[index % len(FILE_EXTENSIONS)]
+        year = f"-{2019 + index % 8}" if index % 3 == 0 else ""
+        pool.append(f"{folder}/{stem}{year}{extension}")
+    return tuple(dict.fromkeys(pool))
+
+
+FILE_POOL = _file_pool()
+NEW_FOLDER_NAMES = ("reports", "archive", "invoices", "drafts", "backup", "exports", "receipts", "plans")
+
+# One wording family per tool.  Two tools must never share a phrasing, or the
+# label is ambiguous and the model is being asked to guess; the rebuild prints the
+# conflict count so that stays observable instead of assumed.
+LIST_WORDS = ("what is inside {folder}", "show me what is in {folder}", "list {folder}", "what files are in {folder}")
+LARGEST_WORDS = ("which files are the biggest in {folder}", "what is taking up space in {folder}", "find the largest files in {folder}")
+READ_WORDS = ("read {file}", "show me what {file} says", "open {file} and read it")
+INFO_WORDS = ("how big is {file}", "when was {file} last changed", "give me the details of {file}")
+TRASH_WORDS = ("delete {file}", "remove {file}", "throw away {file}")
+RENAME_WORDS = ("rename {file} to {new_name}", "call {file} {new_name} instead")
+MOVE_WORDS = ("move {file} to my Documents folder", "put {file} in my Documents folder")
+MKDIR_WORDS = ("make a folder called {leaf} in {folder}", "create a folder named {leaf} in {folder}")
+APPEND_WORDS = ("add milk to {file}", "append milk to {file}")
+CREATE_WORDS = ("write a file called {name} in {folder} saying buy milk", "create {name} in {folder} with the text buy milk")
+SEARCH_WORDS = ("find every {ext} in {folder}", "locate all {ext} files in {folder}")
+
+
+def tool_choice_expanded(rng: random.Random) -> list[dict[str, Any]]:
+    """Every tool over every entity, offered alone and beside two neighbours."""
+    out: list[dict[str, Any]] = []
+    names = list(TOOL_REQUESTS)
+    for file_path in FILE_POOL:
+        folder, name = file_path.rsplit("/", 1)
+        extension = name.rsplit(".", 1)[-1]
+        leaf = rng.choice(NEW_FOLDER_NAMES)
+        new_name = f"final-{name}"
+        cases: list[tuple[str, str, dict[str, Any]]] = [
+            (rng.choice(LIST_WORDS).format(folder=folder), "list_folder", {"path": folder}),
+            (rng.choice(LARGEST_WORDS).format(folder=folder), "find_largest_files", {"path": folder, "limit": 5}),
+            (rng.choice(READ_WORDS).format(file=file_path), "read_text_file", {"path": file_path}),
+            (rng.choice(INFO_WORDS).format(file=file_path), "get_file_info", {"path": file_path}),
+            (rng.choice(TRASH_WORDS).format(file=file_path), "move_to_trash", {"path": file_path}),
+            (rng.choice(RENAME_WORDS).format(file=file_path, new_name=new_name), "rename_file", {"path": file_path, "new_name": new_name}),
+            (rng.choice(MOVE_WORDS).format(file=file_path), "move_file", {"source": file_path, "destination": f"~/Documents/{name}"}),
+            (rng.choice(MKDIR_WORDS).format(leaf=leaf, folder=folder), "create_folder", {"path": f"{folder}/{leaf}"}),
+            (rng.choice(APPEND_WORDS).format(file=file_path), "write_to_file", {"path": file_path, "content": "milk", "append": True}),
+            (rng.choice(CREATE_WORDS).format(name=name, folder=folder), "create_text_file", {"path": file_path, "content": "buy milk"}),
+            (f"find every *.{extension} in {folder}", "search_files", {"path": folder, "pattern": f"*.{extension}"}),
+        ]
+        for prompt, tool, arguments in cases:
+            others = [other for other in names if other != tool]
+            for offered in ([tool], [*rng.sample(others, k=2), tool]):
+                out.append(record(tool_system(offered), [(prompt, tool_call(tool, arguments))]))
     return out
 
 
@@ -964,34 +1227,34 @@ def memory_expanded(rng: random.Random) -> list[dict[str, Any]]:
     """Teach in-context recall: the answer is in the conversation, not weights."""
     out: list[dict[str, Any]] = []
     for name in NAMES:
-        out.append(record(BASE_SYSTEM, [
+        out.append(record(assistant_system(), [
             ("My name is " + name + ".", f"Nice to meet you, {name}. How can I help?"),
             ("What is my name?", f"Your name is {name}."),
         ]))
-        out.append(record(BASE_SYSTEM, [
+        out.append(record(assistant_system(), [
             ("I'm " + name + ", by the way.", f"Hello {name}. What can I do for you?"),
             ("Do you remember my name?", f"Yes, you told me your name is {name}."),
         ]))
     for place in PLACES:
-        out.append(record(BASE_SYSTEM, [
+        out.append(record(assistant_system(), [
             (f"I live in {place}.", f"Got it. You live in {place}."),
             ("Where do I live?", f"You live in {place}."),
         ]))
     for project in PROJECTS:
-        out.append(record(BASE_SYSTEM, [
+        out.append(record(assistant_system(), [
             (f"Remember that my project is called {project}.", f"Understood. Your project is called {project}."),
             ("What is my project called?", f"Your project is called {project}."),
         ]))
     out.extend([
-        record(BASE_SYSTEM, [
+        record(assistant_system(), [
             ("Please keep your answers short.", "Understood. I'll keep my answers short."),
             ("How should you answer me?", "You asked me to keep my answers short."),
         ]),
-        record(BASE_SYSTEM, [
+        record(assistant_system(), [
             ("I prefer bullet points.", "Understood. I'll use bullet points."),
             ("How do I like my answers?", "You prefer bullet points."),
         ]),
-        record(BASE_SYSTEM, [
+        record(assistant_system(), [
             ("My favourite folder is Pictures.", "Good to know. I'll remember that."),
             ("Which folder do I like best?", "You said your favourite folder is Pictures."),
         ]),
@@ -1099,7 +1362,7 @@ def dolly_examples(path: Path, limit: int) -> list[dict[str, Any]]:
         if len(instruction) < 4 or len(response) < 4:
             continue
         user = f"{instruction}\n{context}" if context else instruction
-        out.append(record(BASE_SYSTEM, [(user, clip(response, 600))]))
+        out.append(record(assistant_system(), [(user, clip(response, 600))]))
     return out
 
 
@@ -1111,7 +1374,7 @@ def story_examples(path: Path, limit: int) -> list[dict[str, Any]]:
         story = story.strip()
         if len(story) < 200:
             continue
-        out.append(record(BASE_SYSTEM, [("Tell me a short story.", clip(story, 600))]))
+        out.append(record(assistant_system(), [("Tell me a short story.", clip(story, 600))]))
     return out
 
 
@@ -1182,7 +1445,7 @@ def build(
         "safety": safety(rng) + safety_expanded(rng),
         "intent": intent_tasks(rng) + intent_expanded(rng),
         "slots": slot_tasks(rng) + slots_expanded(rng),
-        "json_tools": json_tool_tasks(rng) + json_tools_expanded(rng),
+        "tool_calls": canonical_tool_tasks(rng) + tool_calls_expanded(rng) + tool_choice_expanded(rng),
         "summaries": summary_tasks(rng) + summaries_expanded(rng),
         "transcripts": tool_transcripts(rng) + transcripts_expanded(rng),
         "follow_ups": follow_ups(rng),
@@ -1194,13 +1457,19 @@ def build(
     # refusals need far more repetitions than a 2M-parameter model gets from one
     # pass over a template list.
     for name in list(buckets):
-        buckets[name] = augment(buckets[name], rng, factor=2)
+        buckets[name] = augment(buckets[name], rng, factor=3)
+    # After augmentation, so the lexical variants are focused too.
+    routing_stats: dict[str, int] = {}
+    buckets["tool_calls"] = refocus_tool_prompts(buckets["tool_calls"], routing_stats)
     if dolly and dolly.is_file():
-        buckets["dolly"] = dolly_examples(dolly, 4000)
+        # The full licensed instruction set: 15k human-written pairs cost seconds
+        # to include and every one of them is a different task, which is what a
+        # 3M-parameter model needs more than another pass over a template list.
+        buckets["dolly"] = dolly_examples(dolly, 14000)
     if stories and stories.is_file():
-        buckets["stories"] = story_examples(stories, 400)
+        buckets["stories"] = story_examples(stories, 2000)
     if bootstrap and bootstrap.is_file():
-        buckets["bootstrap"] = bootstrap_examples(bootstrap, 600)
+        buckets["bootstrap"] = bootstrap_examples(bootstrap, 1200)
 
     # Balance: the assistant's own domain (format/tool/safety) dominates, general
     # instruction data adds breadth, prose is only a small fluency aid.
@@ -1209,25 +1478,35 @@ def build(
         "safety": 2,
         "intent": 3,
         "slots": 1,
-        "json_tools": 3,
+        "tool_calls": 10,
         "summaries": 1,
         "transcripts": 4,
-        "follow_ups": 2,
-        "dolly": 3,
+        "follow_ups": 1,
+        "dolly": 5,
         "stories": 1,
-        "bootstrap": 2,
+        "bootstrap": 1,
         "memory": 2,
-        "discovery": 3,
+        "discovery": 2,
     }
-    interleaved: list[dict[str, Any]] = []
+    # Draw to a fixed quota per source instead of draining every queue. Draining
+    # finishes the small assistant-domain buckets first and appends the rest of
+    # the largest source as a block, so the end of training — where the weights
+    # move least — would be all Dolly and no tool calls.
+    total_records = 34_000
+    weight_sum = sum(weights.values())
     queues = {name: list(items) for name, items in buckets.items()}
     for queue in queues.values():
         rng.shuffle(queue)
-    while any(queues.values()):
-        for name, weight in weights.items():
-            for _ in range(weight):
-                if queues[name]:
-                    interleaved.append(queues[name].pop())
+    interleaved: list[dict[str, Any]] = []
+    for name, weight in weights.items():
+        items = queues[name]
+        if not items:
+            continue
+        quota = max(1, round(total_records * weight / weight_sum))
+        # Never cycle a bucket to reach its quota: repeating the same record teaches
+        # the exact string rather than the skill, which is precisely the failure
+        # being fixed here. A short bucket simply contributes less.
+        interleaved.extend(items[:quota])
     rng.shuffle(interleaved)
 
     # The fixed evaluation suite is a gate, not training data.  Remove any
@@ -1264,6 +1543,8 @@ def build(
         "seed": seed,
         "records_by_source": {name: len(items) for name, items in buckets.items()},
         "records_by_split": {split: len(items) for split, items in splits.items()},
+        "tool_entities": {"folders": len(FOLDER_PATHS), "files": len(FILE_POOL)},
+        "routing": routing_stats,
         "prompt_format": "SYSTEM / USER / ASSISTANT, with TOOL <name> for results",
         "reply_end": "EOS after every assistant reply",
         "licenses": {
@@ -1284,7 +1565,7 @@ def build(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v2")
+    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v6")
     parser.add_argument("--dolly", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "dolly-15k.jsonl")
     parser.add_argument("--stories", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "tinystories-valid.txt")
     parser.add_argument("--bootstrap", type=Path, default=ROOT / "data" / "bootstrap-v1" / "examples.jsonl")

@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "notes": "One readable tool call per request, in the runtime's own prompt shape. Arguments are compared as a subset, so optional keys the model adds are allowed as long as the required values are right.",
+  "cases": [
+    {
+      "id": "list-downloads",
+      "tools": ["list_folder", "get_file_info", "read_text_file"],
+      "user": "what is inside my Downloads folder",
+      "expect": {"name": "list_folder", "arguments": {"path": "~/Downloads"}}
+    },
+    {
+      "id": "list-documents",
+      "tools": ["list_folder", "search_files", "find_largest_files"],
+      "user": "show me what is in my Documents folder",
+      "expect": {"name": "list_folder", "arguments": {"path": "~/Documents"}}
+    },
+    {
+      "id": "largest-files",
+      "tools": ["find_largest_files", "list_folder", "get_file_info"],
+      "user": "which files are the biggest in my Downloads folder",
+      "expect": {"name": "find_largest_files", "arguments": {"path": "~/Downloads"}}
+    },
+    {
+      "id": "read-notes",
+      "tools": ["read_text_file", "get_file_info", "list_folder"],
+      "user": "read my notes.txt file",
+      "expect": {"name": "read_text_file", "arguments": {"path": "~/Documents/notes.txt"}}
+    },
+    {
+      "id": "file-info",
+      "tools": ["get_file_info", "read_text_file", "list_folder"],
+      "user": "how big is report.pdf",
+      "expect": {"name": "get_file_info", "arguments": {"path": "~/Documents/report.pdf"}}
+    },
+    {
+      "id": "search-pdfs",
+      "tools": ["search_files", "list_folder", "read_text_file"],
+      "user": "find every pdf in my Documents folder",
+      "expect": {"name": "search_files", "arguments": {"path": "~/Documents", "pattern": "*.pdf"}}
+    },
+    {
+      "id": "create-folder",
+      "tools": ["create_folder", "list_folder", "move_file"],
+      "user": "make a new folder called reports in Documents",
+      "expect": {"name": "create_folder", "arguments": {"path": "~/Documents/reports"}}
+    },
+    {
+      "id": "create-file",
+      "tools": ["create_text_file", "write_to_file", "read_text_file"],
+      "user": "write a file called todo.txt in my Documents folder saying buy milk",
+      "expect": {
+        "name": "create_text_file",
+        "arguments": {"path": "~/Documents/todo.txt", "content": "buy milk"}
+      }
+    },
+    {
+      "id": "move-file",
+      "tools": ["move_file", "rename_file", "move_to_trash"],
+      "user": "move quarterly-report.pdf into my Documents folder",
+      "expect": {
+        "name": "move_file",
+        "arguments": {"source": "~/Downloads/quarterly-report.pdf", "destination": "~/Documents/quarterly-report.pdf"}
+      }
+    },
+    {
+      "id": "rename-file",
+      "tools": ["rename_file", "move_file", "create_folder"],
+      "user": "rename report.pdf to final-report.pdf",
+      "expect": {
+        "name": "rename_file",
+        "arguments": {"path": "~/Documents/report.pdf", "new_name": "final-report.pdf"}
+      }
+    },
+    {
+      "id": "trash-file",
+      "tools": ["move_to_trash", "move_file", "rename_file"],
+      "user": "delete old-report.pdf",
+      "expect": {"name": "move_to_trash", "arguments": {"path": "~/Downloads/old-report.pdf"}}
+    },
+    {
+      "id": "append-file",
+      "tools": ["write_to_file", "create_text_file", "read_text_file"],
+      "user": "add milk to my todo.txt",
+      "expect": {"name": "write_to_file", "arguments": {"path": "~/Documents/todo.txt", "content": "milk"}}
+    },
+    {
+      "id": "open-url",
+      "tools": ["open_url", "search_web", "get_page_text"],
+      "user": "open example.com and tell me what is there",
+      "expect": {"name": "open_url", "arguments": {"url": "https://example.com"}}
+    },
+    {
+      "id": "search-web",
+      "tools": ["search_web", "open_url", "get_page_text"],
+      "user": "search the web for python asyncio tutorials",
+      "expect": {"name": "search_web", "arguments": {"query": "python asyncio tutorial"}}
+    },
+    {
+      "id": "download-file",
+      "tools": ["download_file", "open_url", "create_text_file"],
+      "user": "download example.com/report.pdf into Downloads",
+      "expect": {
+        "name": "download_file",
+        "arguments": {"url": "https://example.com/report.pdf", "path": "~/Downloads/report.pdf"}
+      }
+    },
+    {
+      "id": "no-tool-needed",
+      "tools": ["list_folder", "read_text_file"],
+      "user": "hello, how are you",
+      "expect": {"name": null, "arguments": {}}
+    }
+  ]
+}

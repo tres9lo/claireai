@@ -35,6 +35,7 @@ from claireai.brain import (
     Message,
     ToolCall,
 )
+from claireai.brain.tool_calls import looks_like_tool_call
 from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox, check_risk, requires_approval
 from claireai.presence import PresenceStream
@@ -64,6 +65,18 @@ MAX_TOOL_TEXT = 4000
 # names a request mentions, short enough to fit the scratch model's 256-token
 # window alongside the system prompt and tool schemas.
 MAX_LISTED = 4
+# One corrective turn for a call the runtime could not read. Sent back as the
+# model's own turn plus a short instruction in the exact format it was trained
+# on, so the second attempt is a rewrite rather than a fresh guess.
+TOOL_CALL_REPAIR = (
+    "The last reply looked like a tool call but could not be read. Reply with "
+    "exactly one call in this form and nothing else: "
+    '<tool_call>{"name":"tool_name","arguments":{...}}</tool_call>'
+)
+
+
+def _repair_instruction(shown: Sequence[str]) -> str:
+    return f"{TOOL_CALL_REPAIR} Tools offered: {', '.join(shown) or '(none)'}."
 
 
 def _retry_worthwhile(response: BrainResponse, temperature: float) -> bool:
@@ -88,6 +101,16 @@ class AgentError(Exception):
 
 class AgentStepLimit(AgentError):
     """The model kept calling tools past the configured step limit."""
+
+
+class AgentUnreadableToolCall(AgentError):
+    """The model emitted tool-call syntax the runtime could not read.\n\n    Kept apart from :class:`AgentEmptyReply` because the fix is different: the
+    model tried to act and produced a malformed call, so the repair turn has a
+    concrete thing to correct. It is not a
+    :class:`claireai.brain.BrainResponseError` because the task has already been
+    marked failed here, and re-raising through the brain handler would try to
+    fail it twice.
+    """
 
 
 class AgentEmptyReply(AgentError):
@@ -192,6 +215,7 @@ async def run_task(
     # so a filtered-out call that arrives anyway simply executes.
     plan: Route | None = choose_route(request, registry) if settings.tool_routing == "auto" else None
     schemas = plan.schemas(registry) if plan else registry.schemas()
+    shown_names: tuple[str, ...] = tuple(plan.tools) if plan else registry.names()
 
     with transaction(conn):
         if conversation_id is None:
@@ -222,6 +246,44 @@ async def run_task(
             )
     if presence:
         presence.emit("thinking", task_id=task.id)
+
+    # The model has no clock, so a dated answer from it is confidently wrong.
+    # Date and time questions are answered from the runtime, the same way the
+    # daily summary is built by code instead of being asked for.
+    from claireai.dates import answer_date_question  # local import keeps the graph flat
+
+    direct = answer_date_question(request)
+    answer_target = "date"
+    if direct is None:
+        # The model cannot know the calendar either; an invented meeting is a
+        # worse answer than the local table's.
+        from claireai.tools.calendar import answer_agenda  # local import
+
+        direct = answer_agenda(conn, request)
+        answer_target = "calendar"
+    if direct is not None:
+        started = time.perf_counter()
+        with transaction(conn):
+            tasks.update_status(task.id, "succeeded")
+            conversations.add_message(
+                conversation_id, role="assistant", content=direct, task_id=task.id
+            )
+            audit.record(
+                task_id=task.id,
+                device=device,
+                action="runtime.answer",
+                status="done",
+                target=answer_target,
+                detail={"answer": direct},
+            )
+        if presence:
+            presence.emit("idle", task_id=task.id)
+        return AgentOutcome(
+            task_id=task.id,
+            content=direct,
+            model="claireai-runtime",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
 
     # A registry with no read tool at all starts verified: there is nothing to
     # require, and a gate that can never be satisfied would block every write.
@@ -254,6 +316,7 @@ async def run_task(
     ]
     messages[0] = Message(role="system", content=messages[0].content + context_note)
     steps: list[AgentStep] = []
+    repair_attempts = 0
     browser = BrowserSession() if "open_url" in registry else None
     started = time.perf_counter()
 
@@ -292,6 +355,56 @@ async def run_task(
                     presence.emit("thinking", task_id=task.id)
                 response = await brain.generate(
                     messages, tools=schemas, temperature=temperature
+                )
+
+            if not response.tool_calls and looks_like_tool_call(response.content):
+                # A three-million-parameter model writes a call that is nearly
+                # right often enough to matter. Rejecting it as an answer shows
+                # the owner raw JSON; crashing the task on it throws away a
+                # request the model can usually fix when told what was wrong.
+                if repair_attempts < 1:
+                    repair_attempts += 1
+                    with transaction(conn):
+                        audit.record(
+                            task_id=task.id,
+                            device=device,
+                            action="agent.repair",
+                            status="skipped",
+                            target=response.model,
+                            detail={
+                                "reason": "unreadable tool call",
+                                "step": step_number,
+                                "preview": response.content[:200],
+                            },
+                        )
+                    messages.append(Message(role="assistant", content=response.content))
+                    messages.append(Message(role="user", content=_repair_instruction(shown_names)))
+                    if presence:
+                        presence.emit("thinking", task_id=task.id)
+                    continue
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                with transaction(conn):
+                    audit.record(
+                        task_id=task.id,
+                        device=device,
+                        action="agent.answer",
+                        status="failed",
+                        target=response.model,
+                        detail={
+                            "reason": "unreadable tool call",
+                            "steps": len(steps),
+                            "duration_ms": duration_ms,
+                            "preview": response.content[:200],
+                        },
+                    )
+                    tasks.update_status(
+                        task.id, "failed", error="the model proposed a tool call the runtime could not read"
+                    )
+                if presence:
+                    presence.emit("error", detail={"reason": "unreadable tool call"})
+                raise AgentUnreadableToolCall(
+                    "the model proposed a tool call the runtime could not read, even after "
+                    "being asked to correct it"
                 )
 
             if not response.tool_calls:
@@ -371,7 +484,7 @@ async def run_task(
                     index=len(steps) + 1,
                     task_id=task.id,
                     device=device,
-                    shown=plan.tools if plan else registry.names(),
+                    shown=shown_names,
                     registry=registry,
                     sandbox=sandbox,
                     data_dir=data_dir,

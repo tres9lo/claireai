@@ -16,7 +16,7 @@ import tempfile
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import customtkinter as ctk
 

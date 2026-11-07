@@ -115,14 +115,55 @@ Reading the output: `PASS` = all runs passed, `FLAKY` = some runs passed,
 Exit codes: `0` all stable, `1` at least one case failed or flaked, `2` bad
 configuration or case file, `3` runtime unavailable / model not installed.
 
+### Tool-call accuracy
+
+```bash
+assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
+```
+
+A separate suite, because tool calls fail in a way answer quality does not
+predict: a model can write a good sentence and still emit a call the runtime
+cannot read. Cases live in `scripts/tool_call_cases.json` and carry the tool
+names offered for that request. Each run is scored on three checks — `format`
+(exactly one call, no leftover prose), `name` (the tool the request needs) and
+`arguments` (the values the request names) — and a case only passes when every
+run passes, so a model that lands a call one time in three does not look correct.
+
+It goes through `ScratchBrain` with the runtime's own system message, which is
+what makes it a measurement of the assistant rather than of the model in
+isolation. That distinction is not academic: the chat-v3 checkpoint emitted
+correct calls when given the corpus's system sentence and gibberish when given
+the runtime's, because the two had drifted apart. Fixing that is one import and
+one regression test — `assistant/tests/unit/test_corpus_prompt.py`.
+
+Rule: **the corpus never writes its own system prompt.** `build_chat_dataset.py`
+imports `claireai.agent.system_message` and varies only the folder clause, so a
+change to the assistant's instructions reaches training data automatically.
+
+Rule: **a tool-call record offers only the tools routing would offer.** At
+inference `claireai.routing` narrows the schemas per request, so training a
+record on all nineteen tools and serving it four is the same drift in a new
+place. The builder rewrites each record's `TOOLS:` block to its routed subset and
+counts the exceptions in the manifest under `routing`. A record whose routed set
+**omits the tool it answers with** is counted as `routing_miss` and left alone —
+rewriting it would teach an answer with a tool that was never shown. chat-v6 is
+at 5 misses out of 7,117 tool records; chat-v5 was at 207. A jump means routing
+has started hiding a tool the corpus expects the model to call.
+
 ### Current model status
 
 The current architecture is a small transformer trained from random
-initialization. No task-relevant corpus or capable assistant checkpoint is
-bundled, so there are no current model capability results to report. Historical
-predecessor-model measurements are in `PROGRESS.md`; they do not describe the
-active runtime. Evaluate every newly trained checkpoint with the fixed harness
-before relying on it.
+initialization on this repository's own corpus; no capable assistant checkpoint
+is bundled with the source. Measured results for each installed checkpoint,
+including the ones that were not installed, are in `PROGRESS.md`. Evaluate every
+newly trained checkpoint with the fixed harnesses (`eval_model.py`,
+`conversation_eval.py`, `tool_call_eval.py`) before relying on it, and compare
+against the previous checkpoint rather than against zero.
+
+Compare at the same run count. `conversation_eval.py` samples at temperature 0.2,
+so a single run is a sample, not a result: chat-v4 measured 11/21 in one run and
+14/21 at `--runs 3`. A one-case gap between checkpoints is noise; a four-check
+swing on `tool_call_eval.py` is not.
 
 Two categories read differently from the rest:
 

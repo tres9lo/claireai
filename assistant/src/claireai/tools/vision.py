@@ -7,8 +7,6 @@ display, which is the owner's private desktop: it always needs approval.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from claireai import vision

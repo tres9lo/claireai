@@ -177,10 +177,33 @@ def test_intent_metadata_is_well_formed() -> None:
 
 
 def test_describe_states_the_saving(registry) -> None:
-    assert describe(route("find every pdf", registry), registry) == "search (1/17 tools)"
+    result = route("find every pdf", registry)
+    assert describe(result, registry) == f"search (1/{len(registry)} tools)"
 
 
 def test_route_is_json_serialisable_for_the_audit_detail(registry) -> None:
     result = route("find every pdf", registry)
     payload = json.dumps({"intent": result.intent, "tools": list(result.tools)})
     assert json.loads(payload)["intent"] == "search"
+
+
+@pytest.mark.parametrize(
+    ("text", "intent", "tool"),
+    [
+        # These routed to the wrong tool and hid the one that could answer, which
+        # is the failure this table exists to prevent: the model cannot call what
+        # it was never shown.
+        ("show me what ~/Pictures/slides.pptx says", "read_contents", "read_text_file"),
+        ("show me what is in ~/Documents/archive", "list", "list_folder"),
+        ("what is in Pictures", "list", "list_folder"),
+        ("replace the contents of notes.txt with a new list", "write", "write_to_file"),
+        ("add milk to notes.txt", "write", "write_to_file"),
+        ("please show me the text of that page again", "browse", "get_page_text"),
+        ("repeat the page contents", "browse", "get_page_text"),
+        ("open https://example.com and tell me what it says", "browse", "open_url"),
+    ],
+)
+def test_the_request_reaches_the_tool_that_can_answer_it(registry, text, intent, tool) -> None:
+    result = route(text, registry)
+    assert result.intent == intent, text
+    assert tool in result.tools, text

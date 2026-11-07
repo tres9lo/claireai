@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 
+from claireai.dates import parse_when
 from claireai.storage.tasks import utc_now
 
 PENDING_STATUSES = frozenset({"queued", "planning", "awaiting_approval", "running", "interrupted"})
@@ -248,13 +249,17 @@ def stored(conn: sqlite3.Connection, day: date) -> str | None:
 
 
 def parse_day(value: str | None) -> date:
-    """``YYYY-MM-DD``, or today. A bad date is a clear error, not a silent today."""
+    """A date phrase or ``YYYY-MM-DD``, or today. A bad date is an error, not today.
+
+    The phrases ("yesterday", "last friday", "3 Nov 2026") come from
+    :mod:`claireai.dates`, so ``--summary yesterday`` works and stays testable.
+    """
     if not value:
         return datetime.now().date()
     try:
-        return date.fromisoformat(value)
+        return parse_when(value)
     except ValueError as exc:
-        raise SummaryError(f"{value!r} is not a date in YYYY-MM-DD form") from exc
+        raise SummaryError(str(exc)) from exc
 
 
 __all__ = [

@@ -43,6 +43,31 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     # `/Users/yourname/quarterly-report.pdf` and the sandbox refused it, twice.
     # Reads come after the tool that owns the intent, because order is a prior.
     (
+        "calendar",
+        r"\b(schedule|scheduled|appointment|appointments|meeting|meetings|agenda|calendar|what's on|what is on)\b",
+        r"\b(today|tomorrow|yesterday|tonight|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|appointment|appointments|meeting|meetings|agenda|calendar)\b",
+        ("list_appointments", "add_appointment"),
+        "asking what is scheduled; the calendar answers from the local database",
+    ),
+    # Before `read_contents`: "open https://example.com and tell me what it says"
+    # is a web request, and the read rule would otherwise claim it.
+    (
+        "browse",
+        r"\b(open|visit|go to|browse|fetch|look up|google|search the web|on the web|download|show me the text|page contents)\b",
+        r"(\b(url|website|site|page|link|web|internet|online)\b|https?://)",
+        ("open_url", "get_page_text", "search_web", "download_file"),
+        "asking to use the web, which needs its own approval",
+    ),
+    # "show me what report.pdf says" is a read, but the words alone match the
+    # list and vision intents first, which hid `read_text_file` from the model.
+    (
+        "read_contents",
+        r"\b(show me what|what does|what do|tell me what)\b",
+        r"\b(say|says|said|contain|contains|text|contents?)\b",
+        ("read_text_file", "get_file_info"),
+        "asking what a file says, which only a read can answer",
+    ),
+    (
         "trash",
         r"\b(delete|trash|discard|remove|get rid of|throw away|bin)\b",
         r"\b(file|files|folder|folders|item|items|everything|document|documents|it)\b",
@@ -79,8 +104,8 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     ),
     (
         "write",
-        r"\b(write|save|append|add|create|make|put)\b",
-        r"\b(file|files|note|notes|text|txt|\.md|\.txt|saying|content)\b",
+        r"\b(write|save|append|add|create|make|put|replace|overwrite|update)\b",
+        r"\b(file|files|note|notes|text|txt|\.md|\.txt|saying|contents?)\b",
         ("create_text_file", "write_to_file", "get_file_info", "list_folder"),
         "asking to write text into a file, which needs the existing file checked first",
     ),
@@ -98,12 +123,14 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
         ("search_files",),
         "asking to locate files by name",
     ),
+    # Before `see`, so "what is in Pictures" lists the folder instead of being
+    # read as a request to identify an image.
     (
-        "browse",
-        r"\b(open|visit|go to|browse|fetch|look up|google|search the web|on the web|download)\b",
-        r"(\b(url|website|site|page|link|web|internet|online)\b|https?://)",
-        ("open_url", "get_page_text", "search_web", "download_file"),
-        "asking to use the web, which needs its own approval",
+        "list",
+        r"\b(list|show|what is in|what's in|whats in|inside|contents|browse)\b",
+        r"\b(folder|folders|downloads|documents|directory|desktop|pictures|inside|in my)\b",
+        ("list_folder",),
+        "asking to see what a folder holds",
     ),
     (
         "see",
@@ -125,13 +152,6 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
         r"\b(file|files|folder|path|it|this)\b",
         ("get_file_info", "find_largest_files"),
         "asking about one path",
-    ),
-    (
-        "list",
-        r"\b(list|show|what is in|what's in|whats in|inside|contents|browse)\b",
-        r"\b(folder|folders|downloads|documents|directory|desktop|inside|in my)\b",
-        ("list_folder",),
-        "asking to see what a folder holds",
     ),
 )
 

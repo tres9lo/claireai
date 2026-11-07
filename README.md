@@ -28,7 +28,7 @@ The result is an assistant you can actually point at real folders, because the b
 ClaireAI is built around one idea: **you should own the assistant and the data it touches.** Three things follow from that, in this order.
 
 1. **A small local model I train myself.** The default brain is a from-scratch transformer trained on this machine, in `brain-lab/`. It is small on purpose: it fits in RAM on a laptop with no GPU, it runs with the network cable unplugged, and nothing it reads is sent anywhere. Today it holds short conversations, does simple arithmetic, routes intents, extracts slots, emits tool-call JSON and refuses the unsafe requests covered in this repository. It is not a general-purpose assistant, and this README will not pretend otherwise.
-2. **Connectors, for when I want more brain than my laptop can hold.** The `Brain` interface is deliberately provider-neutral, so a Claude, ChatGPT or local-Ollama adapter is a new class rather than a rewrite. The validation, folder allow-list, approval flow and audit log do not change, because the model was never the thing enforcing them. **Those connectors are not built yet** — when they are, this section will say so, and the model that answers will be a setting you can see.
+2. **Connectors, for when I want more brain than my laptop can hold.** The `Brain` interface is deliberately provider-neutral, and it now has three adapters: Claude, ChatGPT and a larger model served by Ollama. **They are opt-in and off by default.** The local checkpoint answers unless you set one, the audit row names the provider that answered, and the validation, folder allow-list, approval flow and audit log do not change, because the model was never the thing enforcing them. Setup and the honest limits are in [docs/connectors.md](docs/connectors.md).
 3. **An assistant I do not have to worry about.** Deny-by-default folders, no permanent deletes, approvals a model cannot fake, an audit log the database will not let you edit, and inference that never leaves the machine. That is the property worth having, and it is where most of the effort in this project goes.
 
 ### On the model work, honestly
@@ -43,13 +43,16 @@ I am not a model-training expert. I am learning this in public: every training r
 | SQLite storage with a versioned, checksummed migration runner | ✅ |
 | Append-only audit log (`task_log`), enforced by database triggers | ✅ |
 | Provider-neutral `Brain` interface + local scratch-checkpoint adapter | ✅ foundation |
+| Opt-in Claude, ChatGPT and Ollama connectors (local model stays the default) | ✅ scratch remains default |
 | CLI chat that records every turn as a task plus audit entries | ✅ |
-| 5 read-only file tools (list, info, read, search, largest) | ✅ |
-| 6 approval-gated write tools (create, write, rename, move, trash) | ✅ |
+| 6 read-only tools (list, info, read, search, largest, calendar listing) | ✅ |
+| 8 approval-gated writes (create, write, rename, move, trash, download, add appointment) | ✅ |
 | Interactive approval flow with per-decision audit references | ✅ |
 | Agent loop with schema validation, risk policy and step cap | ✅ |
 | Deterministic tool routing (roughly halves prompt tokens per step) | ✅ |
 | Daily summary (Done / Failed / Pending) from the task log | ✅ |
+| Dates and times answered from the clock; `yesterday`/`last friday` accepted by the summary | ✅ deterministic, no model call |
+| Workspace calendar: appointments in SQLite, `what's on tomorrow` answered from them | ✅ listing is read-only, adding needs approval |
 | Read-only `/today` page served over loopback | ✅ |
 | Retention/pruning for trash and summaries | ✅ |
 | Presence HUD (canvas 2D, loopback preview) | ✅ |
@@ -105,7 +108,7 @@ This is the part worth reviewing before you run it.
 - **The audit log is append-only at the database level.** Triggers reject `UPDATE` and `DELETE`; retention reports the log instead of pruning it.
 - **Nothing is deleted permanently.** `move_to_trash` relocates into ClaireAI's own recoverable bin.
 - **Task and audit logs redact secrets.** Full user and assistant messages are retained verbatim in the local conversation database so ClaireAI can show history and continue chats. The owner can review or delete conversations from the UI; the database is owner-readable only on POSIX systems.
-- **Inference is local.** ClaireAI loads its own checkpoint and does not call a hosted model API.
+- **Inference is local by default.** ClaireAI loads its own checkpoint and, out of the box, calls no hosted model API. A connector is an explicit setting the owner writes (`CLAIREAI_BRAIN_PROVIDER`), it is opt-in per provider, and the audit row for the turn records which one answered. A remote model can only *propose* a tool call — approvals and the sandbox still decide what runs.
 - **Capabilities are opt-in.** Browser access starts disabled. The local HUD can enable it; browser actions still use the existing approval path. Stop ends model generation between tokens, lets a current bounded tool action finish, prevents subsequent model/tool calls, and exits the interactive CLI even while it is waiting for input. The HUD remains available; after allowing the runtime again, start ClaireAI from the CLI.
 
 Read [docs/architecture/threat-model.md](docs/architecture/threat-model.md) for the full boundary analysis.
@@ -141,9 +144,13 @@ sudo apt install pulseaudio-utils            # for paplay; espeak-ng as fallback
 #    records every source and hash.
 export CLAIREAI_DATA_DIR=./runtime-data
 assistant/.venv/bin/python brain-lab/build_chat_dataset.py
+# Warm start from an existing checkpoint: reuse its BPE merges (`--init-from`
+# does that automatically) and keep its architecture, or the weights will not fit.
 assistant/.venv/bin/python brain-lab/train_chat.py \
-  --corpus brain-lab/data/chat-v2 --steps 6000 \
-  --output runtime-data/models/claire-chat-v2.pt
+  --corpus brain-lab/data/chat-v6 --steps 3000 \
+  --init-from runtime-data/models/claire-chat-v4.pt \
+  --context 288 --vocab-size 1152 --width 224 --layers 5 --heads 7 \
+  --output runtime-data/models/claire-chat-v6.pt
 # Start the app: chat, history, preferences, approvals, controls. One command.
 ./scripts/start.sh
 
@@ -270,7 +277,11 @@ assistant/.venv/bin/python scripts/smoke.py                # full run, needs a t
 
 CI runs the portable unit suite on Ubuntu and Windows across Python 3.11 and 3.12. The 14-check smoke script verifies the real loop: migrations, a chat turn, tool execution, a refused write, the presence stream, the daily summary, the read-only page, retention, and that the audit log rejects mutation.
 
-Model behaviour is measured, not assumed: `scripts/eval_model.py` scores the local model against fixed cases before features depend on it.
+Model behaviour is measured, not assumed: `scripts/eval_model.py` scores the local model against fixed cases before features depend on it, `conversation_eval.py` scores multi-turn answers, and `tool_call_eval.py` scores whether the configured brain proposes tool calls the runtime can actually read:
+
+```bash
+assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
+```
 
 ## Documentation
 
@@ -283,6 +294,7 @@ Model behaviour is measured, not assumed: `scripts/eval_model.py` scores the loc
 | [docs/architecture/approval-from-the-page.md](docs/architecture/approval-from-the-page.md) | Why approvals are not a web button |
 | [docs/architecture/presence-renderer.md](docs/architecture/presence-renderer.md) | The assistant's visual state contract |
 | [docs/architecture/machine-access.md](docs/architecture/machine-access.md) | Camera, screen and input policy |
+| [docs/connectors.md](docs/connectors.md) | Opt-in Claude, ChatGPT and Ollama brains |
 | [docs/platform-support.md](docs/platform-support.md) | What is verified on which OS |
 | [ROADMAP.md](ROADMAP.md) | Phased plan |
 | [PROGRESS.md](PROGRESS.md) | Current state, measurements, blockers |

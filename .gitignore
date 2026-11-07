@@ -56,4 +56,4 @@ brain-lab/data/chat-mix/
 brain-lab/data/cifar10/
 
 # Generated conversation corpus (rebuilt by brain-lab/build_chat_dataset.py)
-brain-lab/data/chat-v2/
+brain-lab/data/chat-v*/

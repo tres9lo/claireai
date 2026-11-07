@@ -60,6 +60,22 @@ def corpus_texts(records: Iterable[dict[str, Any]]) -> list[str]:
     return texts
 
 
+def tokenizer_sample(texts: list[str], limit: int) -> list[str]:
+    """A strided slice of the corpus for fitting merges.
+
+    Tokenizer training holds every sequence in memory at once, so its footprint
+    grows with the whole corpus. Merges are a corpus *statistic*, not a lookup
+    table for specific examples, so a strided sample drawn from the already
+    shuffled record order learns the same merges within a fraction of the RAM.
+    The full corpus is still tokenised afterwards for the examples themselves.
+    """
+    total = sum(len(text) for text in texts)
+    if limit <= 0 or total <= limit:
+        return texts
+    step = max(1, math.ceil(total / limit))
+    return texts[::step]
+
+
 def _message_role(message: dict[str, Any]) -> str:
     return str(message.get("role") or "user")
 
@@ -192,7 +208,7 @@ def sample(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", type=Path, default=ROOT / "data" / "chat-v2")
+    parser.add_argument("--corpus", type=Path, default=ROOT / "data" / "chat-v6")
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--context", type=int, default=256)
@@ -206,11 +222,29 @@ def main() -> int:
     parser.add_argument("--eval-interval", type=int, default=250)
     parser.add_argument("--eval-batches", type=int, default=8)
     parser.add_argument("--max-target-tokens", type=int, default=160)
+    parser.add_argument(
+        "--tokenizer-chars",
+        type=int,
+        default=3_000_000,
+        help="fit BPE merges on at most this many characters (0 = use everything)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--name", default="claire-chat-v2")
     parser.add_argument("--resume", action="store_true", help="continue from <output>.partial if present")
+    parser.add_argument(
+        "--init-from",
+        type=Path,
+        default=None,
+        help="warm-start the weights from a previous checkpoint of the same architecture",
+    )
+    parser.add_argument(
+        "--tokenizer-from",
+        type=Path,
+        default=None,
+        help="reuse the BPE merges in a checkpoint manifest; a warm start needs this," " because merges fitted on a different corpus renumber every token",
+    )
     args = parser.parse_args()
 
     if args.width % args.heads:
@@ -229,8 +263,38 @@ def main() -> int:
 
     print(f"records: train={len(train_records)} validation={len(validation_records)}", flush=True)
     started = time.perf_counter()
-    tokenizer = BytePairTokenizer.train(corpus_texts(train_records), vocab_size=args.vocab_size)
-    print(f"tokenizer: vocab={tokenizer.vocab_size} merges={len(tokenizer.merges)} ({time.perf_counter()-started:.1f}s)", flush=True)
+    # Named for what it holds: an earlier version bound this to `sample`, which
+    # shadowed the sampling function below and crashed every run at the very end,
+    # after the training loop and before the checkpoint was written.
+    if args.tokenizer_from is None and args.init_from is not None:
+        sibling = args.init_from.expanduser().with_suffix(".json")
+        if sibling.is_file():
+            args.tokenizer_from = sibling
+    if args.tokenizer_from is not None:
+        manifest_path = args.tokenizer_from.expanduser()
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        merges = payload.get("tokenizer_merges")
+        if not merges:
+            parser.error(f"{manifest_path} carries no tokenizer_merges")
+        tokenizer = BytePairTokenizer([tuple(pair) for pair in merges])
+        if tokenizer.vocab_size != args.vocab_size:
+            parser.error(
+                f"{manifest_path} has vocab {tokenizer.vocab_size}, but --vocab-size is "
+                f"{args.vocab_size}; reusing merges is what keeps the embeddings aligned"
+            )
+        print(
+            f"tokenizer: reused {len(tokenizer.merges)} merges from {manifest_path}", flush=True
+        )
+    else:
+        fit_texts = tokenizer_sample(corpus_texts(train_records), args.tokenizer_chars)
+        tokenizer = BytePairTokenizer.train(fit_texts, vocab_size=args.vocab_size)
+        sample_chars = sum(len(text) for text in fit_texts)
+        print(
+            f"tokenizer: vocab={tokenizer.vocab_size} merges={len(tokenizer.merges)} "
+            f"on {sample_chars:,} sampled characters ({time.perf_counter()-started:.1f}s)",
+            flush=True,
+        )
+        del fit_texts
 
     train_examples = build_examples(
         train_records, tokenizer, context=args.context, max_target_tokens=args.max_target_tokens
@@ -263,6 +327,13 @@ def main() -> int:
         f"context={args.context} vocab={tokenizer.vocab_size} params={parameters:,}",
         flush=True,
     )
+    if args.init_from is not None:
+        warm = torch.load(args.init_from.expanduser(), map_location="cpu", weights_only=True)
+        try:
+            model.load_state_dict(warm["state_dict"])
+        except RuntimeError as exc:
+            parser.error(f"--init-from {args.init_from} does not fit this architecture: {exc}")
+        print(f"warm start: weights from {args.init_from}", flush=True)
     if args.output is not None:
         output = args.output.expanduser()
     else:
@@ -370,9 +441,12 @@ def main() -> int:
         "tokenizer": "corpus-bpe-v1",
         "tokenizer_merges": tokenizer.merges,
         "seed": args.seed,
+        "initialized_from": str(args.init_from) if args.init_from is not None else None,
         "steps": args.steps,
         "best_step": best_step,
-        "training_loss": last_loss,
+        # A resumed run that had no steps left reports no training loss; NaN in
+        # the manifest would serialise as invalid strict JSON.
+        "training_loss": None if last_loss != last_loss else last_loss,
         "validation_loss": best_loss,
         "prompt_format": "SYSTEM / USER / ASSISTANT, TOOL <name> for results, EOS after replies",
         "training_corpus": [

@@ -92,6 +92,7 @@ def test_the_event_stream_sends_the_current_state(server) -> None:  # noqa: ANN0
     payload = json.loads(buffer.split("data: ", 1)[1].split("\n", 1)[0])
     assert payload["state"] == "awaiting_approval"
     assert payload["detail"]["tool"] == "move_file"
+    response.close()
     connection.close()
 
 
@@ -334,7 +335,10 @@ def test_web_chat_uses_local_brain_and_persists_both_sides(data_server, monkeypa
         async def aclose(self) -> None:
             return None
 
-    monkeypatch.setattr("claireai.presence_server.ScratchBrain", StubBrain)
+    monkeypatch.setattr(
+        "claireai.presence_server.build_brain",
+        lambda settings: StubBrain(max_output_tokens=settings.max_output_tokens),
+    )
     connection = http.client.HTTPConnection(host, port, timeout=5)
     try:
         connection.request(
@@ -390,7 +394,7 @@ def test_ui_computer_task_waits_for_exact_owner_approval(data_server, tmp_path: 
         async def aclose(self) -> None:
             return None
 
-    monkeypatch.setattr("claireai.presence_server.ScratchBrain", StubBrain)
+    monkeypatch.setattr("claireai.presence_server.build_brain", lambda settings: StubBrain())
     headers = {"Origin": origin, "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"}
     outcome: dict[str, object] = {}
 

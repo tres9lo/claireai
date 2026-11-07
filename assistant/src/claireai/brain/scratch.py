@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from claireai.brain.base import (
-    BrainHealth, BrainResponse, BrainResponseError, BrainStopped, BrainUnavailable, Message, ToolCall,
+    BrainHealth, BrainResponse, BrainResponseError, BrainStopped, BrainUnavailable, Message,
 )
+from claireai.brain.tool_calls import parse_tool_calls
 from claireai.runtime_control import RuntimeControl
 
 
@@ -16,8 +16,6 @@ class ScratchBrain:
     """Load only a checkpoint trained by ``brain-lab``; no remote runtime."""
 
     name = "scratch"
-    _tool_open = "<tool_call>"
-    _tool_close = "</tool_call>"
 
     def __init__(
         self,
@@ -132,14 +130,17 @@ class ScratchBrain:
             raise BrainStopped("ClaireAI was stopped from the local control panel.")
         output = self._tokenizer.decode(result).rstrip("\ufffd").strip()
         output = self._clean(output)
-        call = self._parse_tool_call(output)
-        if call is None and offered:
-            # The model was trained on both the runtime tag format and the
-            # plain-JSON format used by the evaluation suite.  Accept a bare
-            # JSON call only when its name is one of the tools actually offered.
-            call = self._parse_plain_tool_call(output, offered)
-        if call:
-            return BrainResponse(content="", model=self._model_name(), tool_calls=(call,))
+        # One reader for every shape the model emits, so a dropped closing tag or
+        # a "tool" key is repaired here instead of failing the task. Permission
+        # is unchanged: the agent still validates the name and arguments.
+        names = [
+            str((schema.get("function") or schema).get("name"))
+            for schema in offered
+            if isinstance(schema, Mapping)
+        ]
+        parsed = parse_tool_calls(output, [name for name in names if name])
+        if parsed.calls:
+            return BrainResponse(content="", model=self._model_name(), tool_calls=parsed.calls)
         return BrainResponse(content=output, model=self._model_name(), completion_tokens=len(result))
 
     @staticmethod
@@ -228,48 +229,6 @@ class ScratchBrain:
 
     def _model_name(self) -> str:
         return str(self._manifest.get("name", f"scratch:{self.checkpoint.stem}"))
-
-    def _parse_tool_call(self, output: str) -> ToolCall | None:
-        start = output.find(self._tool_open)
-        end = output.find(self._tool_close, start + len(self._tool_open))
-        if start < 0 or end < 0:
-            return None
-        try:
-            payload = json.loads(output[start + len(self._tool_open):end])
-        except ValueError as exc:
-            raise BrainResponseError("scratch model emitted malformed tool-call JSON") from exc
-        if not isinstance(payload, dict) or not isinstance(payload.get("name"), str):
-            raise BrainResponseError("scratch model tool call must contain a string name")
-        arguments = payload.get("arguments", {})
-        if not isinstance(arguments, dict):
-            raise BrainResponseError("scratch model tool arguments must be an object")
-        return ToolCall(name=payload["name"], arguments=arguments)
-
-    @staticmethod
-    def _parse_plain_tool_call(output: str, tools: Sequence[Mapping[str, Any]]) -> ToolCall | None:
-        text = output.strip()
-        if text.startswith("```"):
-            text = text.strip("`").strip()
-            if text.lower().startswith("json"):
-                text = text[4:].strip()
-        try:
-            payload = json.loads(text)
-        except ValueError:
-            return None
-        if not isinstance(payload, dict):
-            return None
-        name = payload.get("name") or payload.get("tool")
-        arguments = payload.get("arguments") or payload.get("args") or {}
-        if not isinstance(name, str) or not isinstance(arguments, dict):
-            return None
-        offered = {
-            str((schema.get("function") or schema).get("name"))
-            for schema in tools
-            if isinstance(schema, Mapping)
-        }
-        if name not in offered:
-            return None
-        return ToolCall(name=name, arguments=arguments)
 
     async def aclose(self) -> None:
         self._model = None

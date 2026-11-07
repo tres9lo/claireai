@@ -168,11 +168,14 @@ def test_writing_the_file_fails_loudly(
             save(conn, build(conn), data_dir=blocked)
 
 
-def test_parse_day_is_strict() -> None:
+def test_parse_day_accepts_dates_and_phrases_but_not_ambiguous_input() -> None:
     assert parse_day("2026-10-31") == date(2026, 10, 31)
+    assert parse_day("31 Oct 2026") == date(2026, 10, 31)
     assert parse_day(None) == datetime.now().date()
     assert parse_day("") == datetime.now().date()
-    with pytest.raises(SummaryError, match="YYYY-MM-DD"):
+    # 31/10/2026 is 31 October to most of the world and 10 March to some of it,
+    # so it is refused rather than guessed.
+    with pytest.raises(SummaryError, match="not a date I understand"):
         parse_day("31/10/2026")
 
 

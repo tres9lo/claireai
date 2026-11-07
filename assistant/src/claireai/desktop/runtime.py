@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from claireai.agent import AgentError, run_task
-from claireai.brain import BrainError, BrainStopped, ScratchBrain
+from claireai.brain import BrainError, BrainStopped, build_brain
 from claireai.config import Settings
 from claireai.presence import PresenceStream
 from claireai.runtime_control import RuntimeControl
@@ -185,19 +185,11 @@ class DesktopRuntime:
         return asyncio.run(self._send(message, conversation_id, use_tools))
 
     async def _send(self, message: str, conversation_id: str | None, use_tools: bool) -> Turn:
-        brain = ScratchBrain(
-            checkpoint=self.settings.resolved_model_checkpoint,
-            max_output_tokens=self.settings.max_output_tokens,
-            control_path=self.settings.control_state_path,
-        )
+        brain = build_brain(self.settings)
         try:
             health = await brain.health()
-            if not health.model_present:
-                raise BrainError(
-                    health.detail
-                    or f"the model checkpoint is missing at {self.settings.resolved_model_checkpoint};"
-                    " train one first (brain-lab/train.py)"
-                )
+            if not health.available or not health.model_present:
+                raise BrainError(health.detail or "the configured brain is unavailable")
             if not use_tools:
                 from claireai.cli import ask
 

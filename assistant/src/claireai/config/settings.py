@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Literal
 
 from platformdirs import user_data_path
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .endpoint import DEFAULT_BASE_URLS, check_endpoint
 
 APP_NAME = "ClaireAI"
 
@@ -39,6 +41,17 @@ class Settings(BaseSettings):
     model_checkpoint: Path | None = None
     max_output_tokens: int = Field(default=128, ge=8, le=1024)
     owner_name: str = "Bikorimana Ange Tresor"
+
+    # Brain provider. `scratch` is the owner's own checkpoint and the only
+    # option that makes no network request, so it is the default and nothing
+    # here switches provider on its own. The connectors are opt-in: they send
+    # the conversation and the tool schemas to the endpoint named below.
+    brain_provider: Literal["scratch", "ollama", "openai", "anthropic"] = "scratch"
+    brain_model: str | None = None
+    brain_base_url: str | None = None
+    brain_api_key: SecretStr | None = None
+    brain_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+    brain_max_tokens: int = Field(default=1024, ge=1, le=16384)
 
     # Tool sandbox (roadmap 7.2). Empty by default: file tools can reach nothing
     # until the owner names the folders. Set as a JSON array, e.g.
@@ -103,12 +116,39 @@ class Settings(BaseSettings):
                 f"Known capabilities: {', '.join(sorted(KNOWN_CAPABILITIES))}"
             )
         object.__setattr__(self, "allowed_capabilities", list(dict.fromkeys(capabilities)))
+
+        provider = self.brain_provider
+        if provider != "scratch":
+            model = (self.brain_model or "").strip()
+            if not model:
+                raise ValueError(
+                    f"CLAIREAI_BRAIN_MODEL is required when CLAIREAI_BRAIN_PROVIDER={provider}"
+                )
+            object.__setattr__(self, "brain_model", model)
+            endpoint = str(self.brain_base_url or DEFAULT_BASE_URLS[provider]).strip()
+            object.__setattr__(self, "brain_base_url", check_endpoint(endpoint))
+            if provider in {"openai", "anthropic"} and not self.brain_api_key:
+                raise ValueError(
+                    f"CLAIREAI_BRAIN_API_KEY is required when CLAIREAI_BRAIN_PROVIDER={provider}"
+                )
         return self
 
     @property
     def tool_temperature(self) -> float:
         """Temperature while the loop is still choosing a tool."""
         return self.temperature_tools
+
+    @property
+    def resolved_brain_base_url(self) -> str:
+        """The connector endpoint, defaulted per provider and validated as https or loopback."""
+        if self.brain_base_url:
+            return self.brain_base_url
+        return DEFAULT_BASE_URLS.get(self.brain_provider, "")
+
+    @property
+    def brain_api_key_value(self) -> str | None:
+        """The key itself, for the HTTP adapter. Never logged or serialised."""
+        return self.brain_api_key.get_secret_value() if self.brain_api_key else None
 
     @property
     def default_data_dir(self) -> Path:

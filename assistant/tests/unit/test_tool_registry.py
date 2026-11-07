@@ -26,6 +26,7 @@ def _tool(name: str = "noop", risk: str = "safe") -> Tool:
 def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
     registry = default_registry(browser_enabled=True)
     assert registry.names() == (
+        "add_appointment",
         "create_folder",
         "create_text_file",
         "download_file",
@@ -33,6 +34,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "get_file_info",
         "get_page_text",
         "identify_image",
+        "list_appointments",
         "list_folder",
         "move_file",
         "move_to_trash",
@@ -50,6 +52,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "get_file_info",
         "get_page_text",  # reads a page already fetched in this task
         "identify_image",  # reads one file inside the allow-list
+        "list_appointments",  # reads the local calendar only
         "list_folder",
         "read_text_file",
         "search_files",
@@ -81,13 +84,23 @@ def test_schemas_are_function_shaped() -> None:
     assert "description" in function
 
 
-def test_schemas_carry_no_pydantic_titles() -> None:
-    # Every schema token is re-processed on every model call on CPU.
-    import json
+def _has_generated_title(node) -> bool:  # noqa: ANN001
+    """Pydantic injects ``"title": "Some Name"`` metadata into every schema."""
+    if isinstance(node, dict):
+        if isinstance(node.get("title"), str):
+            return True
+        return any(_has_generated_title(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_has_generated_title(value) for value in node)
+    return False
 
+
+def test_schemas_carry_no_pydantic_titles() -> None:
+    # Every schema token is re-processed on every model call on CPU. A field that
+    # is *named* "title" (the appointment's) is fine; what must not appear is the
+    # metadata pydantic generates for each field and model.
     for tool in default_registry():
-        rendered = json.dumps(tool.parameters)
-        assert '"title"' not in rendered, tool.name
+        assert not _has_generated_title(tool.parameters), tool.name
 
 
 def test_duplicate_names_are_rejected() -> None:

@@ -91,16 +91,6 @@ class VisionUnavailable(RuntimeError):
 _model: tuple | None = None
 
 
-def model_status() -> dict[str, object]:
-    """What is installed, without loading any weights."""
-    try:
-        import torch  # noqa: F401
-        import transformers  # noqa: F401
-    except ImportError:
-        return {"installed": False, "loaded": False, "detail": "transformers is not installed"}
-    return {"installed": True, "loaded": _model is not None, "detail": f"{MODEL_NAME} / {PRETRAINED}"}
-
-
 def _load():
     """Load the model once and keep it; CPU inference is the only path here."""
     global _model

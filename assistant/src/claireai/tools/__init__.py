@@ -31,6 +31,12 @@ from claireai.tools.files import (
     read_text_file,
     search_files,
 )
+from claireai.tools.calendar import (
+    AddAppointmentArgs,
+    ListAppointmentsArgs,
+    add_appointment,
+    list_appointments,
+)
 from claireai.tools.vision import (
     IdentifyImageArgs,
     SeeScreenArgs,
@@ -196,15 +202,42 @@ VISION_TOOLS: tuple[Tool, ...] = (
 )
 
 
+CALENDAR_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="list_appointments",
+        description="What is scheduled on a day: 'today', 'tomorrow', '2026-11-07' or a weekday name.",
+        risk="safe",
+        args_model=ListAppointmentsArgs,
+        handler=list_appointments,
+    ),
+    Tool(
+        name="add_appointment",
+        description="Add an appointment to the local calendar for a day and time. Needs approval.",
+        risk="needs_approval",
+        args_model=AddAppointmentArgs,
+        handler=add_appointment,
+    ),
+)
+
+
 def default_registry(*, browser_enabled: bool = False) -> ToolRegistry:
     """Build the active tools; browser networking stays off unless enabled."""
-    tools = (*FILE_TOOLS, *WRITE_TOOLS, *VISION_TOOLS, *(BROWSER_TOOLS if browser_enabled else ()))
+    tools = (
+        *FILE_TOOLS,
+        *WRITE_TOOLS,
+        *CALENDAR_TOOLS,
+        *VISION_TOOLS,
+        *(BROWSER_TOOLS if browser_enabled else ()),
+    )
     return ToolRegistry(tools)
 
 
 __all__ = [
+    "AddAppointmentArgs",
     "BROWSER_TOOLS",
+    "CALENDAR_TOOLS",
     "FILE_TOOLS",
+    "ListAppointmentsArgs",
     "LargestFilesArgs",
     "VISION_TOOLS",
     "WRITE_TOOLS",

@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from claireai.agent import AgentEmptyReply, AgentStepLimit, run_task, system_message
+from claireai.agent import (
+    AgentEmptyReply,
+    AgentStepLimit,
+    AgentUnreadableToolCall,
+    run_task,
+    system_message,
+)
 from claireai.approval import ApprovalDecision
 from claireai.audit import AuditLog
 from claireai.brain import BrainResponse, BrainResponseError, BrainStopped, BrainUnavailable, ToolCall
@@ -215,6 +221,8 @@ async def test_tool_schemas_are_offered_to_the_model(
     tools = brain.calls[0]["tools"]
     names = {tool["function"]["name"] for tool in tools}
     assert {
+        "add_appointment",
+        "list_appointments",
         "list_folder",
         "get_file_info",
         "read_text_file",
@@ -958,6 +966,66 @@ async def test_routing_can_be_switched_off(
     assert outcome.route is None
     assert len(brain.calls[0]["tools"]) == len(default_registry())
     assert all(entry.action != "agent.route" for entry in AuditLog(conn).for_task(outcome.task_id))
+
+
+async def test_an_unreadable_tool_call_is_repaired_instead_of_failing_the_task(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    # The shape the scratch model keeps producing: right intent, "tool" instead
+    # of "name". It is not an answer, and it used to end the task with an error.
+    unreadable = BrainResponse(
+        content='{"tool": "list_folder", "arguments": {"path": "%s"}}' % downloads,
+        model="scripted",
+        completion_tokens=20,
+    )
+    brain = ScriptedBrain(
+        [unreadable, tool_call("list_folder", path=str(downloads)), answer("Two files.")]
+    )
+
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="What is in my Downloads folder",
+    )
+
+    assert outcome.content == "Two files."
+    rows = AuditLog(conn).for_task(outcome.task_id)
+    assert len([row for row in rows if row.action == "agent.repair"]) == 1
+    # The correction is fed back in the format the model was trained on, with
+    # the tools it was actually offered.
+    correction = brain.calls[1]["messages"][-1]
+    assert correction.role == "user"
+    assert '<tool_call>{"name":"tool_name","arguments":{...}}</tool_call>' in correction.content
+    assert "list_folder" in correction.content
+
+
+async def test_a_second_unreadable_call_fails_the_task_with_a_clear_reason(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    unreadable = BrainResponse(
+        content='<tool_call>{"tool": "list_folder", "arguments": {"path": "%s"}}' % downloads,
+        model="scripted",
+        completion_tokens=20,
+    )
+    brain = ScriptedBrain([unreadable, unreadable])
+
+    with pytest.raises(AgentUnreadableToolCall, match="could not read"):
+        await run_task(
+            settings=agent_settings,
+            conn=conn,
+            brain=brain,
+            request="What is in my Downloads folder",
+        )
+
+    task = TaskRepository(conn).recent(1)[0]
+    assert task.status == "failed"
+    assert "could not read" in (task.error or "")
+    rows = AuditLog(conn).for_task(task.id)
+    # One repair attempt, then a failed answer row. Never a half-parsed action.
+    assert len([row for row in rows if row.action == "agent.repair"]) == 1
+    assert rows[-1].action == "agent.answer"
+    assert rows[-1].status == "failed"
 
 
 async def test_the_route_row_records_the_prompt_saving(

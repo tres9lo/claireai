@@ -21,9 +21,8 @@ from __future__ import annotations
 
 import html as html_module
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import httpx

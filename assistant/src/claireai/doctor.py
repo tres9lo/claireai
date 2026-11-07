@@ -21,7 +21,7 @@ from typing import Sequence
 from pydantic import ValidationError
 
 from claireai import __version__
-from claireai.brain import ScratchBrain
+from claireai.brain import build_brain
 from claireai.config import Settings
 from claireai.platform import detect_os, supported_host
 
@@ -155,7 +155,8 @@ def _versions_section() -> Section:
 
 
 async def _brain_section(settings: Settings) -> tuple[Section, list[str], list[str]]:
-    brain = ScratchBrain(checkpoint=settings.resolved_model_checkpoint)
+    provider = settings.brain_provider
+    brain = build_brain(settings)
     try:
         health = await brain.health()  # type: ignore[attr-defined]
     finally:
@@ -163,24 +164,30 @@ async def _brain_section(settings: Settings) -> tuple[Section, list[str], list[s
 
     warnings: list[str] = []
     errors: list[str] = []
+    scratch = provider == "scratch"
     rows = [
+        Row(
+            "Provider",
+            "scratch (on-disk checkpoint)" if scratch else f"{provider} @ {settings.resolved_brain_base_url}",
+        ),
         Row(
             "Local model available",
             "yes" if health.available else f"no - {health.detail}",
             OK if health.available else FAIL,
         ),
         Row(
-            "Scratch checkpoint ready",
+            "Scratch checkpoint ready" if scratch else "Connector model ready",
             "yes" if health.model_present else f"no - {health.detail}",
             OK if health.model_present else FAIL,
         ),
-        Row("Checkpoint model", ", ".join(health.models) or "(none)"),
+        Row("Checkpoint model" if scratch else "Reported models", ", ".join(health.models) or "(none)"),
     ]
     if not health.available:
-        errors.append(f"scratch model unavailable: {health.detail}")
+        errors.append(f"{provider} brain unavailable: {health.detail}")
     elif not health.model_present:
-        errors.append(f"scratch checkpoint is not ready: {settings.resolved_model_checkpoint}")
-    return Section(title="Local scratch model", rows=tuple(rows)), warnings, errors
+        where = settings.resolved_model_checkpoint if scratch else settings.brain_model
+        errors.append(f"the configured model is not ready: {where}")
+    return Section(title="Local scratch model" if scratch else "Brain connector", rows=tuple(rows)), warnings, errors
 
 
 async def collect(settings: Settings | None = None) -> Report:

@@ -25,7 +25,12 @@ def test_migration_creates_expected_tables(database: Database) -> None:
     try:
         assert EXPECTED_TABLES <= _table_names(conn)
         applied = conn.execute("SELECT version FROM schema_migrations").fetchall()
-        assert [row["version"] for row in applied] == ["0001_initial", "0002_conversations_directives_preferences"]
+        assert [row["version"] for row in applied] == [
+            "0001_initial",
+            "0002_conversations_directives_preferences",
+            "0003_appointments",
+        ]
+        assert {"appointments"} <= _table_names(conn)
     finally:
         conn.close()
 

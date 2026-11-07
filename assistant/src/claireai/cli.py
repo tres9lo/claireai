@@ -23,10 +23,19 @@ from typing import Callable, Sequence
 
 from pydantic import ValidationError
 
-from claireai.agent import AgentError, describe_steps, run_task, system_message
-from claireai.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest, DenyAll
+from claireai.agent import AgentError, describe_steps, run_task
+from claireai.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
 from claireai.audit import AuditLog, redact
-from claireai.brain import Brain, BrainError, BrainStopped, Message, ScratchBrain
+from claireai.brain import (
+    Brain,
+    BrainError,
+    BrainResponse,
+    BrainStopped,
+    Message,
+    ScratchBrain,
+    build_brain,
+)
+from claireai.dates import answer_date_question
 from claireai.config import Settings
 from claireai.permissions import Sandbox
 from claireai.presence import PresenceStream
@@ -146,11 +155,23 @@ async def ask(
                 + "\n".join(f"- {item}" for item in directives)[:4000]
             ),
         )
-        response = await brain.generate(
-            [system, *[Message(role=item.role, content=item.content) for item in history],
-             Message(role="user", content=question)],
-            temperature=settings.temperature,
-        )
+        direct = answer_date_question(question)
+        if direct is None:
+            # The model cannot know the calendar either, so an agenda question is
+            # answered from the local table instead of being invented.
+            from claireai.tools.calendar import answer_agenda
+
+            direct = answer_agenda(conn, question)
+        if direct is not None:
+            # The model has no clock, so a dated answer from it is confidently
+            # wrong. Date and time questions are answered from the runtime.
+            response = BrainResponse(content=direct, model="claireai-runtime")
+        else:
+            response = await brain.generate(
+                [system, *[Message(role=item.role, content=item.content) for item in history],
+                 Message(role="user", content=question)],
+                temperature=settings.temperature,
+            )
     except BrainError as exc:
         duration_ms = int((time.perf_counter() - started) * 1000)
         with transaction(conn):
@@ -456,21 +477,23 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
         conn.close()
         return EXIT_OK
 
-    brain = ScratchBrain(
-        checkpoint=settings.resolved_model_checkpoint,
-        max_output_tokens=settings.max_output_tokens,
-        control_path=settings.control_state_path,
-    )
+    brain = build_brain(settings)
     try:
         health = await brain.health()
-        if not health.available:
-            print(f"\nERROR: scratch model unavailable — {health.detail}", file=sys.stderr)
-            print("Train a checkpoint with brain-lab/train.py; no remote inference is used.", file=sys.stderr)
-            return EXIT_RUNTIME
-        if not health.model_present:
-            print("\nERROR: the configured scratch-model checkpoint is not ready.", file=sys.stderr)
-            print(f"Checkpoint: {settings.resolved_model_checkpoint}", file=sys.stderr)
-            print(health.detail, file=sys.stderr)
+        if not health.available or not health.model_present:
+            print(f"\nERROR: the configured brain is unavailable — {health.detail}", file=sys.stderr)
+            if settings.brain_provider == "scratch":
+                print(f"Checkpoint: {settings.resolved_model_checkpoint}", file=sys.stderr)
+                print(
+                    "Train a checkpoint with brain-lab/train.py, or opt into a connector with "
+                    "CLAIREAI_BRAIN_PROVIDER (docs/connectors.md).",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"Provider: {settings.brain_provider} at {settings.resolved_brain_base_url}",
+                    file=sys.stderr,
+                )
             return EXIT_RUNTIME
 
         if args.once:
@@ -505,8 +528,13 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
                 limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
                 _print_log(conn, limit)
                 continue
-            if question == "/summary":
-                summary, path = run_once(conn=conn, settings=settings)
+            if question == "/summary" or question.startswith("/summary "):
+                try:
+                    day = parse_day(question[len("/summary"):].strip() or None)
+                except SummaryError as exc:
+                    print(f"  {exc}")
+                    continue
+                summary, path = run_once(conn=conn, settings=settings, day=day)
                 _print_summary(summary, path)
                 continue
             await _handle_turn(
@@ -563,7 +591,10 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         const="",
         metavar="DATE",
-        help="print and save the daily summary for DATE (YYYY-MM-DD, default today)",
+        help=(
+            "print and save the daily summary for DATE "
+            "(YYYY-MM-DD, 'yesterday', a weekday name, or today)"
+        ),
     )
     parser.add_argument(
         "--summary-at",
