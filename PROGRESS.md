@@ -63,6 +63,21 @@
   1,152 → 4,096, width 224 → 288 — rather than the corpus mix. That is the one
   remaining lever with evidence behind it, and it is written up in the private
   plan as R2.
+- **chat-v9 was trained from scratch and rejected.** Using chat-v4's exact
+  hyperparameters (vocab 1,152, width 224, layers 5, heads 7, context 288,
+  LR 3e-4 → 3e-5 over 6,000 steps, warmup to 3e-4 at step 100) and the v9
+  corpus with the calendar records present from the first step, it scored tool
+  checks **67/165** (v4: 68, v7: 78), eval cases **5/13** (v4: 5, v7: 7) and
+  conversation cases **11/21** (v4: 14, v7: 12) at `--runs 1` / `--runs 3`.
+  It misses the gate on both axes: one tool check below chat-v4 and three
+  conversation cases below chat-v4. Its three calendar cases are still mostly
+  out of distribution on the tokens they need — the right tool name appears once
+  each, but the day-name and `starts_at` arguments are garbled (overlapping date
+  tokens and rotated time tokens), so format/day checks fail every run. Scratch
+  stays chat-v4. The run, its `.partial` checkpoint, the eval logs and the
+  `brain-lab/data/chat-v9/` corpus are intentionally left out of git (the corpus
+  dir is gitignored; the model and logs are never staged); what is in git is the
+  corpus builder that produced it and the failed-run record in this section.
 - **The intermittent 404 was not a routing bug.** `test_unknown_paths_are_404`
   failed once in a full run and would not fail again: 18 full-suite runs, 22
   file-only runs and 8 runs under a six-way CPU load all passed, so the assertion

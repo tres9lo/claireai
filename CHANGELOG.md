@@ -325,7 +325,50 @@ in this release.
   @react-three/fiber MIT, `mss` MIT, `opencv-python` Apache-2.0, `pyautogui` BSD.
   `pynput` (LGPLv3) deliberately not adopted.
 
-### Added — Month 1, Week 2: tool registry, allow-list and agent loop
+### Added — calendar tools on the tool-call evaluation harness
+
+- `scripts/tool_call_cases.json` now has 19 cases and 165 checks, including three
+  calendar cases (`agenda-tomorrow`, `agenda-friday`, `add-appointment`) run
+  through the real parser and the production system prompt. The harness was
+  extended rather than editing existing cases so the calendar scores stay
+  comparable to the earlier baselines.
+- `brain-lab/build_chat_dataset.py` was fixed: the calendar tools already had
+  `TOOL_LINES` and `TOOL_ARGS` entries, but the `TOOL_REQUESTS` table — the
+  staged prompt table the builder uses — did not list them, so a calendar request
+  routed to an empty tool list. That is repaired in the same build that
+  introduces `brain-lab/data/chat-v9`.
+- The calendar cases are generalisation tests, not memorisation tests: the corpus
+  builder's new `calendar_tasks` uses day phrases and `HH:MM` times nowhere else
+  in the corpus, so the training prompts deliberately differ from the eval case
+  users. A new checkpoint is installed only if it passes the install gate.
+
+### Changed — corpus builder: calendar rebuilt from scratch for chat-v9 and article inflection fixed
+
+- `brain-lab/build_chat_dataset.py`: the calendar entries were removed from the
+  staged prompt table (`TOOL_REQUESTS`) and rebuilt as a dedicated
+  `calendar_tasks(rng)` generator with per-prompt routing, so the calendar has
+  its own mass from the first training step instead of arriving late in a
+  warm start. The generator adds `CALENDAR_DAYS` (word days, fixed dates and
+  relative phrases such as `last friday` / `next monday`), `CALENDAR_LIST_WORDS`,
+  `CALENDAR_TITLES`, `CALENDAR_TIMES` and `CALENDAR_ADD_WORDS`, with four
+  rotating time slots per day/title pair so the model sees every day name with
+  several titles and every title at several times instead of one memorised
+  combination.
+- The training prompts stay different from the eval cases: a new `"what's on
+  {day}"` list-phrase was added to `CALENDAR_LIST_WORDS` precisely so the corpus
+  does not duplicate the three eval users.
+- Article inflection is now correct (`"a tooth"`, `"an interview"`) instead of
+  always producing `"a an"`; the new calendar bucket is weighted 2 and the
+  v9 build produces `train=13968`, `validation=736`, `calendar=882` with
+  `routing_miss=2`, and no calendar training prompt equals any
+  `tool_call_cases.json` user prompt.
+- DATASET_VERSION is now `claireai-chat-v9` and `--output` defaults to
+  `brain-lab/data/chat-v9`. The chat-v9 run itself is not in git: model files,
+  the `.partial` checkpoint, eval logs and the corpus dir are gitignored or never
+  staged. The run did not pass the install gate, so the installed scratch
+  checkpoint is still chat-v4.
+
+### Planned and specified — presence renderer and machine access
 
 - `claireai.tools`: registry of tools with name, description, JSON schema and
   risk level. Arguments are validated against each tool's pydantic model before

@@ -169,6 +169,25 @@ so a single run is a sample, not a result: chat-v4 measured 11/21 in one run and
 14/21 at `--runs 3`. A one-case gap between checkpoints is noise; a four-check
 swing on `tool_call_eval.py` is not.
 
+The install gate is do not relax. A new checkpoint replaces
+`runtime-data/models/claire-scratch.{pt,json}` only if it beats chat-v4 on tool
+checks **and** does not lose conversation cases, both measured at the same run
+count. A one-case conversation difference is noise; a four-check tool swing is
+not. chat-v9 was measured at the same run counts as v4 (one eval run, three
+conversation runs, three tool-call runs on the same 19-case / 165-check file)
+and did not pass the gate: it scored 67/165 tool checks (v4: 68) and 11/21
+conversation cases (v4: 14), so scratch stayed on chat-v4.
+
+A from-scratch calendar run is not a pass on its own. chat-v9 included the
+calendar records from the first step and still scored 0/3 stable on the three
+calendar cases, with the right tool name appearing once per case but the
+day-name and `starts_at` arguments garbled by overlapping date tokens and
+rotated time tokens. That is expected at this vocabulary — the same conclusion
+that the calendar cases gave for chat-v7 — and it is why the product answers
+agenda questions in code rather than waiting on the model. Do not read a
+passing calendar case in a later run as evidence the calendar is product-ready;
+calendar answers stay deterministic in `answer_agenda`.
+
 Two categories read differently from the rest:
 
 - `summary` measures a *model's* three-section output, not the product. The
