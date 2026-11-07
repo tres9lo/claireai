@@ -20,6 +20,20 @@ nothing has been released yet.
   prompt, which is what inference does. Routing misses fell from 207 to 5 of
   7,117 tool records, and those five are left untouched rather than rewritten.
 
+### Changed — the tool-call harness covers the calendar
+
+- `scripts/tool_call_cases.json` is now 19 cases / 165 checks, including
+  `list_appointments` and `add_appointment`. A model that cannot call the calendar
+  is a number instead of a surprise; chat-v4 measures 68/165 on the larger file.
+  Case counts change the denominator, so compare check totals only within the same
+  file.
+- `build_chat_dataset.py` learned the calendar tools. They were missing from its
+  `TOOL_LINES` table, so a calendar request routed to an empty tool list and the
+  corpus taught a call with no tools shown. It also widened the smalltalk and
+  summary pools, and the comment no longer claims that raising a weight adds
+  records a pool does not have — a bucket smaller than its quota contributes all
+  of itself, so the pool is the real limit.
+
 ### Added — warm-start fine-tuning
 
 - `train_chat.py` gained `--init-from` and `--tokenizer-from`: a warm start reuses

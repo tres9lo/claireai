@@ -36,7 +36,7 @@ from claireai.routing import route as _route
 from claireai.tools import default_registry as _default_registry
 
 ROOT = Path(__file__).resolve().parent
-DATASET_VERSION = "claireai-chat-v6"
+DATASET_VERSION = "claireai-chat-v7"
 SEED = 20261106
 
 # The system prompt is the runtime's own, not a paraphrase of it.  This file used
@@ -92,6 +92,8 @@ TOOL_LINES = {
     "get_page_text": "get_page_text(): The text of the page this task last opened.",
     "search_web": "search_web(query): Search the web and list result titles with links. Needs approval.",
     "download_file": "download_file(url, path): Download a URL to a new file in an allowed folder. Needs approval.",
+    "list_appointments": "list_appointments(day): Read the appointments saved for one day. Safe, local only.",
+    "add_appointment": "add_appointment(title, day, starts_at): Add an appointment to the local calendar. Needs approval.",
 }
 
 # Argument order mirrors the pydantic models in assistant/src/claireai/tools, so
@@ -113,6 +115,8 @@ TOOL_ARGS = {
     "get_page_text": [],
     "search_web": ["query"],
     "download_file": ["url", "path"],
+    "list_appointments": ["day"],
+    "add_appointment": ["title", "day", "starts_at"],
 }
 
 
@@ -217,7 +221,7 @@ def tool_call(name: str, arguments: dict[str, Any]) -> str:    return "<tool_cal
 # Small talk, identity and capability questions
 # ---------------------------------------------------------------------------
 
-GREETINGS = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "hi there", "hello Claire", "hey ClaireAI"]
+GREETINGS = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "hi there", "hello Claire", "hey ClaireAI", "hello there", "hi, how are you", "good day", "hello, are you there", "morning"]
 GREETING_REPLIES = [
     "Hello! I'm ClaireAI, your local assistant. What would you like to do?",
     "Hi! I'm here and ready to help. What can I do for you?",
@@ -238,19 +242,23 @@ CAPABILITY_A = [
     "I can help with files inside folders you allow, and I can browse only when the browser tool is enabled and approved.",
     "I can hold a conversation, inspect allowed folders, and suggest file actions. I never approve a write for you.",
 ]
-THANKS_Q = ["thanks", "thank you", "thanks a lot", "that helped", "great, thanks", "perfect, thank you"]
+THANKS_Q = ["thanks", "thank you", "thanks a lot", "that helped", "great, thanks", "perfect, thank you", "much appreciated", "that was great, thanks"]
 THANKS_A = ["You're welcome!", "Happy to help.", "Anytime.", "Glad that helped."]
 BYE_Q = ["bye", "goodbye", "see you", "that's all", "that is all for now", "we're done"]
 BYE_A = ["Goodbye! I'll be here when you need me.", "See you later.", "Okay. Talk to you soon.", "Bye! Your data stays on this machine."]
-HOW_Q = ["how are you", "how's it going", "how do you feel", "are you okay"]
+HOW_Q = ["how are you", "how's it going", "how do you feel", "are you okay", "how are you doing", "how is your day going", "you okay there"]
 HOW_A = [
     "I'm running locally and ready to help. How are you?",
+    "I'm doing well, thanks. Ready to help with a file or a question.",
     "All systems local. What can I do for you?",
     "I'm here and ready. What would you like to work on?",
 ]
-JOKE_Q = ["tell me a joke", "say something funny", "make me laugh", "got any jokes"]
+JOKE_Q = ["tell me a joke", "say something funny", "make me laugh", "got any jokes", "do you know any jokes", "tell me something funny", "give me a quick joke"]
 JOKE_A = [
     "Why did the file go to therapy? It had too many unresolved issues.",
+    "I asked the folder for its secrets, and it said the contents are classified.",
+    "My backlog is like a trash folder: it only grows when nobody looks.",
+    "Why did the laptop stay calm? It had already saved everything twice.",
     "I told my computer I needed a break, and it said: no problem, I'll go to sleep.",
     "Why do programmers prefer dark mode? Because light attracts bugs.",
     "A folder walked into a bar. The bartender said: we don't serve your type here.",
@@ -654,6 +662,22 @@ TOOL_REQUESTS: dict[str, list[tuple[str, dict[str, Any]]]] = {
     ],
     "download_file": [
         ("download example.com/report.pdf into Downloads", {"url": "https://example.com/report.pdf", "path": "~/Downloads/report.pdf"}),
+    ],
+    # The calendar is read and written by tools, so the corpus has to know them;
+    # before this the builder routed calendar requests to an empty tool list.
+    "list_appointments": [
+        ("what's on my calendar tomorrow", {"day": "tomorrow"}),
+        ("what do I have scheduled on friday", {"day": "friday"}),
+    ],
+    "add_appointment": [
+        (
+            "add a dentist appointment tomorrow at 14:00",
+            {"title": "dentist", "day": "tomorrow", "starts_at": "14:00"},
+        ),
+        (
+            "put a team meeting on my calendar for monday at 09:30",
+            {"title": "team meeting", "day": "monday", "starts_at": "09:30"},
+        ),
     ],
 }
 
@@ -1171,7 +1195,7 @@ def summaries_expanded(rng: random.Random) -> list[dict[str, Any]]:
         ("open_url example.com", "done", "opened example.com"),
     ]
     pending = ["review the todo list", "summarise the email inbox", "empty the trash after review", "check the backup folder"]
-    for _ in range(40):
+    for _ in range(240):
         chosen = rng.sample(tasks, rng.randint(2, 5))
         log_lines = [f"Task log for 2026-11-{rng.randint(1, 28):02d}:"]
         done, failed = [], []
@@ -1473,16 +1497,22 @@ def build(
 
     # Balance: the assistant's own domain (format/tool/safety) dominates, general
     # instruction data adds breadth, prose is only a small fluency aid.
+    # A weight decides how much of a pool is drawn, not how big the pool is: a
+    # bucket smaller than its quota contributes every record it has. chat-v6 was
+    # fine-tuned on this mix and lost greeting, joke and summary behaviour while
+    # gaining tool calls, so v7 pays for the conversational buckets out of
+    # Dolly's quota — and the pools themselves were widened, because raising a
+    # weight over a 111-record pool changes nothing.
     weights = {
-        "smalltalk": 2,
+        "smalltalk": 3,
         "safety": 2,
         "intent": 3,
         "slots": 1,
         "tool_calls": 10,
-        "summaries": 1,
+        "summaries": 3,
         "transcripts": 4,
         "follow_ups": 1,
-        "dolly": 5,
+        "dolly": 4,
         "stories": 1,
         "bootstrap": 1,
         "memory": 2,
@@ -1565,7 +1595,7 @@ def build(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v6")
+    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v7")
     parser.add_argument("--dolly", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "dolly-15k.jsonl")
     parser.add_argument("--stories", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "tinystories-valid.txt")
     parser.add_argument("--bootstrap", type=Path, default=ROOT / "data" / "bootstrap-v1" / "examples.jsonl")

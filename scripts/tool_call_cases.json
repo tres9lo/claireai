@@ -105,6 +105,27 @@
       }
     },
     {
+      "id": "agenda-tomorrow",
+      "tools": ["list_appointments", "add_appointment"],
+      "user": "what's on my calendar tomorrow",
+      "expect": {"name": "list_appointments", "arguments": {"day": "tomorrow"}}
+    },
+    {
+      "id": "agenda-friday",
+      "tools": ["list_appointments", "add_appointment"],
+      "user": "what do I have scheduled on friday",
+      "expect": {"name": "list_appointments", "arguments": {"day": "friday"}}
+    },
+    {
+      "id": "add-appointment",
+      "tools": ["add_appointment", "list_appointments"],
+      "user": "add a dentist appointment tomorrow at 14:00",
+      "expect": {
+        "name": "add_appointment",
+        "arguments": {"title": "dentist", "day": "tomorrow", "starts_at": "14:00"}
+      }
+    },
+    {
       "id": "no-tool-needed",
       "tools": ["list_folder", "read_text_file"],
       "user": "hello, how are you",

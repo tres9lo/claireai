@@ -57,3 +57,6 @@ brain-lab/data/cifar10/
 
 # Generated conversation corpus (rebuilt by brain-lab/build_chat_dataset.py)
 brain-lab/data/chat-v*/
+
+# Private working plan: notes for the owner, never published.
+NEXT_STEPS.md

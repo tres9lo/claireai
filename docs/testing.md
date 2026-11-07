@@ -127,7 +127,11 @@ cannot read. Cases live in `scripts/tool_call_cases.json` and carry the tool
 names offered for that request. Each run is scored on three checks — `format`
 (exactly one call, no leftover prose), `name` (the tool the request needs) and
 `arguments` (the values the request names) — and a case only passes when every
-run passes, so a model that lands a call one time in three does not look correct.
+run passes, so a model that lands a call one time in three does not look correct. Cases cover
+the file tools, the browser tools and the calendar (`list_appointments`,
+`add_appointment`). Adding a case changes the check total, so compare check
+counts only between checkpoints measured on the same case file — the calendar
+cases took it from 138 to 165.
 
 It goes through `ScratchBrain` with the runtime's own system message, which is
 what makes it a measurement of the assistant rather than of the model in

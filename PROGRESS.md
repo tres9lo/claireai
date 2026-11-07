@@ -44,6 +44,25 @@
   at temperature 0.2: v6's first run read 10/21 and v4's baseline 11/21, but both
   at `--runs 3` are 13/21 and 14/21. The gate now compares checkpoints at the
   same run count, and a one-case gap is treated as noise rather than progress.
+- **chat-v7 targeted the lost conversation cases and missed too.** The v7 corpus
+  widened the smalltalk pool (163 → 200 distinct records) and the summary pool
+  (111 → 647), gave the calendar tools the `TOOL_LINES` entries they never had —
+  a calendar request used to route to an empty tool list — and paid for that from
+  Dolly's quota. Warm-started from chat-v6 at LR 1e-4 for 3,000 steps it scored
+  tool checks **78/165** (v6: 71, v4: 68, all on the same 19-case file) and eval
+  cases **7/13**, and it recovered `summary-sections`. Conversation fell to
+  **12/21** (v6: 13, v4: 14), and `greeting`, `capabilities` and `joke-shape`
+  still fail, so it was not installed. Its three calendar tool cases score zero:
+  the calendar arguments are new tokens for this model and 3,000 warm-start steps
+  do not teach them — which costs nothing in practice, because the runtime answers
+  agenda questions in code.
+- **Three fine-tunes, one conclusion.** chat-v5, v6 and v7 each bought tool
+  accuracy with conversation accuracy, and none beat chat-v4 on both. At 3.34M
+  parameters with a 288-token window the model cannot hold tool discrimination
+  and conversation at once; the next attempt has to change capacity — vocabulary
+  1,152 → 4,096, width 224 → 288 — rather than the corpus mix. That is the one
+  remaining lever with evidence behind it, and it is written up in the private
+  plan as R2.
 - **The intermittent 404 was not a routing bug.** `test_unknown_paths_are_404`
   failed once in a full run and would not fail again: 18 full-suite runs, 22
   file-only runs and 8 runs under a six-way CPU load all passed, so the assertion
