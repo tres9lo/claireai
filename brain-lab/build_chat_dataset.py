@@ -36,7 +36,7 @@ from claireai.routing import route as _route
 from claireai.tools import default_registry as _default_registry
 
 ROOT = Path(__file__).resolve().parent
-DATASET_VERSION = "claireai-chat-v7"
+DATASET_VERSION = "claireai-chat-v9"
 SEED = 20261106
 
 # The system prompt is the runtime's own, not a paraphrase of it.  This file used
@@ -663,22 +663,6 @@ TOOL_REQUESTS: dict[str, list[tuple[str, dict[str, Any]]]] = {
     "download_file": [
         ("download example.com/report.pdf into Downloads", {"url": "https://example.com/report.pdf", "path": "~/Downloads/report.pdf"}),
     ],
-    # The calendar is read and written by tools, so the corpus has to know them;
-    # before this the builder routed calendar requests to an empty tool list.
-    "list_appointments": [
-        ("what's on my calendar tomorrow", {"day": "tomorrow"}),
-        ("what do I have scheduled on friday", {"day": "friday"}),
-    ],
-    "add_appointment": [
-        (
-            "add a dentist appointment tomorrow at 14:00",
-            {"title": "dentist", "day": "tomorrow", "starts_at": "14:00"},
-        ),
-        (
-            "put a team meeting on my calendar for monday at 09:30",
-            {"title": "team meeting", "day": "monday", "starts_at": "09:30"},
-        ),
-    ],
 }
 
 
@@ -735,6 +719,80 @@ SUMMARY_LOGS = [
 
 def summary_tasks(rng: random.Random) -> list[dict[str, Any]]:
     return [record(SUMMARY_SYSTEM, [(log, answer)]) for log, answer in SUMMARY_LOGS]
+
+
+# ---------------------------------------------------------------------------
+# Calendar: tools whose arguments are words no other record produces
+# ---------------------------------------------------------------------------
+
+CALENDAR_DAYS = (
+    "today", "tomorrow", "yesterday", "monday", "tuesday", "wednesday",
+    "thursday", "friday", "saturday", "sunday", "2026-11-09", "2026-12-01",
+    "last friday", "next monday",
+)
+CALENDAR_LIST_WORDS = (
+    "what's on my calendar for {day}",
+    "what do I have scheduled for {day}",
+    "show me my appointments on {day}",
+    "list my calendar for {day}",
+    "anything on my agenda for {day}",
+    "what appointments do I have on {day}",
+    "what's on {day}",
+)
+CALENDAR_TITLES = (
+    "dentist", "team meeting", "lunch with Sam", "gym", "standup", "doctor",
+    "parent meeting", "flight to Nairobi", "interview", "haircut",
+    "project review", "coffee with Amina", "physio", "tax appointment",
+)
+CALENDAR_TIMES = (
+    "09:00", "09:30", "10:00", "11:15", "12:00", "13:30", "14:00",
+    "15:45", "16:00", "17:30", "18:00",
+)
+CALENDAR_ADD_WORDS = (
+    "schedule {title} for {day} at {time}",
+    "add {article} {title} appointment on {day} at {time}",
+    "book {article} {title} appointment for {day} at {time}",
+    "put {title} on my calendar for {day} at {time}",
+)
+
+
+def calendar_tasks(rng: random.Random) -> list[dict[str, Any]]:
+    """List and add requests over many days, titles and times.
+
+    Day phrases and ``HH:MM`` times appear nowhere else in the corpus, so the
+    calendar needs its own mass from the first step. A warm start cannot supply
+    it: chat-v7 saw these records only late in a fine-tune and scored 0/9 checks
+    on the calendar cases.
+
+    Each record offers exactly the tools ``claireai.routing`` offers for that
+    prompt, because that is what inference will show the model.
+    """
+    out: list[dict[str, Any]] = []
+
+    def add(prompt: str, name: str, arguments: dict[str, Any]) -> None:
+        offered, _ = routed_tools(prompt)
+        if name not in offered:
+            return
+        out.append(record(tool_system(offered), [(prompt, tool_call(name, arguments))]))
+
+    for day in CALENDAR_DAYS:
+        for words in CALENDAR_LIST_WORDS:
+            add(words.format(day=day), "list_appointments", {"day": day})
+    # Four times per day/title pair, rotating both the time and the phrasing, so
+    # the model sees every day name with several titles and every title at
+    # several times instead of one memorised combination.
+    for day_index, day in enumerate(CALENDAR_DAYS):
+        for title_index, title in enumerate(CALENDAR_TITLES):
+            for slot in range(4):
+                time = CALENDAR_TIMES[(day_index + title_index + slot * 3) % len(CALENDAR_TIMES)]
+                words = CALENDAR_ADD_WORDS[(day_index + title_index + slot) % len(CALENDAR_ADD_WORDS)]
+                article = "an" if title[0].lower() in "aeiou" else "a"
+                add(
+                    words.format(title=title, day=day, time=time, article=article),
+                    "add_appointment",
+                    {"title": title, "day": day, "starts_at": time},
+                )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1470,6 +1528,7 @@ def build(
         "intent": intent_tasks(rng) + intent_expanded(rng),
         "slots": slot_tasks(rng) + slots_expanded(rng),
         "tool_calls": canonical_tool_tasks(rng) + tool_calls_expanded(rng) + tool_choice_expanded(rng),
+        "calendar": calendar_tasks(rng),
         "summaries": summary_tasks(rng) + summaries_expanded(rng),
         "transcripts": tool_transcripts(rng) + transcripts_expanded(rng),
         "follow_ups": follow_ups(rng),
@@ -1509,6 +1568,7 @@ def build(
         "intent": 3,
         "slots": 1,
         "tool_calls": 10,
+        "calendar": 2,
         "summaries": 3,
         "transcripts": 4,
         "follow_ups": 1,
@@ -1595,7 +1655,7 @@ def build(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v7")
+    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v9")
     parser.add_argument("--dolly", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "dolly-15k.jsonl")
     parser.add_argument("--stories", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "tinystories-valid.txt")
     parser.add_argument("--bootstrap", type=Path, default=ROOT / "data" / "bootstrap-v1" / "examples.jsonl")
