@@ -37,13 +37,16 @@ Hard stop — both of the following, whichever hits first:
 1. **Time budget:** 12 hours wall clock from the moment the supervised run starts.
    At chat-v4's 0.72s/step, 6000 steps was ~80 minutes; this run's steps per
    second will be lower because the model is bigger and the context longer, so the
-   time budget is the binding constraint, not the step count.
+   time budget is the binding constraint, not the step count. The run guard watches
+   wall clock and stops the supervised training loop when the budget is spent; it
+   does **not** kill the invoking shell or any other process.
 2. **Disk budget:** do not let `runtime-data/` grow past 80% of the root volume.
-   The supervised run computes a predicted artifact footprint before it starts and
-   refuses to start if there is not enough headroom for the expected max footprint
-   plus the 80% safety margin. If the run would breach it mid-flight, the guard
-   truncates the current log and writes a run-end note; it does not kill the
-   invoking shell or anything else.
+   Before the run starts, the guard computes the predicted artifact footprint for
+   this run (final `.pt` + `.json` manifest + periodic `.partial` checkpoints + log
+   + eval logs if eval is run on schedule) and refuses to start if there is not
+   enough headroom for that footprint plus the 80% safety margin. If the run would
+   breach the disk budget mid-flight, the guard truncates the current log and writes
+   a run-end note; it does not kill the invoking shell or anything else.
 
 ## Artifact retention profile
 
@@ -59,10 +62,13 @@ Default behavior for every run here:
   run passed the install gate, and the install gate is an explicit hand-off, not an
   automatic step.
 
-For this experiment specifically, because chat-v10 is not an install candidate on
-size alone and the comparison must be fair to chat-v4, the run must not write to
+For this experiment specifically, because chat-v10 is not an install candidate on size
+alone and the comparison must be fair to chat-v4, the run must not write to
 `claire-scratch.{pt,json}` even if it finishes. It writes to its own output name only:
-`claire-chat-v10.{pt,json}` plus the `.partial` checkpoints along the way.
+`claire-chat-v10.{pt,json}` plus the `.partial` checkpoints along the way. The
+run's `--output` is `runtime-data/models/claire-chat-v10.pt` and its manifest is
+`runtime-data/models/claire-chat-v10.json`; nothing it writes is named
+`claire-scratch`.
 
 ## Eval schedule (do NOT eval on every version write)
 
@@ -121,3 +127,22 @@ Before this run is used as evidence for anything, confirm:
   run. If someone wants that, it is a different experiment with its own config.
 - Whether a larger context (512) is worth the seconds-per-step cost: this run tests it once
   under the budget above; a repeat is a new run with its own notes.
+
+## Run guard (deterministic hard stop)
+
+The supervised run is wrapped by a guard script
+(`brain-lab/scripts/run_chat_v10_guard.sh`). That guard:
+
+- sets `CLAIREAI_DATA_DIR` to `$PWD/runtime-data` so all artifacts land under the
+  gitignored tree;
+- chooses `--steps` from the remaining 12h budget measured at launch, not from a fixed
+  number;
+- refuses to start if there is not enough root-volume headroom for the predicted
+  footprint plus the 80% safety margin;
+- tails the log while the run is alive;
+- on either hard-stop trigger, stops only the supervised training loop, truncates the
+  current log, writes a run-end note, and exits. It never kills the invoking shell or any
+  other process.
+
+The guard is not part of the model; it is just the supervised wrapper for this run. If you
+run the training command by hand, you take over the guard's responsibilities.
