@@ -55,6 +55,7 @@ EVAL_INTERVAL="${EVAL_INTERVAL:-250}"
 EVAL_BATCHES="${EVAL_BATCHES:-8}"
 MAX_TARGET_TOKENS="${MAX_TARGET_TOKENS:-160}"
 SEED="${SEED:-42}"
+STEPS="${STEPS:-6000}" # match chat-v4's step count so the comparison is like-for-like
 TIME_BUDGET_SECONDS="${TIME_BUDGET_SECONDS:-43200}" # 12h
 DISK_BUDGET_FRACTION="${DISK_BUDGET_FRACTION:-0.80}"
 
@@ -159,6 +160,7 @@ env:
   EVAL_BATCHES=${EVAL_BATCHES}
   MAX_TARGET_TOKENS=${MAX_TARGET_TOKENS}
   SEED=${SEED}
+  STEPS=${STEPS}
   TIME_BUDGET_SECONDS=${TIME_BUDGET_SECONDS}
   DISK_BUDGET_FRACTION=${DISK_BUDGET_FRACTION}
 guard_script: ${0}
@@ -233,6 +235,7 @@ START_TIME="$(start_time)"
   --eval-batches "${EVAL_BATCHES}" \
   --max-target-tokens "${MAX_TARGET_TOKENS}" \
   --seed "${SEED}" \
+  --steps "${STEPS}" \
   > "${RUNNO_FILE}" 2>&1 &
 TRAIN_PID=$!
 
