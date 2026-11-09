@@ -48,6 +48,29 @@ def test_folder_variants_keep_the_runtime_prefix_and_one_clause() -> None:
     assert len(seen) > 1, "the folder tail never varied"
 
 
+def test_the_empty_folder_clause_is_the_runtime_clause() -> None:
+    """The "no folders" sentence must be the one the runtime prints, not a copy.
+
+    It used to say "none configured.", a sentence ``Sandbox.describe`` never
+    returns.  The tool harness evaluates with an empty sandbox, so on 2026-11-08
+    chat-v10 was scored on a prompt that appeared in no training record and
+    answered it with a refusal.  Measured afterwards: 33/165 checks under that
+    prompt against 71/165 under the folder clause the corpus actually teaches.
+    """
+    module = _builder()
+    runtime_clause = system_message(Sandbox(roots=())).content.split(" Allowed folders:", 1)[1]
+    assert runtime_clause in module.FOLDER_TAILS
+    assert not any("none configured" in tail for tail in module.FOLDER_TAILS)
+
+
+def test_a_record_that_calls_a_tool_never_claims_no_folders() -> None:
+    """A call needs a folder the model may use, or the record teaches nonsense."""
+    module = _builder()
+    empty_clause = system_message(Sandbox(roots=())).content.split(" Allowed folders:", 1)[1]
+    for _ in range(40):
+        assert empty_clause not in module.tool_system(["list_folder"])
+
+
 def test_a_grounded_record_keeps_its_own_folder_clause() -> None:
     module = _builder()
     grounded = module.tool_system(

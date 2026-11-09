@@ -2151,3 +2151,65 @@ or implement the page-approval design against the existing loopback server.
   `.json` to a path that already ended in `.pt`, while `train_chat.py` strips the
   suffix. Fixed to `${OUT%.pt}.json`; the note is the only place the wrong path
   was ever used.
+
+## 2026-11-09 — Correction: chat-v10's "refusal collapse" was a prompt it had never seen
+
+- **The audit's first finding was that the obvious suspect was innocent.** The
+  corpus is not drowning in refusals: of 14,900 assistant turns, 173 (1.2%) are
+  refusals, and only 6 of those sit in a context that offers tools. Tool calls are
+  8,310 turns — 3,452 to safe tools, 4,858 to approval-gated ones. Rebalancing
+  that mix would have changed nothing.
+- **The real defect was in the folder clause of the system prompt.** The builder
+  hand-wrote `Allowed folders: none configured.` but the runtime prints
+  `Allowed folders: (no folders are allow-listed).` from `Sandbox.describe()`.
+  **Zero** records in the chat-v10 corpus contained the runtime's sentence, and
+  `scripts/tool_call_eval.py` builds its system message from `Sandbox(roots=())`.
+  Every tool case therefore ran under a prompt that appeared in no training
+  record — the same train/serve drift the corpus prompt itself had in chat-v3,
+  in a different sentence.
+- **Measured, not argued.** Same 19 cases, same three runs each, only the folder
+  clause changed (v4 and v10, `--runs 3`, 165 checks):
+
+  | folder clause in the system prompt | chat-v4 | chat-v10 |
+  | --- | --- | --- |
+  | `~/Downloads, ~/Documents, ~/Desktop` (what the corpus teaches) | 74–77 | 70–71 |
+  | `(no folders are allow-listed)` (what the harness sends) | 67–69 | 33 |
+  | `/home/tresor/Downloads, …` (what the runtime really sends) | 64 | 18 |
+
+  Under the prompt both models were trained on, chat-v10 is roughly level with
+  chat-v4 on checks and **ahead on runs** (14–15 of 57 against 7–10), while being
+  unstable case-by-case. The 30/165 gate number was real but it was measuring a
+  state no working install is ever in, because with no roots `Sandbox.resolve`
+  refuses every path, so a file call cannot even succeed there.
+- **A second drift in the same sentence.** For a configured folder the runtime
+  prints absolute paths (`/home/tresor/Downloads`), while the corpus taught the
+  `~/Downloads` form almost exclusively — only 36 synthetic records used absolute
+  paths. chat-v10 falls to 18/165 under the absolute clause, which is the prompt
+  the product actually sends. That is a product defect, not an eval artifact.
+- **The fix.** `FOLDER_TAILS` now renders the empty clause through
+  `system_message(Sandbox(roots=()))` itself, and two absolute clauses through the
+  same call, so the wording cannot drift again. `POPULATED_FOLDER_TAILS` excludes
+  the empty clause from records that call a tool: a record claiming no folder is
+  allow-listed while calling `list_folder` teaches a contradiction, and the old
+  corpus had hundreds of them. The builder is bumped to `claireai-chat-v11`.
+  `tests/unit/test_corpus_prompt.py` now fails if the empty sentence is
+  hand-written again or if a tool record ever carries it.
+- **What this does and does not change.** The earlier entry's observation — that
+  v10 answers a plain read with the approval/trash sentence — stands; the
+  attribution to refusal-frequency does not. chat-v10 stays rejected, because it
+  was measured on the gate as it exists; but that gate number should not be read
+  as a capacity verdict, and the corpus it was trained on taught a prompt the
+  product does not send.
+- **Left as an open decision, not a quiet change.** `tool_call_eval.py` still
+  builds its prompt from an empty sandbox. Fixing it to use populated roots would
+  make the cases match production, and would also move every historical number
+  (v4 68 → ~64–77 depending on clause). Changing a gate baseline to raise a
+  score is exactly what the testing rules forbid doing unilaterally, so it is
+  recorded here for the owner to decide.
+- **Harness reason fixed.** `multi-turn-tool-followup` reported "model produced no
+  tool call" while the model had emitted a `<tool_call>` block. The parser drops
+  calls naming tools that were not offered (`_match_name` returns `None`), and
+  `ScratchBrain.generate` discards that reason, so the eval only saw zero calls.
+  The case still fails — the call was for `move_to_trash`, not the offered
+  `list_folder` — but it now says "model called a tool that was not offered (call
+  dropped)" instead of blaming the model for not calling at all.

@@ -36,7 +36,7 @@ from claireai.routing import route as _route
 from claireai.tools import default_registry as _default_registry
 
 ROOT = Path(__file__).resolve().parent
-DATASET_VERSION = "claireai-chat-v10"
+DATASET_VERSION = "claireai-chat-v11"
 
 # NOTE: the corpus builder is vocabulary- and context-agnostic. It emits JSONL
 # records; the larger vocab (4096) and longer context (512) for chat-v10 are
@@ -54,12 +54,37 @@ RUNTIME_SYSTEM = _runtime_system_message(_Sandbox(roots=())).content
 
 # The owner's configured folders change the last sentence.  Several tails are
 # used so the model learns the sentence, not one particular ending.
+#
+# The empty case is rendered by the runtime, not hand-written.  It used to say
+# "none configured.", a sentence the runtime never emits: `Sandbox.describe()`
+# returns "(no folders are allow-listed)".  Because the tool harness evaluates
+# with an empty sandbox, every tool case ran under a system prompt that appeared
+# in no training record, and chat-v10 answered those with the refusal sentence
+# instead of a call.  Rendering the clause through `system_message` makes that
+# class of drift impossible rather than merely unlikely.
+def _runtime_clause(roots: Iterable[Path] = ()) -> str:
+    """The folder clause the runtime would send for these roots."""
+    text = _runtime_system_message(_Sandbox(roots=tuple(Path(root) for root in roots))).content
+    return text.split(" Allowed folders:", 1)[1]
+
+
 FOLDER_TAILS = (
-    "none configured.",
+    _runtime_clause(),
     "~/Downloads.",
     "~/Downloads, ~/Documents.",
     "~/Downloads, ~/Documents, ~/Desktop.",
+    # The short form above is what the corpus and the tool harness use; the
+    # absolute form is what the runtime prints for a configured folder.  Teaching
+    # only the short form leaves the real prompt out of distribution the other
+    # way round, which is the same bug from the other side.
+    _runtime_clause((Path("/home/owner/Downloads"), Path("/home/owner/Documents"))),
+    _runtime_clause((Path("/Users/owner/Downloads"),)),
 )
+
+# A record that calls a file tool must never claim that no folder is allowed:
+# the call and the clause would contradict each other, and the model would learn
+# that contradiction as if it were normal.
+POPULATED_FOLDER_TAILS = FOLDER_TAILS[1:]
 _SYSTEM_RNG = random.Random(SEED + 1)
 
 BASE_SYSTEM = RUNTIME_SYSTEM
@@ -71,13 +96,18 @@ TOOL_SYSTEM = BASE_SYSTEM + "\n{tools}"
 SYSTEM_PREFIX = RUNTIME_SYSTEM.split(" Allowed folders:")[0]
 
 
-def assistant_system() -> str:
+def assistant_system(*, allow_empty: bool = True) -> str:
     """The exact system message the runtime sends, with a folder-tail variant.
 
     Split on the folder clause rather than matching its wording, so a change to
     ``Sandbox.describe`` cannot silently turn this into a no-op (it did once).
+
+    ``allow_empty=False`` is for records that call a file tool.  Chat records keep
+    the empty variant, because a fresh install with nothing allow-listed is a real
+    state the runtime sends and the model has to answer in it.
     """
-    return f"{SYSTEM_PREFIX} Allowed folders: {_SYSTEM_RNG.choice(FOLDER_TAILS)}"
+    tails = FOLDER_TAILS if allow_empty else POPULATED_FOLDER_TAILS
+    return f"{SYSTEM_PREFIX} Allowed folders: {_SYSTEM_RNG.choice(tails)}"
 
 # Compact descriptions used by the runtime (claireai.brain.scratch).  Keep the
 # wording identical so training and inference do not disagree about the prompt.
@@ -149,7 +179,11 @@ def tool_schemas(names: Iterable[str]) -> list[dict[str, Any]]:
 def tool_system(names: Iterable[str], extra: str = "") -> str:
     # A record that carries its own grounding block also carries its own folder
     # clause; adding a second one would contradict the paths it lists.
-    base = SYSTEM_PREFIX if extra.startswith("Allowed folders:") else assistant_system()
+    base = (
+        SYSTEM_PREFIX
+        if extra.startswith("Allowed folders:")
+        else assistant_system(allow_empty=False)
+    )
     prefix = base + (f"\n{extra}" if extra else "")
     return prefix + "\n" + tool_block(tool_schemas(names))
 
@@ -1660,7 +1694,7 @@ def build(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v10")
+    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v11")
     parser.add_argument("--dolly", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "dolly-15k.jsonl")
     parser.add_argument("--stories", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "tinystories-valid.txt")
     parser.add_argument("--bootstrap", type=Path, default=ROOT / "data" / "bootstrap-v1" / "examples.jsonl")

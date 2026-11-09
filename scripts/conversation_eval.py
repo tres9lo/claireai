@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from claireai.brain import Brain, BrainError, Message, ScratchBrain
+from claireai.brain.tool_calls import looks_like_tool_call
 from claireai.config import Settings
 from claireai.evaluation import extract_json_object
 from claireai.tools import default_registry
@@ -108,6 +109,12 @@ def check(expect: Mapping[str, Any], reply: str, tool_calls: tuple[str, ...]) ->
 
     if kind == "tool_call":
         if not tool_calls:
+            # A reply that is a call block but arrives as empty ``tool_calls`` was
+            # dropped by the parser, usually because the name is not one of the
+            # tools this case offers.  The case still fails, but the reason has to
+            # say which, or a parser problem looks like a model problem.
+            if looks_like_tool_call(reply):
+                return (False, "model called a tool that was not offered (call dropped)")
             return (False, "model produced no tool call")
         if expect.get("name") and expect["name"] not in tool_calls:
             return (False, f"called {tool_calls}, expected {expect['name']}")
