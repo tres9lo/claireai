@@ -7,11 +7,13 @@ limits and refusals, not that a live site renders.
 
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 
 import httpx
 import pytest
 
+import claireai.tools.browser as browser_module
 from claireai.permissions import PermissionDenied, Sandbox
 from claireai.routing import route
 from claireai.tools import default_registry
@@ -48,6 +50,41 @@ def root(tmp_path: Path) -> Path:
     return folder
 
 
+PUBLIC = ipaddress.ip_address("93.184.216.34")
+
+
+@pytest.fixture(autouse=True)
+def offline_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the egress check off the network for this file only.
+
+    Literal addresses resolve to themselves, so the blocked-address tests still
+    exercise the real check; local names keep resolving to loopback; every other
+    hostname becomes one fixed public address.
+    """
+
+    def fake(host: str, port: int) -> tuple[ipaddress._BaseAddress, ...]:
+        del port
+        try:
+            return (ipaddress.ip_address(host),)
+        except ValueError:
+            if host.lower().rstrip(".") in {"localhost", "localhost.localdomain", "ip6-localhost"}:
+                return (ipaddress.ip_address("127.0.0.1"),)
+            return (PUBLIC,)
+
+    monkeypatch.setattr(browser_module, "_resolved_addresses", fake)
+
+
+_CREATED: list[BrowserSession] = []
+
+
+@pytest.fixture(autouse=True)
+def close_sessions():
+    """Close every client this test opened, so nothing leaks into the next one."""
+    yield
+    while _CREATED:
+        _CREATED.pop().close()
+
+
 def _session(*, body: str = PAGE, status: int = 200, content_type: str = "text/html") -> BrowserSession:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -56,7 +93,9 @@ def _session(*, body: str = PAGE, status: int = 200, content_type: str = "text/h
             headers={"content-type": content_type},
         )
 
-    return BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    _CREATED.append(session)
+    return session
 
 
 def _context(root: Path, session: BrowserSession | None) -> ToolContext:
@@ -232,6 +271,125 @@ def test_download_file_refuses_a_missing_parent(root: Path) -> None:
             _context(root, _session()),
             DownloadFileArgs(url="https://example.com/f", path=str(root / "nope" / "x.bin")),
         )
+
+
+# --- egress policy ----------------------------------------------------------
+
+NON_PUBLIC = (
+    "127.0.0.1",
+    "127.0.0.53",
+    "0.0.0.0",
+    "::1",
+    "10.0.0.1",
+    "172.20.0.5",
+    "192.168.1.10",
+    "169.254.169.254",
+    "fd12:3456::1",
+    "fe80::1",
+    "[::ffff:127.0.0.1]",
+)
+
+
+def _recording_session(requests: list[str]) -> BrowserSession:
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200, text=PAGE, headers={"content-type": "text/html"})
+
+    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    _CREATED.append(session)
+    return session
+
+
+@pytest.mark.parametrize("host", NON_PUBLIC)
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_the_browser_refuses_this_machine_and_the_local_network(root: Path, host: str, scheme: str) -> None:
+    requests: list[str] = []
+    context = _context(root, _recording_session(requests))
+    url = f"{scheme}://{host}/secret"
+    with pytest.raises(ToolError, match="not a public address"):
+        open_url(context, OpenUrlArgs(url=url))
+    assert requests == [], "the request must be refused before it is sent"
+
+
+def test_download_file_refuses_a_private_address(root: Path) -> None:
+    requests: list[str] = []
+    context = _context(root, _recording_session(requests))
+    with pytest.raises(ToolError, match="not a public address"):
+        download_file(
+            context, DownloadFileArgs(url="http://192.168.0.10/file.bin", path=str(root / "f.bin"))
+        )
+    assert requests == []
+    assert not (root / "f.bin").exists()
+
+
+def test_a_public_page_may_redirect_to_another_public_page(root: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/old":
+            return httpx.Response(302, headers={"location": "https://example.com/new"})
+        return httpx.Response(200, text=PAGE, headers={"content-type": "text/html"})
+
+    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    _CREATED.append(session)
+    result = open_url(_context(root, session), OpenUrlArgs(url="https://example.com/old"))
+    assert "March invoices" in result.text
+    assert session.url == "https://example.com/new"
+
+
+def test_a_redirect_to_a_private_address_is_refused(root: Path) -> None:
+    """Checking only the first URL would let a public page bounce to loopback."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={"location": "http://127.0.0.1:8765/api/state"})
+
+    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    _CREATED.append(session)
+    with pytest.raises(ToolError, match="not a public address"):
+        open_url(_context(root, session), OpenUrlArgs(url="https://example.com/goto"))
+    # The public hop happened; loopback never did.
+    assert seen == ["https://example.com/goto"]
+
+
+def test_a_redirect_chain_that_never_settles_is_refused(root: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        target = "https://example.com/b" if request.url.path == "/a" else "https://example.com/a"
+        return httpx.Response(302, headers={"location": target})
+
+    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    _CREATED.append(session)
+    with pytest.raises(ToolError, match="too many redirects"):
+        open_url(_context(root, session), OpenUrlArgs(url="https://example.com/a"))
+
+
+def test_a_hostname_that_resolves_to_loopback_is_refused(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        browser_module, "_resolved_addresses", lambda host, port: (ipaddress.ip_address("127.0.0.1"),)
+    )
+    requests: list[str] = []
+    with pytest.raises(ToolError, match="not a public address"):
+        open_url(
+            _context(root, _recording_session(requests)),
+            OpenUrlArgs(url="http://internal.example.test/"),
+        )
+    assert requests == []
+
+
+def test_an_unresolvable_host_is_refused_without_fetching(root: Path) -> None:
+    def boom(host: str, port: int) -> tuple[ipaddress._BaseAddress, ...]:
+        raise ToolError(f"could not resolve {host!r}")
+
+    import claireai.tools.browser as module
+
+    original = module._resolved_addresses
+    module._resolved_addresses = boom
+    try:
+        with pytest.raises(ToolError, match="could not resolve"):
+            open_url(_context(root, _session()), OpenUrlArgs(url="https://nope.invalid/"))
+    finally:
+        module._resolved_addresses = original
 
 
 # --- wiring ----------------------------------------------------------------

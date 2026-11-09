@@ -15,15 +15,25 @@ arguments and their risk levels are what the model and the approvals see.
 Every fetch is bounded (bytes and characters), only http(s) is accepted, and
 nothing here writes to disk except ``download_file``, which goes through the
 same sandbox as every other write.
+
+**Egress policy.** These tools run on the same machine as the presence server
+and the owner's data, and the page they read is written by someone else.  A URL
+that points at this machine, the local network or a link-local metadata endpoint
+is therefore refused before the request is made, and the check is repeated for
+every redirect hop — checking only the first URL would let a public page bounce
+the request to ``127.0.0.1``.  Resolution happens here rather than being left to
+httpx so that a hostname cannot resolve to a private address behind the check.
 """
 
 from __future__ import annotations
 
 import html as html_module
+import ipaddress
 import re
+import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 import httpx
 from pydantic import Field
@@ -34,6 +44,7 @@ from claireai.tools.files import _Args
 MAX_PAGE_BYTES = 2_000_000
 MAX_TEXT_CHARS = 4000
 MAX_DOWNLOAD_BYTES = 20_000_000
+MAX_REDIRECTS = 5
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 USER_AGENT = "ClaireAI/0.1 (local assistant; +https://github.com/tres9lo/claireai)"
 
@@ -100,9 +111,12 @@ class BrowserSession:
 
     def http(self) -> httpx.Client:
         if self.client is None:
+            # Redirects are followed by _get, one hop at a time, so each new
+            # destination passes the egress check.  Letting httpx follow them
+            # here would fetch the first hidden-until-followed target.
             self.client = httpx.Client(
                 timeout=self.timeout,
-                follow_redirects=True,
+                follow_redirects=False,
                 headers={"User-Agent": USER_AGENT},
             )
         return self.client
@@ -130,16 +144,101 @@ def _check_url(url: str) -> str:
     return cleaned
 
 
-def _get(session: BrowserSession, url: str, *, limit: int) -> httpx.Response:
+def _resolved_addresses(host: str, port: int) -> tuple[ipaddress._BaseAddress, ...]:
+    """Every address a host resolves to, with any IPv6 zone suffix removed.
+
+    A separate function so the tests can supply addresses without a network.
+    """
     try:
-        response = session.http().get(url)
-    except httpx.HTTPError as exc:
-        raise ToolError(f"could not fetch {url}: {exc.__class__.__name__}") from exc
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError) as exc:
+        raise ToolError(f"could not resolve {host!r}") from exc
+    addresses: list[ipaddress._BaseAddress] = []
+    for info in infos:
+        raw = str(info[4][0]).split("%", 1)[0]
+        try:
+            addresses.append(ipaddress.ip_address(raw))
+        except ValueError as exc:
+            raise ToolError(f"{host!r} resolved to an unreadable address {raw!r}") from exc
+    return tuple(dict.fromkeys(addresses))
+
+
+def _is_non_public(address: ipaddress._BaseAddress) -> bool:
+    """True for anything that is not a routable public destination."""
+    return any(
+        (
+            address.is_private,
+            address.is_loopback,
+            address.is_link_local,
+            address.is_multicast,
+            address.is_reserved,
+            address.is_unspecified,
+        )
+    )
+
+
+def _split_host(parsed, cleaned: str) -> tuple[str, int]:
+    """Host and port, tolerating a bracketless IPv6 literal like ``http://::1/``.
+
+    urllib treats that shape as a broken port, and refusing it as malformed would
+    hide which rule it broke.  A model that writes it should get the same egress
+    answer as ``http://[::1]/``.
+    """
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
+    try:
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        host, port = None, None
+    if host:
+        return host, port or default_port
+    raw = parsed.netloc.rsplit("@", 1)[-1].strip("[]").split("%", 1)[0]
+    try:
+        ipaddress.ip_address(raw)
+    except ValueError as exc:
+        raise ToolError(f"url has no host: {cleaned!r}") from exc
+    return raw, default_port
+
+
+def _check_destination(url: str) -> str:
+    """Refuse a URL that points at this machine or the local network."""
+    cleaned = _check_url(url)
+    parsed = urlparse(cleaned)
+    host, port = _split_host(parsed, cleaned)
+    for address in _resolved_addresses(host, port):
+        if _is_non_public(address):
+            raise ToolError(
+                f"refusing to fetch {cleaned}: {host!r} resolves to {address}, which is "
+                "not a public address. The browser tools do not reach this machine, "
+                "the local network or link-local services."
+            )
+    return cleaned
+
+
+def _get(session: BrowserSession, url: str, *, limit: int) -> httpx.Response:
+    """GET a URL, following redirects one hop at a time through the egress check."""
+    current = _check_destination(url)
+    response: httpx.Response | None = None
+    for _ in range(MAX_REDIRECTS + 1):
+        try:
+            response = session.http().get(current)
+        except httpx.HTTPError as exc:
+            raise ToolError(f"could not fetch {current}: {exc.__class__.__name__}") from exc
+        if not response.is_redirect:
+            break
+        location = response.headers.get("location", "").strip()
+        if not location:
+            raise ToolError(
+                f"{current} answered HTTP {response.status_code} without a Location header"
+            )
+        current = _check_destination(urljoin(str(response.url), location))
+    else:
+        raise ToolError(f"too many redirects starting at {url} (limit {MAX_REDIRECTS})")
+    assert response is not None  # the loop either breaks or raises
     if response.status_code >= 400:
-        raise ToolError(f"{url} answered HTTP {response.status_code}")
+        raise ToolError(f"{current} answered HTTP {response.status_code}")
     if len(response.content) > limit:
         raise ToolError(
-            f"{url} returned {len(response.content)} bytes; the limit is {limit}"
+            f"{current} returned {len(response.content)} bytes; the limit is {limit}"
         )
     return response
 
