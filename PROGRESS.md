@@ -2256,3 +2256,21 @@ or implement the page-approval design against the existing loopback server.
   prompts on a quarter of smalltalk records — paraphrased so the case strings stay
   held out — and four digit/dash filenames in the slot pool. Whether that fixes
   the cases is a training question, not a corpus-count question.
+
+## 2026-11-09 — Why desktop-first runs killed presence requests
+
+The suite failure was not flaky networking. `tests/unit/test_desktop.py` created a
+Tk root, built every page and called `root.destroy()`, but left the Tk objects
+(fonts, images, widget wrappers) for the garbage collector. When a later test
+allocated, the collector ran `tkinter/font.py __del__` on whatever thread happened
+to be allocating — here the presence-server request thread, in the middle of
+importing `claireai.cli`. That destructor calls into Tcl, and Tcl is not thread
+safe: the call blocks rather than raising, so the handler never wrote a response
+and the client timed out. Presence-first runs passed because nothing had been
+destroyed yet.
+
+The fix is in the test, not the server: `tk_root` is now a fixture that collects
+unreachable Tk objects while the interpreter is still alive on the creating
+thread, then destroys the root, drops `tkinter._default_root` and collects again.
+Both page tests use it. The suite is 619 passed, and the two files pass in either
+order.

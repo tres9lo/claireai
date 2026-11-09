@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 
 import pytest
@@ -150,48 +151,56 @@ class FakeRuntime:
         return None
 
 
-def _tk_root():
+@pytest.fixture
+def tk_root():
+    """A withdrawn Tk root, torn down before its interpreter is collected.
+
+    A Tk object that outlives its interpreter calls into Tcl from whatever thread
+    happens to run the destructor.  Tcl is not thread safe, so that call blocks
+    forever instead of failing: a later presence-server request that imported a
+    module at that moment held the request thread in ``tkinter/font.py __del__``
+    and the client timed out.  Collecting here, while the interpreter is alive and
+    on the thread that created it, keeps Tk from leaking into other tests.
+    """
     tk = pytest.importorskip("tkinter")
     try:
         root = tk.Tk()
     except tk.TclError:
         pytest.skip("no display available for widget tests")
     root.withdraw()
-    return root
+    try:
+        yield root
+    finally:
+        gc.collect()  # widgets and fonts are unreachable once the test returned
+        root.destroy()
+        tk._default_root = None
+        gc.collect()
 
 
-def test_every_page_is_its_own_screen(tmp_path) -> None:
+def test_every_page_is_its_own_screen(tmp_path, tk_root) -> None:
     pytest.importorskip("customtkinter")
     from claireai.desktop.app import ClaireDesktop
     from claireai.desktop.pages import PAGES
 
-    root = _tk_root()
-    try:
-        app = ClaireDesktop(root, FakeRuntime(tmp_path))  # type: ignore[arg-type]
-        for page_class in PAGES:
-            app.show(page_class)
-            assert app.current is page_class
-            assert app.pages[page_class].frame.winfo_exists()
-        # Every page has a distinct frame, so nothing is one long scrolling form.
-        frames = {id(app.pages[page_class].frame) for page_class in PAGES}
-        assert len(frames) == len(PAGES)
-    finally:
-        root.destroy()
+    app = ClaireDesktop(tk_root, FakeRuntime(tmp_path))  # type: ignore[arg-type]
+    for page_class in PAGES:
+        app.show(page_class)
+        assert app.current is page_class
+        assert app.pages[page_class].frame.winfo_exists()
+    # Every page has a distinct frame, so nothing is one long scrolling form.
+    frames = {id(app.pages[page_class].frame) for page_class in PAGES}
+    assert len(frames) == len(PAGES)
 
 
-def test_the_chat_page_appends_and_resets(tmp_path) -> None:
+def test_the_chat_page_appends_and_resets(tmp_path, tk_root) -> None:
     pytest.importorskip("customtkinter")
     from claireai.desktop.app import ClaireDesktop
     from claireai.desktop.pages import ChatPage
 
-    root = _tk_root()
-    try:
-        app = ClaireDesktop(root, FakeRuntime(tmp_path))  # type: ignore[arg-type]
-        app.show(ChatPage)
-        chat = app.pages[ChatPage]
-        chat.append("You", "hello", "you")
-        assert "hello" in chat.transcript.get("1.0", "end")
-        chat.new_chat()
-        assert chat.transcript.get("1.0", "end").strip() == ""
-    finally:
-        root.destroy()
+    app = ClaireDesktop(tk_root, FakeRuntime(tmp_path))  # type: ignore[arg-type]
+    app.show(ChatPage)
+    chat = app.pages[ChatPage]
+    chat.append("You", "hello", "you")
+    assert "hello" in chat.transcript.get("1.0", "end")
+    chat.new_chat()
+    assert chat.transcript.get("1.0", "end").strip() == ""
