@@ -36,7 +36,7 @@ from claireai.routing import route as _route
 from claireai.tools import default_registry as _default_registry
 
 ROOT = Path(__file__).resolve().parent
-DATASET_VERSION = "claireai-chat-v11"
+DATASET_VERSION = "claireai-chat-v12"
 
 # NOTE: the corpus builder is vocabulary- and context-agnostic. It emits JSONL
 # records; the larger vocab (4096) and longer context (512) for chat-v10 are
@@ -351,36 +351,58 @@ MULTI_TURN = [
 ]
 
 
+SHORT_SYSTEMS = (
+    "You are ClaireAI, a local assistant. Answer briefly.",
+    "You are ClaireAI, a helpful local assistant. Keep replies short and honest.",
+    "You are ClaireAI. Answer the question directly and briefly.",
+    "You are ClaireAI, a friendly local assistant.",
+)
+
+
+def varied_system(rng: random.Random) -> str:
+    """The runtime prompt most of the time, a short one sometimes.
+
+    Every chat record used to carry the full runtime sentence.  A caller that
+    sends a two-line system prompt then gets a model that has never seen one:
+    measured on chat-v4 (2026-11-09), `identity` answered with the capability
+    sentence and `thanks` answered with the approval refusal, both under a short
+    prompt.  A quarter of smalltalk records now use a short variant instead.
+    """
+    if rng.random() < 0.25:
+        return rng.choice(SHORT_SYSTEMS)
+    return assistant_system()
+
+
 def smalltalk(rng: random.Random) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for q in GREETINGS:
-        out.append(record(assistant_system(), [(q, rng.choice(GREETING_REPLIES))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(GREETING_REPLIES))]))
     for q in IDENTITY_Q:
-        out.append(record(assistant_system(), [(q, rng.choice(IDENTITY_A))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(IDENTITY_A))]))
     for q in CAPABILITY_Q:
-        out.append(record(assistant_system(), [(q, rng.choice(CAPABILITY_A))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(CAPABILITY_A))]))
     for q in THANKS_Q:
-        out.append(record(assistant_system(), [(q, rng.choice(THANKS_A))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(THANKS_A))]))
     for q in BYE_Q:
-        out.append(record(assistant_system(), [(q, rng.choice(BYE_A))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(BYE_A))]))
     for q in HOW_Q:
-        out.append(record(assistant_system(), [(q, rng.choice(HOW_A))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(HOW_A))]))
     for q in JOKE_Q:
-        out.append(record(assistant_system(), [(q, rng.choice(JOKE_A))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(JOKE_A))]))
     for q, a in MATH:
-        out.append(record(assistant_system(), [(q, a)]))
+        out.append(record(varied_system(rng), [(q, a)]))
     for q in UNKNOWN_Q:
-        out.append(record(assistant_system(), [(q, rng.choice(UNKNOWN_A))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(UNKNOWN_A))]))
     for q in PREFERENCE_Q:
-        out.append(record(assistant_system(), [(q, rng.choice(PREFERENCE_A))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(PREFERENCE_A))]))
     for q in CLARIFY_Q:
-        out.append(record(assistant_system(), [(q, rng.choice(CLARIFY_A))]))
+        out.append(record(varied_system(rng), [(q, rng.choice(CLARIFY_A))]))
     for turns in MULTI_TURN:
-        out.append(record(assistant_system(), list(turns)))
+        out.append(record(varied_system(rng), list(turns)))
     # Variations with polite prefixes and punctuation.
     prefixes = ["", "hey, ", "please ", "could you ", "can you ", "quick question: "]
     for base in GREETINGS[:5] + THANKS_Q[:4] + BYE_Q[:4]:
-        out.append(record(assistant_system(), [(rng.choice(prefixes) + base, rng.choice(GREETING_REPLIES + THANKS_A + BYE_A))]))
+        out.append(record(varied_system(rng), [(rng.choice(prefixes) + base, rng.choice(GREETING_REPLIES + THANKS_A + BYE_A))]))
     return out
 
 
@@ -589,6 +611,10 @@ SLOT_TASKS = [
     ("read notes.txt", {"filename": "notes.txt"}),
     ("delete old-draft.docx", {"filename": "old-draft.docx"}),
     ("find invoice-2026.pdf in Downloads", {"filename": "invoice-2026.pdf"}),
+    ("move budget-2027.xlsx to Desktop", {"filename": "budget-2027.xlsx"}),
+    ("rename draft-v2.docx to final-v2.docx", {"filename": "draft-v2.docx"}),
+    ("read report-2026-q3.pdf", {"filename": "report-2026-q3.pdf"}),
+    ("delete backup-01.zip", {"filename": "backup-01.zip"}),
     ("put photo.jpg into Pictures", {"filename": "photo.jpg"}),
     ("copy slides.pptx to Desktop", {"filename": "slides.pptx"}),
 ]
@@ -1024,17 +1050,17 @@ def smalltalk_expanded(rng: random.Random) -> list[dict[str, Any]]:
     openers = ["", "hey Claire, ", "hi Claire, ", "Claire, ", "quick one: ", "sorry to bother you, "]
     for q in GREETINGS:
         for opener in openers[:4]:
-            out.append(record(assistant_system(), [(opener + q, rng.choice(GREETING_REPLIES))]))
+            out.append(record(varied_system(rng), [(opener + q, rng.choice(GREETING_REPLIES))]))
     for q in CAPABILITY_Q:
         for opener in openers[:3]:
-            out.append(record(assistant_system(), [(opener + q, rng.choice(CAPABILITY_A))]))
+            out.append(record(varied_system(rng), [(opener + q, rng.choice(CAPABILITY_A))]))
     for q in THANKS_Q:
-        out.append(record(assistant_system(), [("okay, " + q, rng.choice(THANKS_A))]))
-        out.append(record(assistant_system(), [(q + "!", rng.choice(THANKS_A))]))
+        out.append(record(varied_system(rng), [("okay, " + q, rng.choice(THANKS_A))]))
+        out.append(record(varied_system(rng), [(q + "!", rng.choice(THANKS_A))]))
     # Multi-turn variants: greet, ask, thank, leave.
     for greeting in GREETINGS[:5]:
         for question in CAPABILITY_Q[:3]:
-            out.append(record(assistant_system(), [
+            out.append(record(varied_system(rng), [
                 (greeting, rng.choice(GREETING_REPLIES)),
                 (question, rng.choice(CAPABILITY_A)),
                 (rng.choice(THANKS_Q), rng.choice(THANKS_A)),
@@ -1694,7 +1720,7 @@ def build(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v11")
+    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v12")
     parser.add_argument("--dolly", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "dolly-15k.jsonl")
     parser.add_argument("--stories", type=Path, default=ROOT / "data" / "external" / "chat-sources" / "tinystories-valid.txt")
     parser.add_argument("--bootstrap", type=Path, default=ROOT / "data" / "bootstrap-v1" / "examples.jsonl")
