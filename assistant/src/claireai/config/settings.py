@@ -148,7 +148,13 @@ class Settings(BaseSettings):
     @property
     def brain_api_key_value(self) -> str | None:
         """The key itself, for the HTTP adapter. Never logged or serialised."""
-        return self.brain_api_key.get_secret_value() if self.brain_api_key else None
+        if self.brain_api_key:
+            return self.brain_api_key.get_secret_value()
+        # Keyring before the environment variable: a key stored there is not
+        # visible in `ps e`, a shell history or a dumped environment.
+        from claireai.secrets import stored_secret
+
+        return stored_secret(f"brain_api_key:{self.brain_provider}")
 
     @property
     def default_data_dir(self) -> Path:

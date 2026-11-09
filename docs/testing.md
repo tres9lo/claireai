@@ -221,3 +221,25 @@ subset, then `brain-lab/vision_train.py` trains a separate random-init CNN and
 reports click-within-target metrics on held-out screenshots. That visual model
 is not integrated into chat or screen control; its metrics are research results,
 not a product capability claim.
+
+## Tool-call baseline (2026-11-09)
+
+`scripts/tool_call_eval.py` asks for one thing: does the model emit a call the
+runtime can read, with the right tool and arguments. It reports three checks per
+case and only counts a case as passing when all runs pass.
+
+Run it with `--sandbox home` (the default) unless you specifically mean to test a
+fresh install with nothing allow-listed. `--sandbox empty` reproduces the old
+prompt, in which no file tool can run, so a correct answer there is not a call;
+that prompt measured a state no working install is in and once made a rejected
+checkpoint look far worse than it was.
+
+| checkpoint | suite prompt | checks | stable cases |
+| --- | --- | --- | --- |
+| chat-v4 (installed) | `--sandbox home` | 75/165 | 0/19 |
+| chat-v10 | `--sandbox home` | 74/165 | 6/19 |
+| chat-v4 (installed) | `--sandbox empty` | 68/165 | 0/19 |
+| chat-v10 | `--sandbox empty` | 30/165 | 0/19 |
+
+Numbers are only comparable within a sandbox mode. A case counts as passing only
+when every one of the three runs passes, so a single-run comparison is noise.

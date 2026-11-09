@@ -69,6 +69,21 @@ def check_capability(capability: str, allowed: Iterable[str]) -> None:
         )
 
 
+def _display_path(root: Path) -> str:
+    """Show a folder inside the home directory as ``~/...``.
+
+    The system prompt is the model's view of the sandbox, not a filesystem dump:
+    the short form keeps the username out of the prompt, survives a home move and
+    costs fewer tokens.  Folders outside home stay absolute.
+    """
+    try:
+        relative = root.relative_to(Path.home())
+    except ValueError:
+        return str(root)
+    text = str(relative)
+    return "~" if text in {"", "."} else f"~/{text}"
+
+
 @dataclass(frozen=True)
 class Sandbox:
     """Resolved allow-list. An empty sandbox allows nothing."""
@@ -86,7 +101,7 @@ class Sandbox:
     def describe(self) -> str:
         if self.is_empty:
             return "(no folders are allow-listed)"
-        return ", ".join(str(root) for root in self.roots)
+        return ", ".join(_display_path(root) for root in self.roots)
 
     def resolve(self, raw: str | os.PathLike[str]) -> Path:
         """Return the absolute path if it is inside an allow-listed folder.

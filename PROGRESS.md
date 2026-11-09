@@ -2213,3 +2213,46 @@ or implement the page-approval design against the existing loopback server.
   The case still fails — the call was for `move_to_trash`, not the offered
   `list_folder` — but it now says "model called a tool that was not offered (call
   dropped)" instead of blaming the model for not calling at all.
+
+## 2026-11-09 — The gate was measuring the wrong install; doctor and keys now say so
+
+- **The tool harness sent a prompt no working install sends.** It built its system
+  message from `Sandbox(roots=())`, where `Sandbox.resolve` refuses every path, so
+  half of its cases asked for a file call that could not succeed. It now takes
+  `--sandbox home` (default) or `--sandbox empty`, records the clause it used in
+  the JSON report, and prints it. Home folders also render as `~/Downloads` in the
+  prompt now (`Sandbox.describe`), which is the form the corpus teaches, keeps the
+  username out of the prompt and uses fewer tokens; folders outside home stay
+  absolute.
+- **Re-baselined at `--runs 3` under the home sandbox, same 19 cases / 165 checks:**
+
+  | checkpoint | checks | stable cases | runs passed |
+  | --- | --- | --- | --- |
+  | chat-v4 (installed) | 75/165 | 0/19 | 6/57 |
+  | chat-v10 (rejected) | 74/165 | 6/19 | 18/57 |
+
+  Under the empty-sandbox prompt the same two scored 68 and 30. The gap was the
+  prompt, not the models: chat-v10 is level on checks, ahead on runs, and is the
+  only one of the two that ever passes a case in all three runs.
+- **`doctor` now names the failures that cost runs.** It reads the checkpoint
+  sidecar and reports name, vocabulary, context, width, steps and training corpus,
+  and warns when the tokenizer is not `corpus-bpe-v1`, when the sidecar carries no
+  merges, or when the checkpoint's corpus is not the newest one on disk. It warns
+  when a database exists but has no `schema_migrations`, and it has a connector-key
+  section that fails when a connector is selected with no key and warns when a
+  `.env` is readable by group or others.
+- **Keys can live in the OS keyring.** `claireai.secrets` reads keyring first and
+  falls back to `CLAIREAI_BRAIN_API_KEY_<PROVIDER>`; `brain_api_key_value` uses it
+  when settings carry no key. Reading is the only thing it does — no key is ever
+  printed, and `doctor` reports file modes, not contents.
+- **The five conversation cases that fail everywhere were triaged by transcript,
+  and the cause is not the one the roadmap assumed.** `identity` answers with the
+  capability sentence, `thanks` answers with the approval refusal, and
+  `simple-math` answers "unknown" — all under two-line system prompts that no
+  training record carried. `slots-filename` returned `notes.txt` for
+  `budget-2027.xlsx`, a filename shape the slot pool did not contain.
+  `multi-turn-name` keeps the name through turn one and loses it in turn two.
+  The corpus (now `claireai-chat-v12`) carries four paraphrased short system
+  prompts on a quarter of smalltalk records — paraphrased so the case strings stay
+  held out — and four digit/dash filenames in the slot pool. Whether that fixes
+  the cases is a training question, not a corpus-count question.

@@ -63,10 +63,35 @@ def _match(expected: Any, actual: Any) -> bool:
     return expected == actual
 
 
-async def score_case(brain: ScratchBrain, registry, case: dict[str, Any], runs: int) -> dict[str, Any]:
+def sandbox_roots(mode: str) -> tuple[Path, ...]:
+    """The folders the prompt claims this install may use.
+
+    ``home`` mirrors a configured install: the three folders these cases name.
+    ``empty`` is the fresh-install state, where no file tool can run, so a correct
+    answer cannot be a file call.  This harness used to always send ``empty``,
+    which measured a state no working install is in and asked for calls on a
+    prompt the model had never seen.
+    """
+    if mode == "empty":
+        return ()
+    home = Path.home()
+    return tuple(home / name for name in ("Downloads", "Documents", "Desktop"))
+
+
+def system_prompt(mode: str) -> Message:
+    return system_message(Sandbox(roots=sandbox_roots(mode)))
+
+
+def prompt_clause(mode: str) -> str:
+    return system_prompt(mode).content.split(" Allowed folders:", 1)[-1]
+
+
+async def score_case(
+    brain: ScratchBrain, registry, case: dict[str, Any], runs: int, *, sandbox: str = "home"
+) -> dict[str, Any]:
     schemas = [registry.get(name).schema() for name in case.get("tools", []) if name in registry]
     messages = [
-        system_message(Sandbox(roots=())),
+        system_prompt(sandbox),
         Message(role="user", content=str(case["user"])),
     ]
     expect = case["expect"]
@@ -187,13 +212,17 @@ async def _run(args: argparse.Namespace) -> int:
 
     registry = default_registry(browser_enabled=True)
     try:
-        results = [await score_case(brain, registry, case, args.runs) for case in cases]
+        results = [
+            await score_case(brain, registry, case, args.runs, sandbox=args.sandbox)
+            for case in cases
+        ]
     finally:
         await brain.aclose()
 
     summary = summarise(results, args.runs)
     label = f"{health.models[0] if health.models else 'scratch'} @ {settings.resolved_model_checkpoint}"
     print("=" * 78)
+    print(f"sandbox: {args.sandbox}  (prompt says: Allowed folders: {prompt_clause(args.sandbox)})")
     print(render_report(results, summary, label))
     print("=" * 78)
 
@@ -206,6 +235,11 @@ async def _run(args: argparse.Namespace) -> int:
             {
                 "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "label": label,
+                "sandbox": {
+                    "mode": args.sandbox,
+                    "roots": [str(root) for root in sandbox_roots(args.sandbox)],
+                    "prompt_clause": prompt_clause(args.sandbox),
+                },
                 "summary": summary,
                 "cases": results,
             },
@@ -226,6 +260,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs", type=int, default=3, help="attempts per case (default 3)")
     parser.add_argument("--model-checkpoint", type=Path, help="override CLAIREAI_MODEL_CHECKPOINT")
     parser.add_argument("--out", help="write the JSON report here")
+    parser.add_argument(
+        "--sandbox",
+        choices=("home", "empty"),
+        default="home",
+        help="which folder clause the system prompt carries (default: home, like a configured install)",
+    )
     return parser
 
 
