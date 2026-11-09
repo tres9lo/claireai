@@ -38,12 +38,14 @@ export CLAIREAI_DATA_DIR="${RUNTIME}"
 PYTHON="${PYTHON:-${ROOT}/assistant/.venv/bin/python}"
 TRAIN="${TRAIN:-${ROOT}/brain-lab/train_chat.py}"
 
-NAME="claire-chat-v10"
+# One guard, parameterised by run name, so a follow-up run cannot write over the
+# previous run's checkpoint, log or run-end note.
+NAME="${NAME:-claire-chat-v10}"
 OUT="${MODELS}/${NAME}.pt"
 # train_chat.py writes the tokenizer/architecture JSON beside the checkpoint by
 # stripping the .pt suffix, so ${OUT}.json would point at a file that never exists.
 JSON_OUT="${OUT%.pt}.json"
-CORPUS="${CORPUS:-${ROOT}/brain-lab/data/chat-v10}"
+CORPUS="${CORPUS:-${ROOT}/brain-lab/data/chat-${NAME#claire-chat-}}"
 
 VOCAB_SIZE="${VOCAB_SIZE:-4096}"
 WIDTH="${WIDTH:-288}"
@@ -64,7 +66,7 @@ DISK_BUDGET_FRACTION="${DISK_BUDGET_FRACTION:-0.80}"
 
 
 RUNNO="$(date +%Y%m%dT%H%M%S)"
-RUNNO_FILE="${LOG}/run-chat-v10-${RUNNO}.log"
+RUNNO_FILE="${LOG}/run-${NAME#claire-}-${RUNNO}.log"
 
 # Predicted footprint estimate (bytes) for this run at maximum size.
 # This is a conservative estimate, not a measurement; it exists so the guard can
@@ -129,8 +131,8 @@ function run_end_note() {
   local free_at_stop
   free_at_stop="$(root_free_bytes)"
   mkdir -p "${RUNTIME}"
-  cat > "${RUNTIME}/run-end-chat-v10-${RUNNO}.txt" <<EOF
-run chat-v10 guard note
+  cat > "${RUNTIME}/run-end-${NAME#claire-}-${RUNNO}.txt" <<EOF
+run ${NAME} guard note
 ruunnno: ${RUNNO}
 start_time_epoch: ${START_TIME}
 stop_reason: ${reason}
@@ -167,7 +169,7 @@ env:
   TIME_BUDGET_SECONDS=${TIME_BUDGET_SECONDS}
   DISK_BUDGET_FRACTION=${DISK_BUDGET_FRACTION}
 guard_script: ${0}
-note: This file is written by the chat-v10 run guard. The training artifacts themselves
+note: This file is written by the chat run guard (brain-lab/scripts/run_chat_v10_guard.sh). The training artifacts themselves
   live under runtime-data/ and are gitignored. This note is intentionally small and
   human-readable; it is not an eval result and not evidence by itself.
 EOF
@@ -347,6 +349,6 @@ JSON_SIZE="$(stat -c%s "$JSON_OUT" 2>/dev/null || echo 0)"
 run_end_note "$STOP_REASON" "unknown" "$WALL_DONE" "$PT_SIZE" "$JSON_SIZE" "$STOP_STATUS"
 
 echo "guard: run ended. exit=${TRAIN_EXIT} wall=${WALL_DONE}s status=${STOP_STATUS}"
-echo "guard: note written to ${RUNTIME}/run-end-chat-v10-${RUNNO}.txt"
+echo "guard: note written to ${RUNTIME}/run-end-${NAME#claire-}-${RUNNO}.txt"
 
 exit 0
