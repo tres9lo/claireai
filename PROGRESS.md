@@ -2102,3 +2102,52 @@ or implement the page-approval design against the existing loopback server.
   while waiting, so the stall is a timing threshold in the uncommitted
   approval-from-the-page work rather than in the vision code. Left as a reported
   failure rather than hidden, and not weakened.
+
+## 2026-11-08 — The capacity hypothesis was trained and it did not survive contact
+
+- **The hypothesis.** chat-v5, v6, v7 and v9 each bought tool accuracy with
+  conversation accuracy, and v9 — which had the calendar in the corpus from the
+  first step — still scored below chat-v4 on both axes at the same size. The
+  reading was capacity: 3.34M parameters cannot hold tool discrimination,
+  conversation and grounded listing at once. chat-v10 is the direct test, trained
+  from scratch at chat-v4's exact hyperparameters with the model made larger.
+- **What actually ran.** 7,315,200 parameters (2.2× chat-v4), vocabulary 4,096
+  (3.6×), context 512, 6 layers of width 288, 8 heads, batch 8, 6,000 steps, peak
+  LR 3e-4 into a cosine floor of 3e-5, warmup 100, seed 42, and the same corpus
+  builder as v9 with the calendar included from step one. The run guard held it
+  to a 12 h time budget and an 80% disk budget and it finished cleanly in 11,443 s
+  (1.91 s/step including evals), against chat-v4's 0.72 s/step.
+- **The loss curve and what it does not say.** Validation loss 6.2813 → 5.7451 →
+  5.1780 → 4.8131 → 4.6135 → 4.4669 → 4.3882 → 4.2794 → 4.1548 at steps 250 …
+  6,000. It is still falling at the end, but the fall per 500 steps had already
+  collapsed from −0.57 at step 1,000 to −0.05 at step 3,500, so this is a run
+  flattening out rather than one cut off mid-slope. Per-token loss is also not
+  comparable across vocabularies: a 4,096-token vocabulary packs more information
+  into each token than 1,152 does, so 4.15 against chat-v4's 1.38 is not a like-for
+  -like regression. Which is why the verdict below comes from behaviour, not loss.
+- **The gate, measured at chat-v4's run counts.** `tool_call_eval.py --runs 3`:
+  **30/165** checks, 4 of 57 runs passing, no case stable across all three runs
+  (chat-v4: 68/165). `conversation_eval.py --runs 3`: **12/21** cases (chat-v4:
+  14). It fails on both axes, so it is rejected and `claire-scratch.{pt,json}`
+  stays on chat-v4 — md5 `9efef904b4fd6c9440ecc25549acac7c`, unchanged, and the
+  training run wrote only `claire-chat-v10.*`.
+- **What it fails at, which is more informative than the score.** The model does
+  not emit malformed tool calls so much as refuse to make them: twelve of the
+  nineteen tool cases recorded "0 readable calls" and the sample reply for
+  `list-downloads` is the approval sentence — *"I can't do that without your
+  explicit approval. I can move a file to a recoverable trash folder if you
+  approve it."* — for a plain read of the user's own Downloads folder. Six
+  thousand steps at this size collapsed the output distribution onto the refusal
+  template instead of learning when a read needs no approval.
+- **One harness observation, deliberately not acted on.** In
+  `multi-turn-tool-followup` the model emitted a well-formed `<tool_call>` block
+  and the harness still scored it "model produced no tool call". That is either a
+  parser gap or a routing-offered tool mismatch; it is recorded here for R1
+  rather than fixed by touching the case file, because every checkpoint in the
+  table was measured by this same harness and loosening a case to move a number
+  is the one thing testing policy forbids.
+- **Guard bug found by its own note.** The run-end note reported
+  `artifact_json: …/claire-chat-v10.pt.json` with a size of 0: the guard appended
+  `.json` to a path that already ended in `.pt`, while `train_chat.py` strips the
+  suffix. Fixed to `${OUT%.pt}.json`; the note is the only place the wrong path
+  was ever used.

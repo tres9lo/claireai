@@ -40,6 +40,9 @@ TRAIN="${TRAIN:-${ROOT}/brain-lab/train_chat.py}"
 
 NAME="claire-chat-v10"
 OUT="${MODELS}/${NAME}.pt"
+# train_chat.py writes the tokenizer/architecture JSON beside the checkpoint by
+# stripping the .pt suffix, so ${OUT}.json would point at a file that never exists.
+JSON_OUT="${OUT%.pt}.json"
 CORPUS="${CORPUS:-${ROOT}/brain-lab/data/chat-v10}"
 
 VOCAB_SIZE="${VOCAB_SIZE:-4096}"
@@ -139,7 +142,7 @@ root_free_at_start_bytes: ${FREE_AT_START}
 root_free_at_stop_bytes: ${free_at_stop}
 artifact_pt: ${OUT}
 artifact_pt_size: ${pt_size}
-artifact_json: ${OUT}.json
+artifact_json: ${JSON_OUT}
 artifact_json_size: ${json_size}
 env:
   CLAIREAI_DATA_DIR=${CLAIREAI_DATA_DIR}
@@ -339,7 +342,7 @@ fi
 
 # Sync the artifact sizes we can see now.
 PT_SIZE="$(stat -c%s "$OUT" 2>/dev/null || echo 0)"
-JSON_SIZE="$(stat -c%s "$OUT.json" 2>/dev/null || echo 0)"
+JSON_SIZE="$(stat -c%s "$JSON_OUT" 2>/dev/null || echo 0)"
 
 run_end_note "$STOP_REASON" "unknown" "$WALL_DONE" "$PT_SIZE" "$JSON_SIZE" "$STOP_STATUS"
 
