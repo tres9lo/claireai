@@ -60,3 +60,6 @@ brain-lab/data/chat-v*/
 
 # Private working plan: notes for the owner, never published.
 NEXT_STEPS.md
+
+# Manual, agent-free instructions for work that needs a long run or hardware.
+MANUAL_TASKS.md

@@ -32,7 +32,28 @@ EXIT_CONFIG = 2
 DEFAULT_PORT = 8765
 PORT_ATTEMPTS = 20
 
-HTML_PATH = Path(__file__).resolve().parents[3] / "desktop" / "presence" / "index.html"
+_PACKAGE = Path(__file__).resolve().parent
+
+
+def web_page_path() -> Path:
+    """The app page, from an installed package, a checkout, or an override.
+
+    A wheel cannot contain ``<repo>/desktop/presence`` unless the build copies it
+    in, so the packaged location is checked first; the checkout path stays as the
+    development fallback. ``CLAIREAI_WEB_DIR`` pins an exact directory.
+    """
+    override = os.environ.get("CLAIREAI_WEB_DIR")
+    if override:
+        return Path(override).expanduser() / "index.html"
+    packaged = _PACKAGE / "web" / "index.html"
+    if packaged.is_file():
+        return packaged
+    # app.py lives at <repo>/assistant/src/claireai/app.py: from the package
+    # directory, parents[2] is the repository root during development.
+    return _PACKAGE.parents[2] / "desktop" / "presence" / "index.html"
+
+
+HTML_PATH = web_page_path()
 
 
 @dataclass(frozen=True)
@@ -125,6 +146,56 @@ def banner(running: Running, *, opening: bool = True) -> str:
     )
 
 
+def setup_report(
+    settings: Settings, *, voice_report: Callable[[], str] | None = None
+) -> int:
+    """First run: create what is missing and say what is and is not available.
+
+    Nothing is downloaded and nothing is enabled; this only reports, so a fresh
+    install can see why chat or speech would not work yet.
+    """
+    settings.ensure_directories()
+    applied = Database(settings.database_path).migrate()
+    page = web_page_path()
+    checkpoint = settings.resolved_model_checkpoint
+
+    if voice_report is None:
+
+        def voice_report() -> str:
+            from claireai.voice import available_voices
+
+            voices = available_voices()
+            return (
+                ", ".join(sorted(voices.values()))
+                if voices
+                else "off (install eSpeak NG or add a Piper voice)"
+            )
+
+    lines = [
+        "",
+        "ClaireAI setup",
+        f"  data        {settings.resolved_data_dir}",
+        f"  database    {settings.database_path}",
+        f"  migrations  {', '.join(applied) if applied else 'already up to date'}",
+        f"  model       {checkpoint}",
+        "",
+        f"  voice       {voice_report()}",
+        f"  page        {page}",
+        "",
+        "Next: run `claireai` to open the app, or `claireai --cli` for the terminal.",
+        "",
+    ]
+    if not checkpoint.is_file():
+        lines.insert(
+            6,
+            "              (missing: chat needs a checkpoint or an opt-in connector)",
+        )
+    if not page.is_file():
+        lines.insert(-2, "              (missing: this build did not include the app page)")
+    print("\n".join(lines))
+    return EXIT_OK if page.is_file() else EXIT_CONFIG
+
+
 def serve(server) -> None:  # noqa: ANN001
     """Block until Ctrl+C, then close the listener."""
     try:
@@ -152,6 +223,7 @@ APP_FLAGS = frozenset(
     {
         "--cli", "-i", "--port", "--data-dir", "--no-browser", "-h", "--help",
         "--desktop", "--install-autostart", "--uninstall-autostart", "--autostart-status",
+        "--setup",
     }
 )
 
@@ -187,7 +259,20 @@ def main(
     parser.add_argument("--install-autostart", action="store_true", help="start ClaireAI with the desktop session")
     parser.add_argument("--uninstall-autostart", action="store_true", help="stop starting it with the session")
     parser.add_argument("--autostart-status", action="store_true", help="report the autostart entry")
+    parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="prepare the data directory and database, report what is available, then exit",
+    )
     parsed = parser.parse_args(args)
+
+    if parsed.setup:
+        settings = (
+            Settings(data_dir=Path(parsed.data_dir).expanduser())
+            if parsed.data_dir
+            else Settings()
+        )
+        return setup_report(settings)
 
     from claireai import autostart
 

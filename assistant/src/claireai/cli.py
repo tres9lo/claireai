@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import queue
 import sqlite3
 import sys
@@ -24,7 +25,13 @@ from typing import Callable, Sequence
 from pydantic import ValidationError
 
 from claireai.agent import AgentError, describe_steps, run_task
-from claireai.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
+from claireai.approval import ApprovalBroker, ApprovalDecision, ApprovalRequest, new_ref
+from claireai.approval_file import (
+    DEFAULT_TTL_SECONDS as APPROVAL_TTL_SECONDS,
+    ApprovalFileError,
+    FileApprovalBroker,
+    issue as issue_approval,
+)
 from claireai.audit import AuditLog, redact
 from claireai.brain import (
     Brain,
@@ -403,7 +410,11 @@ async def _handle_turn(
         _speak_answer(args=args, settings=settings, conn=conn, task_id=turn.task_id, text=turn.content)
         return EXIT_OK
 
-    approvals: ApprovalBroker = CliApprovalBroker()
+    approvals: ApprovalBroker = (
+        FileApprovalBroker(settings.resolved_data_dir)
+        if getattr(args, "approval_file", False)
+        else CliApprovalBroker()
+    )
     try:
         outcome = await run_task(
             settings=settings,
@@ -454,7 +465,12 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
     tool_label = "off (--no-tools)" if args.no_tools else f"{len(registry)} tools"
     print(f"tools: {tool_label} | browser: {'enabled' if controls['browser'] else 'off'} | allow-list: {sandbox.describe()}")
     print(f"routing: {settings.tool_routing} (narrow the tool set per request)")
-    approvals_label = "interactive prompt" if sys.stdin.isatty() else "none (write tools refused)"
+    if getattr(args, "approval_file", False):
+        approvals_label = "signed approval file (one token per action)"
+    else:
+        approvals_label = (
+            "interactive prompt" if sys.stdin.isatty() else "none (write tools refused)"
+        )
     print(f"approvals: {approvals_label}")
     if args.dry_run:
         print("dry run: tools will report what they would do, nothing will run")
@@ -553,6 +569,48 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
         conn.close()
 
 
+def _coerce_argument(value: str) -> object:
+    """Match the value the agent will validate: ``10`` is an int, not the text."""
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return value
+    if isinstance(parsed, (str, int, float, bool)) or parsed is None:
+        return parsed
+    return value
+
+
+def _run_preauthorize(args: argparse.Namespace, settings: Settings) -> int:
+    """Issue one signed token for one exact action, then exit."""
+    arguments: dict[str, object] = {}
+    for item in args.arg or []:
+        if "=" not in item or item.startswith("="):
+            print(f"ERROR: --arg needs KEY=VALUE, got {item!r}", file=sys.stderr)
+            return EXIT_CONFIG
+        key, value = item.split("=", 1)
+        arguments[key] = _coerce_argument(value)
+    request = ApprovalRequest(
+        ref=new_ref(),
+        task_id="preauthorize",
+        tool=args.preauthorize,
+        risk="needs_approval",
+        arguments=arguments,
+    )
+    try:
+        path = issue_approval(
+            request, data_dir=settings.resolved_data_dir, ttl_seconds=args.ttl
+        )
+    except (ApprovalFileError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    print(f"signed approval token: {path}")
+    print(f"  tool       {request.tool}")
+    print(f"  arguments  {arguments}")
+    print(f"  expires    in {args.ttl} s, and works once")
+    print("unattended run: claireai --approval-file --once \"...\"")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="claireai", description="Chat with the local ClaireAI model.")
     parser.add_argument("--once", "-q", metavar="QUESTION", help="ask one question, print the answer, exit")
@@ -618,6 +676,33 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --prune, actually remove the planned items and log the run",
     )
+    parser.add_argument(
+        "--approval-file",
+        action="store_true",
+        help=(
+            "in a non-interactive run, allow a write only when a signed single-use "
+            "token matches the exact action (issue one with --preauthorize)"
+        ),
+    )
+    parser.add_argument(
+        "--preauthorize",
+        metavar="TOOL",
+        help="issue one signed approval token for TOOL with the given --arg values, then exit",
+    )
+    parser.add_argument(
+        "--arg",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="argument for --preauthorize (repeat for each one)",
+    )
+    parser.add_argument(
+        "--ttl",
+        type=int,
+        default=APPROVAL_TTL_SECONDS,
+        metavar="SECONDS",
+        help=f"lifetime of a --preauthorize token (default {APPROVAL_TTL_SECONDS})",
+    )
     return parser
 
 
@@ -642,6 +727,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             label = f"{field}: " if field else ""
             print(f"  {label}{error['msg']}", file=sys.stderr)
         return EXIT_CONFIG
+
+    if args.preauthorize:
+        return _run_preauthorize(args, settings)
 
     if args.presence:
         args.presence = PresenceStream(

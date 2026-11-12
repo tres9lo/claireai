@@ -5,6 +5,26 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — a signed approval for runs with no terminal
+
+- Unattended runs still refuse writes, but can now consume one signed
+  single-use token per action (`--preauthorize` to issue, `--approval-file` to
+  use). The token names the tool, every argument and the target, expires, and is
+  moved to `approvals/consumed/` before the action runs, so a replay finds
+  nothing. The signing key is `approval.key`, mode `0600`; a refusal prints the
+  exact command that would authorise the action the model proposed.
+- `claireai --setup` prepares the data directory and database and reports the
+  model, voice and page situation, so a fresh install can see why chat or speech
+  would not work yet without running anything.
+
+### Fixed — the app page was only found in a checkout
+
+- `app.HTML_PATH` was hard-coded to `<repo>/desktop/presence/index.html`, which
+  cannot exist in an installed wheel, so `pipx install claireai` would start and
+  immediately fail with "the app page is missing". The page is now resolved from
+  the packaged location first, then the checkout, with `CLAIREAI_WEB_DIR` as an
+  explicit override.
+
 ### Fixed — routing hid the tool that could answer the request
 
 - "show me what report.pdf says" routed to `list_folder`, "what is in Pictures"
