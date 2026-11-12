@@ -37,20 +37,22 @@ voice = ["faster-whisper>=1.1,<2"]
 # The native window draws its own surfaces, so it needs a styling toolkit on top
 # of Tk. Nothing else in the package does.
 desktop = ["customtkinter>=5.2,<7"]
-# Local image understanding. torchvision is deliberately not listed: the wheel
-# that resolves here does not register its operators against the installed torch,
-# and CLIP needs only transformers, Pillow and NumPy. That is also why this is
-# capped below 5: transformers 5 pulls in timm, timm requires torchvision, and
-# the result is an install that resolves and then fails `pip check` for a
-# package the project cannot ship. 4.x is the newest tree that stays clean.
-vision = ["transformers>=4.40,<5"]
+# Local image understanding: CLIP through transformers. torchvision is
+# deliberately not listed, because the wheel that resolves here does not
+# register its operators against the installed torch and CLIP does not need it.
+# torch is repeated from the `model` extra on purpose: with transformers alone
+# this extra installed, passed `pip check`, and then failed at the first image
+# because nothing had pulled the runtime vision.py imports. Pillow decodes the
+# image before the model sees it and was only ever a test dependency.
+vision = ["transformers>=4.40,<6", "torch>=2.2,<3", "Pillow>=10,<13"]
 # One resolution for everything, so the owner never installs extras one at a
 # time and hits a conflict from a half-applied dependency set.
 all = [
   "torch>=2.2,<3",
   "faster-whisper>=1.1,<2",
   "customtkinter>=5.2,<7",
-  "transformers>=4.40,<5",
+  "transformers>=4.40,<6",
+  "Pillow>=10,<13",
 ]
 
 [project.scripts]

@@ -28,12 +28,17 @@ nothing has been released yet.
   layout pushed the overflow above the scrollport, so the first message could
   not be reached at all.
 
-### Fixed — installing an extra could resolve into a conflict
+### Fixed — the vision extra installed without its runtime
 
-- `transformers>=4.40` resolved to 5.x, which requires `timm`, which requires
-  `torchvision` — the package this project deliberately does not install. The
-  result was an install that succeeded and then failed `pip check`. The `vision`
-  extra is capped below 5, the newest tree that stays clean.
+- `pip install "claireai[vision]"` resolved cleanly, passed `pip check`, and then
+  failed at the first image: the extra listed only `transformers`, while
+  `vision.py` imports torch and Pillow. Both are part of the extra now.
+- An earlier note here said transformers 5 required `timm` and therefore
+  `torchvision`. That was wrong: transformers lists `timm` and `torchvision`
+  only as extras, and the failing `pip check` in this environment came from a
+  `timm` installed by hand that nothing here requires. CLIP was then run on both
+  4.57.6 and 5.22.1 — identical rankings, identical scores — so the cap is
+  `<6` (the next major), not `<5`.
 - Dependencies carry upper bounds now, so installing ClaireAI cannot silently
   upgrade a package the owner already relies on, and `claireai[all]` installs
   every optional runtime in a single resolution instead of one extra at a time.

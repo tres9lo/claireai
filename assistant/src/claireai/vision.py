@@ -102,7 +102,7 @@ def _load():
     except ImportError as error:
         raise VisionUnavailable(
             "local vision model is not installed; install it with "
-            "`uv pip install transformers`"
+            '`pip install "claireai[vision]"` (transformers, torch and Pillow)'
         ) from error
     try:
         model = CLIPModel.from_pretrained(MODEL_ID)
