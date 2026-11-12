@@ -8,36 +8,50 @@ version = "0.1.0"
 description = "ClaireAI local-first personal assistant runtime (Track A)"
 requires-python = ">=3.11"
 dependencies = [
+  # Upper bounds are deliberate: these are all pre-1.0 or fast-moving, and an
+  # unbounded range means installing ClaireAI can silently upgrade a package the
+  # owner already relies on (the classic "it worked before I installed this").
   # The assistant keeps external network access in explicit tools only.
-  "httpx>=0.27",
-  "pydantic>=2.7",
-  "pydantic-settings>=2.3",
+  "httpx>=0.27,<1",
+  "pydantic>=2.7,<3",
+  "pydantic-settings>=2.3,<3",
   # OS-specific application-data locations, maintained rather than hard-coded.
-  "platformdirs>=4.2",
+  "platformdirs>=4.2,<5",
   # API layer, installed now, wired up only after the core services are tested.
-  "fastapi>=0.115",
-  "uvicorn>=0.30",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
   "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.2",
-  "pytest-asyncio>=0.23",
+  "pytest>=8.2,<10",
+  "pytest-asyncio>=0.23,<2",
   # Building test images for the vision layer. Pillow is small, is not on the
   # runtime path, and lets the blank-frame refusal tests run in CI instead of
   # being skipped there.
-  "Pillow>=10",
+  "Pillow>=10,<13",
 ]
-model = ["torch>=2.2"]
+model = ["torch>=2.2,<3"]
 voice = ["faster-whisper>=1.1,<2"]
 # The native window draws its own surfaces, so it needs a styling toolkit on top
 # of Tk. Nothing else in the package does.
-desktop = ["customtkinter>=5.2"]
+desktop = ["customtkinter>=5.2,<7"]
 # Local image understanding. torchvision is deliberately not listed: the wheel
 # that resolves here does not register its operators against the installed torch,
-# and CLIP needs only transformers, Pillow and NumPy.
-vision = ["transformers>=4.40"]
+# and CLIP needs only transformers, Pillow and NumPy. That is also why this is
+# capped below 5: transformers 5 pulls in timm, timm requires torchvision, and
+# the result is an install that resolves and then fails `pip check` for a
+# package the project cannot ship. 4.x is the newest tree that stays clean.
+vision = ["transformers>=4.40,<5"]
+# One resolution for everything, so the owner never installs extras one at a
+# time and hits a conflict from a half-applied dependency set.
+all = [
+  "torch>=2.2,<3",
+  "faster-whisper>=1.1,<2",
+  "customtkinter>=5.2,<7",
+  "transformers>=4.40,<5",
+]
 
 [project.scripts]
 # No arguments starts the local app; any argument is passed to the CLI

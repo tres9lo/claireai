@@ -199,6 +199,15 @@ def _handler_factory(
             except SpeechRecognitionUnavailable as exc:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain; charset=utf-8", str(exc).encode()[:512])
                 return
+            except Exception as exc:  # noqa: BLE001 - a dropped connection looks like a dead app
+                # Without this, any unexpected error closes the socket and the page
+                # reports a bare network failure. Say what happened instead.
+                import traceback
+
+                traceback.print_exc()
+                message = f"internal error: {type(exc).__name__}: {exc}".encode()[:512]
+                self._send(HTTPStatus.INTERNAL_SERVER_ERROR, "text/plain; charset=utf-8", message)
+                return
             self._send(HTTPStatus.OK, "application/json", json.dumps(result, sort_keys=True).encode())
 
         def _same_origin_api(self) -> bool:
@@ -593,6 +602,13 @@ def demo_loop(stream: PresenceStream, *, stop: threading.Event, delay: float = 1
         stop.wait(delay)
 
 
+def _default_page() -> Path:
+    """The app page, resolved the same way the app resolves it."""
+    from claireai.app import web_page_path
+
+    return web_page_path()
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -603,7 +619,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--demo", action="store_true", help="cycle fake states for a visual check")
     parser.add_argument(
         "--html",
-        default=str(Path(__file__).resolve().parents[3] / "desktop" / "presence" / "index.html"),
+        default=None,
+        help="page to serve (default: the packaged page, else the checkout copy)",
     )
     parser.add_argument(
         "--db",
@@ -626,7 +643,7 @@ def main(argv: list[str] | None = None) -> int:
 
     server = build_server(
         stream,
-        html_path=Path(args.html),
+        html_path=Path(args.html) if args.html else _default_page(),
         host=args.host,
         port=args.port,
         database_path=database_path,

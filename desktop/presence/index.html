@@ -3,168 +3,395 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ClaireAI presence</title>
+    <title>ClaireAI</title>
     <style>
       :root {
         color-scheme: dark;
-        --bg: #05070d;
-        --ink: #dbe7ff;
-        --muted: #7f8ba8;
-        --line: #1b2436;
-        --idle: #4f8cff;
-        --thinking: #9b7bff;
-        --tool: #27c2a0;
-        --approval: #ffb020;
-        --speaking: #ff6fb1;
-        --error: #ff5d5d;
-        --offline: #6b7280;
+        --bg: #06080f;
+        --rail: #080c15;
+        --panel: #0b111c;
+        --panel-2: #0f1725;
+        --line: #1b2537;
+        --line-soft: #16203050;
+        --ink: #e8eefb;
+        --muted: #8494b0;
+        --accent: #5b8cff;
+        --accent-soft: #5b8cff22;
+        --violet: #9b7bff;
+        --ok: #27c2a0;
+        --warn: #ffb020;
+        --bad: #ff5d5d;
+        --radius: 14px;
       }
       * { box-sizing: border-box; }
+      html, body { height: 100%; }
       body {
         margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        background: radial-gradient(circle at 50% 30%, #0d1424 0%, var(--bg) 70%);
+        background:
+          radial-gradient(1100px 600px at 78% -10%, #12203a 0%, transparent 60%),
+          radial-gradient(900px 500px at -10% 100%, #141026 0%, transparent 55%),
+          var(--bg);
         color: var(--ink);
-        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        font: 14.5px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        overflow: hidden;
       }
-      main { width: min(520px, 92vw); text-align: center; }
-      canvas { width: 280px; height: 280px; display: block; margin: 0 auto; }
-      h1 { font-size: 13px; letter-spacing: .22em; text-transform: uppercase; color: var(--muted); margin: 8px 0 4px; }
-      #state { font-size: 30px; font-weight: 600; letter-spacing: .01em; margin: 0; }
-      #detail { min-height: 1.5em; color: var(--muted); margin: 4px 0 18px; font-variant-numeric: tabular-nums; }
-      ul.indicators { list-style: none; padding: 0; margin: 0; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+      .app {
+        display: grid;
+        grid-template-columns: 248px minmax(0, 1fr);
+        height: 100dvh;
+      }
+      /* ---- rail ------------------------------------------------------- */
+      .rail {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        min-width: 0;
+        padding: 20px 14px;
+        background: linear-gradient(180deg, #0a0f1a, var(--rail));
+        border-right: 1px solid var(--line);
+      }
+      .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 6px; }
+      .brand .glyph {
+        width: 26px; height: 26px; border-radius: 9px;
+        background: conic-gradient(from 210deg, var(--accent), var(--violet), var(--ok), var(--accent));
+        box-shadow: 0 0 18px #5b8cff66;
+      }
+      .brand strong { font-size: 15px; letter-spacing: .01em; display: block; }
+      .brand span { display: block; font-size: 11px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; }
+      .rail-nav { display: flex; flex-direction: column; gap: 3px; }
+      .rail-nav button {
+        display: flex; align-items: center; gap: 10px;
+        width: 100%; padding: 10px 12px;
+        border: 1px solid transparent; border-radius: 10px;
+        background: transparent; color: var(--muted);
+        font: inherit; text-align: left; cursor: pointer;
+      }
+      .rail-nav button .pip { width: 6px; height: 6px; border-radius: 50%; background: #2c3850; }
+      .rail-nav button:hover { background: #101a2b; color: var(--ink); }
+      .rail-nav button.on { background: #122036; color: var(--ink); border-color: #22304a; }
+      .rail-nav button.on .pip { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+      .rail-nav button:focus-visible, button:focus-visible, a:focus-visible, textarea:focus-visible,
+      input:focus-visible, select:focus-visible, canvas:focus-visible {
+        outline: 2px solid #88b4ff; outline-offset: 2px;
+      }
+      .rail-foot { margin-top: auto; display: grid; gap: 6px; font-size: 11.5px; color: var(--muted); padding: 0 8px; }
+      .rail-foot code { color: #9fb3d9; }
+      .rail-foot a { color: inherit; }
+      /* ---- stage ------------------------------------------------------ */
+      .stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+      .topbar {
+        display: flex; align-items: center; gap: 16px;
+        padding: 12px 22px;
+        border-bottom: 1px solid var(--line);
+        background: #080d1680;
+        backdrop-filter: blur(8px);
+      }
+      #orb { width: 66px; height: 66px; flex: none; }
+      .state-block { min-width: 0; }
+      #state {
+        margin: 0; font-size: 19px; font-weight: 600; letter-spacing: .01em;
+        text-transform: capitalize;
+      }
+      #detail { margin: 0; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+      ul.indicators {
+        list-style: none; margin: 0 0 0 auto; padding: 0;
+        display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
+      }
       ul.indicators li {
-        display: flex; align-items: center; gap: 7px;
+        display: flex; align-items: center; gap: 6px;
         border: 1px solid var(--line); border-radius: 999px;
-        padding: 5px 12px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
-        color: var(--muted);
+        padding: 3px 10px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--muted); background: #0b1220;
       }
-      ul.indicators .dot { width: 8px; height: 8px; border-radius: 50%; background: #2a3448; }
+      ul.indicators .dot { width: 7px; height: 7px; border-radius: 50%; background: #2a3448; }
       ul.indicators li.on { color: var(--ink); border-color: #34405c; }
       ul.indicators li.on .dot { background: #ff4d6d; box-shadow: 0 0 10px #ff4d6d; }
-      footer { margin-top: 22px; font-size: 12px; color: var(--muted); }
-      footer a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-      .controls { margin: 24px auto 0; padding: 18px; text-align: left; border: 1px solid var(--line); border-radius: 16px; background: #0b101b; }
-      .controls h2 { margin: 0 0 10px; font-size: 16px; }
-      .controls p { color: var(--muted); margin: 4px 0 12px; }
-      .control-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
-      .control-row button { min-height: 44px; min-width: 150px; border: 1px solid #465673; border-radius: 9px; background: #172238; color: var(--ink); font: inherit; padding: 8px 14px; cursor: pointer; }
-      .control-row button:hover { background: #233351; }
-      .control-row button:focus-visible { outline: 3px solid #88b4ff; outline-offset: 2px; }
-      .control-row button.danger { border-color: #a23d4c; background: #351720; }
-      .control-row button:disabled { opacity: .5; cursor: wait; }
-      #control-status { min-height: 1.5em; color: var(--muted); }
+      /* ---- panels ----------------------------------------------------- */
+      .panels { position: relative; flex: 1; min-height: 0; display: flex; }
+      .panel { display: none; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
+      .panel.on { display: flex; }
+      .panel-body {
+        flex: 1; min-height: 0; overflow-y: auto;
+        padding: 22px 26px 36px;
+      }
+      .panel-body > * { width: 100%; max-width: 860px; margin-left: auto; margin-right: auto; }
+      .card {
+        border: 1px solid var(--line); border-radius: var(--radius);
+        background: linear-gradient(180deg, #0c1320, #0a101a);
+        padding: 18px 20px; margin-bottom: 16px;
+      }
+      .card h2 { margin: 0 0 4px; font-size: 15px; letter-spacing: .01em; }
+      .card h3 { margin: 18px 0 6px; font-size: 13px; color: #c3d1ea; }
+      .card p { color: var(--muted); margin: 4px 0 12px; }
+      .muted { color: var(--muted); }
+      /* ---- chat ------------------------------------------------------- */
+      .chat-scroll {
+        flex: 1; min-height: 0; overflow-y: auto;
+        padding: 22px 26px;
+        display: flex; flex-direction: column; gap: 14px;
+        scroll-behavior: smooth;
+      }
+      .transcript { display: flex; flex-direction: column; gap: 12px; max-width: 860px; width: 100%; margin: 0 auto; }
+      .msg { display: flex; flex-direction: column; gap: 4px; max-width: min(74ch, 88%); }
+      .msg .who { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+      .msg .text {
+        white-space: pre-wrap; overflow-wrap: anywhere;
+        border: 1px solid var(--line); border-radius: 13px;
+        padding: 11px 14px; background: #0c1320;
+      }
+      .msg.user { margin-left: auto; align-items: flex-end; }
+      .msg.user .text {
+        background: linear-gradient(180deg, #1a2c4d, #152238);
+        border-color: #2a3f66;
+      }
+      .msg.error .text { border-color: #7a2a35; background: #241019; color: #ffc9cf; }
+      .msg.empty, .empty { color: var(--muted); text-align: center; padding: 24px 8px; }
+      .composer {
+        border-top: 1px solid var(--line);
+        background: linear-gradient(180deg, #0a101aee, #080d16);
+        padding: 12px 22px 16px;
+      }
+      .composer-inner { max-width: 860px; margin: 0 auto; display: grid; gap: 8px; }
+      #chat-message {
+        width: 100%; min-height: 54px; max-height: 180px; resize: none;
+        border: 1px solid #2a3a55; border-radius: 12px;
+        background: #070c15; color: var(--ink); padding: 12px 14px; font: inherit;
+      }
+      #chat-message::placeholder { color: #6c7c98; }
+      .composer-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .composer-actions .spacer { flex: 1; }
+      #chat-status { font-size: 12px; color: var(--muted); min-height: 1.4em; }
+      button {
+        border: 1px solid #33425e; border-radius: 9px;
+        background: #131e31; color: var(--ink);
+        padding: 9px 14px; font: inherit; cursor: pointer;
+      }
+      button:hover:not(:disabled) { background: #1b2a44; }
+      button:disabled { opacity: .5; cursor: not-allowed; }
+      button.primary {
+        border-color: #3d63b4;
+        background: linear-gradient(180deg, #2b4c95, #23407d);
+      }
+      button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #34589f, #274784); }
+      button.danger { border-color: #a23d4c; background: #351720; }
+      button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+      button.ghost:hover:not(:disabled) { background: #101a2b; color: var(--ink); }
+      button.small { padding: 6px 10px; font-size: 12.5px; min-height: 34px; }
+      /* ---- forms ------------------------------------------------------ */
       .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
-      .field { display: grid; gap: 5px; margin: 8px 0; }
+      .field { display: grid; gap: 5px; margin: 10px 0; }
       .field label { color: var(--muted); font-size: 12px; }
-      .field input, .field select, .field textarea { width: 100%; border: 1px solid #34405c; border-radius: 8px; background: #080d16; color: var(--ink); padding: 9px 10px; font: inherit; }
+      .field input, .field select, .field textarea {
+        width: 100%; border: 1px solid #2a3a55; border-radius: 9px;
+        background: #070c15; color: var(--ink); padding: 9px 10px; font: inherit;
+      }
       .field textarea { min-height: 78px; resize: vertical; }
-      .check-field { display: flex; gap: 9px; align-items: center; margin: 12px 0; }
-      .check-field input { accent-color: #4f8cff; }
+      .check-field { display: flex; gap: 9px; align-items: center; margin: 12px 0; color: var(--muted); }
+      .check-field input { accent-color: var(--accent); }
       .wide { grid-column: 1 / -1; }
-      .list-row { border-top: 1px solid var(--line); padding: 10px 0; text-align: left; }
-      .list-row button { min-height: 36px; border: 1px solid #465673; border-radius: 7px; background: #172238; color: var(--ink); padding: 5px 10px; cursor: pointer; margin: 6px 6px 0 0; }
-      .approval-card { border: 1px solid var(--approval); border-radius: 10px; padding: 12px; margin: 10px 0; overflow-wrap: anywhere; }
-      .approval-card pre { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
-      .history-layout { display: grid; grid-template-columns: minmax(150px, .7fr) 1.3fr; gap: 14px; }
-      #conversation-list, #conversation-view, #directive-list { max-height: 360px; overflow: auto; }
-      #conversation-view { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 8px; background: #080d16; padding: 12px; text-align: left; }
-      #improvement-log { list-style: none; padding: 0; margin: 8px 0; text-align: left; }
-      #improvement-log li { border-top: 1px solid var(--line); padding: 10px 0; }
-      #improvement-log button { margin: 8px 6px 0 0; min-height: 36px; border: 1px solid #465673; border-radius: 7px; background: #172238; color: var(--ink); padding: 5px 10px; cursor: pointer; }
+      .row-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+      .list-row { border-top: 1px solid var(--line-soft); padding: 12px 0; }
+      .list-row:first-child { border-top: 0; }
+      .list-row p { margin: 4px 0 0; }
+      .approval-card {
+        border: 1px solid var(--warn); border-radius: 12px;
+        padding: 12px 14px; margin: 6px 0; overflow-wrap: anywhere;
+        background: #241a08;
+      }
+      .approval-card pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #e8d7b6; margin: 8px 0; }
+      .approval-card button { margin-right: 8px; }
+      .history-layout { display: grid; grid-template-columns: minmax(170px, .62fr) 1.38fr; gap: 14px; }
+      #conversation-list, #directive-list { max-height: 52vh; overflow: auto; }
+      #conversation-view {
+        white-space: pre-wrap; overflow-wrap: anywhere;
+        border: 1px solid var(--line); border-radius: 11px;
+        background: #070c15; padding: 14px; color: #cfdcf3;
+        max-height: 52vh; overflow: auto;
+      }
+      #improvement-log { list-style: none; padding: 0; margin: 8px 0; }
+      #improvement-log li { border-top: 1px solid var(--line-soft); padding: 10px 0; font-size: 12.5px; color: var(--muted); }
+      #improvement-log li strong { color: var(--ink); font-weight: 600; }
       code { color: #9fb3d9; }
-      @media (prefers-reduced-motion: reduce) { canvas { transition: none; } }
+      output { color: var(--ink); font-variant-numeric: tabular-nums; }
+      @media (max-width: 900px) {
+        .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+        .rail {
+          flex-direction: row; align-items: center; gap: 12px;
+          padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--line);
+          overflow-x: auto;
+        }
+        .brand span, .rail-foot { display: none; }
+        .brand { padding: 0 6px 0 2px; }
+        .rail-nav { flex-direction: row; gap: 2px; }
+        .rail-nav button { padding: 8px 10px; white-space: nowrap; }
+        ul.indicators { display: none; }
+        .chat-scroll, .panel-body { padding: 16px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * { scroll-behavior: auto !important; }
+      }
     </style>
   </head>
   <body>
-    <main>
-      <h1>ClaireAI</h1>
-      <canvas id="orb" width="560" height="560" role="img" aria-label="Assistant state indicator"></canvas>
-      <p id="state">idle</p>
-      <p id="detail">waiting</p>
-      <ul class="indicators" id="indicators">
-        <li data-key="microphone"><span class="dot"></span>mic</li>
-        <li data-key="camera"><span class="dot"></span>camera</li>
-        <li data-key="screen"><span class="dot"></span>screen</li>
-        <li data-key="input"><span class="dot"></span>input</li>
-      </ul>
-      <section class="controls" aria-labelledby="customization-title">
-        <h2 id="customization-title">ClaireAI customization</h2>
-        <p>These preferences and directives are stored in the local ClaireAI database and apply to future turns.</p>
-        <form id="preferences-form">
-          <div class="form-grid">
-            <div class="field"><label for="owner-name">Your name</label><input id="owner-name" maxlength="100" /></div>
-            <div class="field"><label for="response-style">Response style</label><select id="response-style"><option value="concise">Concise</option><option value="balanced">Balanced</option><option value="detailed">Detailed</option><option value="playful">Playful</option></select></div>
-            <div class="field"><label for="temperature">Response variation (0–2)</label><input id="temperature" type="number" min="0" max="2" step="0.1" /></div>
-            <div class="field"><label for="temperature-tools">Tool choice variation (0–2)</label><input id="temperature-tools" type="number" min="0" max="2" step="0.1" /></div>
-            <div class="field"><label for="max-output-tokens">Maximum response tokens (8–1024)</label><input id="max-output-tokens" type="number" min="8" max="1024" step="1" /></div>
-            <div class="field"><label for="agent-max-steps">Maximum tool steps (1–24)</label><input id="agent-max-steps" type="number" min="1" max="24" step="1" /></div>
-            <div class="field"><label for="tool-routing">Tool routing</label><select id="tool-routing"><option value="auto">Automatic (narrow tool list)</option><option value="off">All available tools</option></select></div>
-            <div class="field wide"><label for="allowed-folders">Allowed folders (one absolute path per line)</label><textarea id="allowed-folders" spellcheck="false"></textarea></div>
+    <div class="app">
+      <aside class="rail">
+        <div class="brand">
+          <div class="glyph" aria-hidden="true"></div>
+          <div><strong>ClaireAI</strong><span>local assistant</span></div>
+        </div>
+        <nav class="rail-nav" id="rail-nav" aria-label="Sections">
+          <button type="button" data-panel="chat" class="on"><span class="pip"></span>Chat</button>
+          <button type="button" data-panel="preferences"><span class="pip"></span>Preferences</button>
+          <button type="button" data-panel="directives"><span class="pip"></span>Directives</button>
+          <button type="button" data-panel="history"><span class="pip"></span>History</button>
+          <button type="button" data-panel="controls"><span class="pip"></span>Controls</button>
+        </nav>
+        <div class="rail-foot">
+          <div>seq <span id="seq">0</span> · task <code id="task">—</code></div>
+          <div><a href="/today">today's log</a></div>
+        </div>
+      </aside>
+
+      <main class="stage">
+        <header class="topbar">
+          <canvas id="orb" width="132" height="132" role="img" aria-label="Assistant state indicator"></canvas>
+          <div class="state-block">
+            <p id="state">idle</p>
+            <p id="detail">waiting</p>
           </div>
-          <div class="check-field"><input id="voice-enabled" type="checkbox" /><label for="voice-enabled">Speak ClaireAI's answers with offline voice</label></div>
-          <div class="form-grid">
-            <div class="field"><label for="voice-pitch">Voice pitch: <output id="pitch-value">50</output></label><input id="voice-pitch" type="range" min="0" max="99" /></div>
-            <div class="field"><label for="voice-rate">Voice rate: <output id="rate-value">175</output> words/min</label><input id="voice-rate" type="range" min="80" max="450" /></div>
-          </div>
-          <button type="submit">Save customization</button>
-          <button id="voice-preview" type="button">Preview voice</button>
-        </form>
-        <p id="preferences-status" role="status" aria-live="polite">Loading preferences…</p>
-      </section>
-      <section class="controls" aria-labelledby="directives-title">
-        <h2 id="directives-title">Owner directives</h2>
-        <p>ClaireAI will use enabled directives as preferences. Tool permissions and approval rules still apply.</p>
-        <form id="directive-form">
-          <input id="directive-id" type="hidden" />
-          <div class="field"><label for="directive-title">Title</label><input id="directive-title" maxlength="120" required /></div>
-          <div class="field"><label for="directive-content">Directive</label><textarea id="directive-content" maxlength="4000" required placeholder="For example: Use metric units and organize reports with headings."></textarea></div>
-          <div class="check-field"><input id="directive-enabled" type="checkbox" checked /><label for="directive-enabled">Enabled</label></div>
-          <button type="submit">Save directive</button><button id="directive-new" type="button">New directive</button>
-        </form>
-        <div id="directive-list" aria-live="polite">Loading directives…</div>
-        <p id="directives-status" role="status" aria-live="polite"></p>
-      </section>
-      <section class="controls" aria-labelledby="history-title">
-        <h2 id="history-title">Local conversation history</h2>
-        <p>Conversation text stays in ClaireAI's local database. Use Computer task to run tools in your allowed folders; actions that need approval appear below with their exact details.</p>
-        <div class="field"><label for="chat-message">Message ClaireAI</label><textarea id="chat-message" maxlength="6000" placeholder="Ask ClaireAI something…"></textarea></div>
-        <div class="control-row">
-          <div><strong>Local speech input</strong><br /><span id="voice-input-state">Checking speech model…</span></div>
-          <div><button id="push-to-talk" type="button" disabled>Start push-to-talk</button> <button id="voice-model-install" type="button">Install speech model</button></div>
+          <ul class="indicators" id="indicators">
+            <li data-key="microphone"><span class="dot"></span>mic</li>
+            <li data-key="camera"><span class="dot"></span>camera</li>
+            <li data-key="screen"><span class="dot"></span>screen</li>
+            <li data-key="input"><span class="dot"></span>input</li>
+          </ul>
+        </header>
+
+        <div class="panels">
+          <section class="panel on" id="panel-chat" aria-labelledby="chat-title">
+            <div class="chat-scroll" id="chat-scroll">
+              <div class="transcript" id="chat-transcript" aria-live="polite">
+                <p class="empty">No messages yet. Ask something to begin.</p>
+              </div>
+              <div id="approval-inbox" aria-live="polite"></div>
+            </div>
+            <form class="composer" id="composer">
+              <h2 id="chat-title" class="visually-hidden" hidden>Conversation</h2>
+              <div class="composer-inner">
+                <label class="visually-hidden" for="chat-message" hidden>Message</label>
+                <textarea
+                  id="chat-message"
+                  maxlength="6000"
+                  rows="2"
+                  placeholder="Ask ClaireAI something…  Enter sends, Shift+Enter adds a line."
+                ></textarea>
+                <div class="composer-actions">
+                  <button class="primary" id="chat-send" type="submit">Send message</button>
+                  <button id="agent-task" type="button">Run computer task</button>
+                  <button id="push-to-talk" type="button" class="ghost small" disabled>Push-to-talk</button>
+                  <button id="new-conversation" type="button" class="ghost small">New conversation</button>
+                  <span class="spacer"></span>
+                  <span id="voice-input-state" class="muted" style="font-size:12px">Checking speech model…</span>
+                </div>
+                <p id="chat-status" role="status" aria-live="polite"></p>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel" id="panel-preferences" aria-labelledby="preferences-title">
+            <div class="panel-body">
+              <div class="card">
+                <h2 id="preferences-title">Preferences</h2>
+                <p>Stored in the local ClaireAI database and applied to future turns.</p>
+                <form id="preferences-form">
+                  <div class="form-grid">
+                    <div class="field"><label for="owner-name">Your name</label><input id="owner-name" maxlength="100" /></div>
+                    <div class="field"><label for="response-style">Response style</label><select id="response-style"><option value="concise">Concise</option><option value="balanced">Balanced</option><option value="detailed">Detailed</option><option value="playful">Playful</option></select></div>
+                    <div class="field"><label for="temperature">Response variation (0–2)</label><input id="temperature" type="number" min="0" max="2" step="0.1" /></div>
+                    <div class="field"><label for="temperature-tools">Tool choice variation (0–2)</label><input id="temperature-tools" type="number" min="0" max="2" step="0.1" /></div>
+                    <div class="field"><label for="max-output-tokens">Maximum response tokens (8–1024)</label><input id="max-output-tokens" type="number" min="8" max="1024" step="1" /></div>
+                    <div class="field"><label for="agent-max-steps">Maximum tool steps (1–24)</label><input id="agent-max-steps" type="number" min="1" max="24" step="1" /></div>
+                    <div class="field"><label for="tool-routing">Tool routing</label><select id="tool-routing"><option value="auto">Automatic (narrow tool list)</option><option value="off">All available tools</option></select></div>
+                    <div class="field wide"><label for="allowed-folders">Allowed folders (one absolute path per line)</label><textarea id="allowed-folders" spellcheck="false"></textarea></div>
+                  </div>
+                  <div class="check-field"><input id="voice-enabled" type="checkbox" /><label for="voice-enabled">Speak answers with the offline voice</label></div>
+                  <div class="form-grid">
+                    <div class="field"><label for="voice-pitch">Voice pitch: <output id="pitch-value">50</output></label><input id="voice-pitch" type="range" min="0" max="99" /></div>
+                    <div class="field"><label for="voice-rate">Voice rate: <output id="rate-value">175</output> words/min</label><input id="voice-rate" type="range" min="80" max="450" /></div>
+                  </div>
+                  <div class="row-actions">
+                    <button class="primary" type="submit">Save preferences</button>
+                    <button id="voice-preview" type="button">Preview voice</button>
+                    <button id="voice-model-install" type="button">Install speech model</button>
+                  </div>
+                  <p id="preferences-status" role="status" aria-live="polite">Loading preferences…</p>
+                </form>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" id="panel-directives" aria-labelledby="directives-title">
+            <div class="panel-body">
+              <div class="card">
+                <h2 id="directives-title">Owner directives</h2>
+                <p>Enabled directives act as preferences. Tool permissions and approval rules still apply.</p>
+                <form id="directive-form">
+                  <input id="directive-id" type="hidden" />
+                  <div class="field"><label for="directive-title">Title</label><input id="directive-title" maxlength="120" required /></div>
+                  <div class="field"><label for="directive-content">Directive</label><textarea id="directive-content" maxlength="4000" required placeholder="For example: Use metric units and organize reports with headings."></textarea></div>
+                  <div class="check-field"><input id="directive-enabled" type="checkbox" checked /><label for="directive-enabled">Enabled</label></div>
+                  <div class="row-actions">
+                    <button class="primary" type="submit">Save directive</button>
+                    <button id="directive-new" type="button">New directive</button>
+                  </div>
+                </form>
+                <div id="directive-list" aria-live="polite">Loading directives…</div>
+                <p id="directives-status" role="status" aria-live="polite"></p>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" id="panel-history" aria-labelledby="history-title">
+            <div class="panel-body">
+              <div class="card">
+                <h2 id="history-title">Local conversation history</h2>
+                <p>Conversation text stays in the local database. Select a conversation to continue it, review it, or delete it.</p>
+                <div class="history-layout">
+                  <div id="conversation-list" aria-live="polite">Loading history…</div>
+                  <div id="conversation-view">Select a conversation.</div>
+                </div>
+                <p id="history-status" role="status" aria-live="polite"></p>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" id="panel-controls" aria-labelledby="controls-title">
+            <div class="panel-body">
+              <div class="card">
+                <h2 id="controls-title">Runtime controls</h2>
+                <p>These apply to ClaireAI using this local data directory.</p>
+                <div class="list-row" style="display:flex;gap:12px;align-items:center;justify-content:space-between">
+                  <div><strong>Browser access</strong><br /><span id="browser-state" class="muted">Off</span></div>
+                  <button id="browser-toggle" type="button" aria-pressed="false">Enable browser access</button>
+                </div>
+                <div class="list-row" style="display:flex;gap:12px;align-items:center;justify-content:space-between">
+                  <div><strong>Assistant runtime</strong><br /><span id="runtime-state" class="muted">Running</span></div>
+                  <button id="shutdown" class="danger" type="button">Stop ClaireAI</button>
+                </div>
+                <div class="list-row" style="display:flex;gap:12px;align-items:center;justify-content:space-between">
+                  <div><strong>Self-improvement</strong><br /><span id="improvement-state" class="muted">Off · candidates require your review</span></div>
+                  <button id="improvement-toggle" type="button" aria-pressed="false">Enable self-improvement</button>
+                </div>
+                <h3>Improvement log</h3>
+                <p>Training candidates are evaluated and reviewed here. Promotion archives the current checkpoint; the replacement loads the next time ClaireAI starts.</p>
+                <ul id="improvement-log" aria-live="polite"><li>Loading improvement history…</li></ul>
+                <p id="control-status" role="status" aria-live="polite">Loading local controls…</p>
+              </div>
+            </div>
+          </section>
         </div>
-        <p>Microphone access starts only when you press the button. Recordings are limited to 15 seconds, transcribed locally, and discarded. Review the transcript before sending.</p>
-        <button id="chat-send" type="button">Send message</button> <button id="agent-task" type="button">Run computer task</button> <button id="new-conversation" type="button">New conversation</button>
-        <p id="chat-status" role="status" aria-live="polite"></p>
-        <div id="approval-inbox" aria-live="polite"></div>
-        <p>Select a conversation to continue it, review its messages, or delete it.</p>
-        <div class="history-layout"><div id="conversation-list" aria-live="polite">Loading history…</div><div id="conversation-view">Select a conversation.</div></div>
-        <p id="history-status" role="status" aria-live="polite"></p>
-      </section>
-      <section class="controls" aria-labelledby="controls-title">
-        <h2 id="controls-title">Runtime controls</h2>
-        <p>Controls apply to ClaireAI using this local data directory. The local control panel stays available while the assistant is stopped.</p>
-        <div class="control-row">
-          <div><strong>Browser access</strong><br /><span id="browser-state">Off</span></div>
-          <button id="browser-toggle" type="button" aria-pressed="false">Enable browser access</button>
-        </div>
-        <div class="control-row">
-          <div><strong>Assistant runtime</strong><br /><span id="runtime-state">Running</span></div>
-          <button id="shutdown" class="danger" type="button">Stop ClaireAI</button>
-        </div>
-        <div class="control-row">
-          <div><strong>Self-improvement</strong><br /><span id="improvement-state">Off · candidates require your review</span></div>
-          <button id="improvement-toggle" type="button" aria-pressed="false">Enable self-improvement</button>
-        </div>
-        <h3>Improvement log</h3>
-        <p>Training candidates are evaluated and reviewed here. Promotion archives the current checkpoint; the replacement is loaded when ClaireAI starts next.</p>
-        <ul id="improvement-log" aria-live="polite"><li>Loading improvement history…</li></ul>
-        <p id="control-status" role="status" aria-live="polite">Loading local controls…</p>
-      </section>
-      <footer>seq <span id="seq">0</span> · task <code id="task">—</code> · <a href="/today">today's log</a></footer>
-    </main>
+      </main>
+    </div>
     <script>
       const COLORS = {
         idle: "#4f8cff", thinking: "#9b7bff", tool_running: "#27c2a0",
@@ -197,6 +424,10 @@
       const historyStatus = document.getElementById("history-status");
       const chatMessage = document.getElementById("chat-message");
       const chatStatus = document.getElementById("chat-status");
+      const chatScroll = document.getElementById("chat-scroll");
+      const chatTranscript = document.getElementById("chat-transcript");
+      const composer = document.getElementById("composer");
+      const sendButton = document.getElementById("chat-send");
       const approvalInbox = document.getElementById("approval-inbox");
       const pushToTalkButton = document.getElementById("push-to-talk");
       const voiceModelInstall = document.getElementById("voice-model-install");
@@ -222,10 +453,10 @@
         const color = COLORS[current.state] || COLORS.idle;
         const t = reduceMotion.matches ? 0 : now / 1000;
         const pulse = current.state === "idle" ? 0.6 : 1;
-        const radius = 120 + Math.sin(t * 1.6) * 14 * pulse;
+        const radius = Math.min(w, h) * 0.33 + Math.sin(t * 1.6) * 4 * pulse;
 
         ctx.clearRect(0, 0, w, h);
-        const glow = ctx.createRadialGradient(cx, cy, 8, cx, cy, radius * 1.9);
+        const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, radius * 1.9);
         glow.addColorStop(0, color);
         glow.addColorStop(0.35, color + "55");
         glow.addColorStop(1, "transparent");
@@ -235,13 +466,13 @@
         ctx.fill();
 
         ctx.strokeStyle = color;
-        ctx.lineWidth = 4;
+        ctx.lineWidth = Math.max(2, w / 66);
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
         ctx.stroke();
 
         ctx.globalAlpha = 0.5;
-        ctx.lineWidth = 2;
+        ctx.lineWidth = Math.max(1, w / 132);
         ctx.beginPath();
         ctx.arc(cx, cy, radius * 0.62, t, t + Math.PI * 1.3);
         ctx.stroke();
@@ -279,6 +510,18 @@
             connect();
           }, 1500);
         };
+      }
+
+      // ---- section switching -------------------------------------------
+      const navButtons = [...document.querySelectorAll("#rail-nav button[data-panel]")];
+      const panels = [...document.querySelectorAll(".panel")];
+      function showPanel(name) {
+        for (const panel of panels) panel.classList.toggle("on", panel.id === `panel-${name}`);
+        for (const button of navButtons) button.classList.toggle("on", button.dataset.panel === name);
+        if (name === "chat") chatMessage.focus({ preventScroll: true });
+      }
+      for (const button of navButtons) {
+        button.addEventListener("click", () => showPanel(button.dataset.panel));
       }
 
       function renderControls(next) {
@@ -358,6 +601,7 @@
 
       function addAction(row, label, id, action, disabled) {
         const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.disabled = disabled;
+        button.className = "small";
         button.addEventListener("click", async () => {
           const prompt = action === "promote" ? "Replace the active checkpoint with this approved candidate? The current checkpoint will be archived." : `${label} this candidate?`;
           if (!window.confirm(prompt)) return;
@@ -378,7 +622,7 @@
           options.body = JSON.stringify(body);
         }
         const response = await fetch(path, options);
-        if (!response.ok) throw new Error((await response.text()).slice(0, 300));
+        if (!response.ok) throw new Error((await response.text()).slice(0, 300) || `request failed (${response.status})`);
         return response.json();
       }
 
@@ -386,25 +630,26 @@
         try {
           const state = await api("/api/voice-status");
           if (!state.runtime_available) {
-            voiceInputState.textContent = "Speech runtime unavailable; install ClaireAI's voice extra during setup.";
+            voiceInputState.textContent = "Speech input off";
+            pushToTalkButton.disabled = true;
             voiceModelInstall.disabled = true;
             return;
           }
           voiceInputState.textContent = state.model_installed
             ? `${state.model} ready · audio stays local`
-            : `${state.model} is not installed · download it to this device`;
+            : "speech model not installed";
           pushToTalkButton.disabled = !state.model_installed;
           voiceModelInstall.disabled = state.model_installed;
           if (state.model_installed) voiceModelInstall.textContent = "Speech model installed";
         } catch (error) {
-          voiceInputState.textContent = `Speech status unavailable: ${error.message}`;
+          voiceInputState.textContent = "Speech status unavailable";
           pushToTalkButton.disabled = true;
         }
       }
 
       voiceModelInstall.addEventListener("click", async () => {
         voiceModelInstall.disabled = true;
-        voiceInputState.textContent = "Downloading and loading the local speech model…";
+        voiceInputState.textContent = "Downloading the local speech model…";
         try {
           const result = await api("/api/voice-model", "POST", { install: true });
           voiceInputState.textContent = `${result.model} installed locally.`;
@@ -426,14 +671,14 @@
         if (microphoneStream) microphoneStream.getTracks().forEach((track) => track.stop());
         microphoneStream = null;
         pushToTalkButton.disabled = false;
-        pushToTalkButton.textContent = "Start push-to-talk";
+        pushToTalkButton.textContent = "Push-to-talk";
         pushToTalkButton.setAttribute("aria-pressed", "false");
         void setMicrophoneIndicator(false).catch(() => {});
       }
 
       async function transcribeRecording(blob) {
         pushToTalkButton.disabled = true;
-        if (!blob.size) { voiceInputState.textContent = "No audio captured; try again or type your message."; return; }
+        if (!blob.size) { voiceInputState.textContent = "No audio captured; try again or type."; return; }
         voiceInputState.textContent = "Transcribing locally…";
         chatStatus.textContent = "Audio is being processed locally. It is not saved.";
         try {
@@ -449,7 +694,7 @@
           });
           chatMessage.value = result.text;
           chatMessage.focus();
-          voiceInputState.textContent = "Transcript ready. Review or edit it, then press Send message.";
+          voiceInputState.textContent = "Transcript ready · review it, then send";
           chatStatus.textContent = "Transcript was not sent automatically.";
         } catch (error) {
           voiceInputState.textContent = `Transcription failed: ${error.message}`;
@@ -462,7 +707,7 @@
 
       async function startPushToTalk() {
         if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-          voiceInputState.textContent = "This browser does not support local microphone recording.";
+          voiceInputState.textContent = "This browser cannot record locally.";
           return;
         }
         pushToTalkButton.disabled = true;
@@ -482,7 +727,7 @@
           mediaRecorder.start();
           pushToTalkButton.textContent = "Stop recording";
           pushToTalkButton.setAttribute("aria-pressed", "true");
-          voiceInputState.textContent = "Listening · press Stop recording or wait for the 15-second limit.";
+          voiceInputState.textContent = "Listening · press again or wait 15 s";
           pushToTalkButton.disabled = false;
           recordingTimer = setTimeout(() => stopPushToTalk(), 15000);
         } catch (error) {
@@ -529,7 +774,7 @@
           document.getElementById("voice-rate").value = values.voice_rate ?? 175;
           document.getElementById("pitch-value").value = values.voice_pitch ?? 50;
           document.getElementById("rate-value").value = values.voice_rate ?? 175;
-          preferencesStatus.textContent = "Loaded from the local ClaireAI database. Changes apply to future turns.";
+          preferencesStatus.textContent = "Loaded from the local database. Changes apply to future turns.";
         } catch (error) { preferencesStatus.textContent = `Could not load preferences: ${error.message}`; }
       }
 
@@ -578,25 +823,27 @@
             const row = document.createElement("div"); row.className = "list-row";
             const title = document.createElement("strong"); title.textContent = `${entry.title} · ${entry.enabled ? "enabled" : "disabled"}`; row.append(title);
             const content = document.createElement("p"); content.textContent = entry.content; row.append(content);
-            const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "Edit";
+            const actions = document.createElement("div"); actions.className = "row-actions";
+            const edit = document.createElement("button"); edit.type = "button"; edit.className = "small"; edit.textContent = "Edit";
             edit.addEventListener("click", () => {
               document.getElementById("directive-id").value = entry.id;
               document.getElementById("directive-title").value = entry.title;
               document.getElementById("directive-content").value = entry.content;
               document.getElementById("directive-enabled").checked = entry.enabled;
               document.getElementById("directive-title").focus();
-            }); row.append(edit);
-            const toggle = document.createElement("button"); toggle.type = "button"; toggle.textContent = entry.enabled ? "Disable" : "Enable";
+            }); actions.append(edit);
+            const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "small"; toggle.textContent = entry.enabled ? "Disable" : "Enable";
             toggle.addEventListener("click", async () => {
               try { await api("/api/directives", "POST", { id: entry.id, title: entry.title, content: entry.content, enabled: !entry.enabled }); await loadDirectives(); directivesStatus.textContent = "Directive updated."; }
               catch (error) { directivesStatus.textContent = `Could not update directive: ${error.message}`; }
-            }); row.append(toggle);
-            const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Delete";
+            }); actions.append(toggle);
+            const remove = document.createElement("button"); remove.type = "button"; remove.className = "small danger"; remove.textContent = "Delete";
             remove.addEventListener("click", async () => {
               if (!window.confirm(`Delete directive “${entry.title}”?`)) return;
               try { await api("/api/directives", "POST", { action: "delete", id: entry.id }); await loadDirectives(); directivesStatus.textContent = "Directive deleted."; }
               catch (error) { directivesStatus.textContent = `Could not delete directive: ${error.message}`; }
-            }); row.append(remove); directiveList.append(row);
+            }); actions.append(remove);
+            row.append(actions); directiveList.append(row);
           }
         } catch (error) { directiveList.textContent = `Directives unavailable: ${error.message}`; }
       }
@@ -609,6 +856,33 @@
         catch (error) { directivesStatus.textContent = `Could not save directive: ${error.message}`; }
       });
 
+      // ---- conversation transcript -------------------------------------
+      function bubble(role, text) {
+        const article = document.createElement("article");
+        article.className = `msg ${role === "user" ? "user" : role === "assistant" ? "assistant" : role}`;
+        const who = document.createElement("span"); who.className = "who";
+        who.textContent = role === "user" ? "You" : role === "assistant" ? "ClaireAI" : role;
+        const body = document.createElement("div"); body.className = "text"; body.textContent = text;
+        article.append(who, body);
+        return article;
+      }
+
+      function scrollChat() {
+        chatScroll.scrollTop = chatScroll.scrollHeight;
+      }
+
+      function renderTranscript(messages) {
+        chatTranscript.replaceChildren();
+        if (!messages.length) {
+          const empty = document.createElement("p"); empty.className = "empty";
+          empty.textContent = "No messages yet. Ask something to begin.";
+          chatTranscript.append(empty);
+          return;
+        }
+        for (const message of messages) chatTranscript.append(bubble(message.role, message.content));
+        scrollChat();
+      }
+
       async function showConversation(id) {
         try {
           activeConversationId = id;
@@ -619,45 +893,82 @@
             const role = document.createElement("strong"); role.textContent = `${message.role}: `; block.append(role);
             block.append(document.createTextNode(message.content)); conversationView.append(block);
           }
+          renderTranscript(messages);
           historyStatus.textContent = `Showing ${messages.length} locally stored messages.`;
         } catch (error) { historyStatus.textContent = `Could not load conversation: ${error.message}`; }
       }
+
       document.getElementById("new-conversation").addEventListener("click", () => {
         activeConversationId = null;
         conversationView.textContent = "New local conversation. Send a message to begin.";
+        renderTranscript([]);
+        chatStatus.textContent = "New conversation started.";
         chatMessage.focus();
       });
-      document.getElementById("chat-send").addEventListener("click", async () => {
+
+      function appendLocal(message) {
+        const empty = chatTranscript.querySelector(".empty");
+        if (empty) empty.remove();
+        chatTranscript.append(bubble("user", message));
+        scrollChat();
+      }
+
+      async function sendChat() {
         const message = chatMessage.value.trim();
-        if (!message) { chatStatus.textContent = "Enter a message first."; return; }
+        if (!message) { chatStatus.textContent = "Type a message first."; chatMessage.focus(); return; }
+        chatMessage.value = "";
+        appendLocal(message);
+        sendButton.disabled = true;
         chatStatus.textContent = "ClaireAI is thinking…";
-        document.getElementById("chat-send").disabled = true;
         try {
           const result = await api("/api/chat", "POST", { message, conversation_id: activeConversationId });
           activeConversationId = result.conversation_id;
-          chatMessage.value = "";
           await showConversation(activeConversationId);
           await loadConversations();
-          chatStatus.textContent = `Answered with ${result.model}; saved locally.`;
-        } catch (error) { chatStatus.textContent = `Chat unavailable: ${error.message}`; }
-        finally { document.getElementById("chat-send").disabled = false; }
+          chatStatus.textContent = `Answered with ${result.model} · saved locally`;
+        } catch (error) {
+          chatTranscript.append(bubble("error", error.message));
+          scrollChat();
+          chatStatus.textContent = "That message was not answered.";
+        } finally {
+          sendButton.disabled = false;
+          chatMessage.focus();
+        }
+      }
+
+      composer.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void sendChat();
       });
+
+      chatMessage.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          void sendChat();
+        }
+      });
+
       document.getElementById("agent-task").addEventListener("click", async () => {
         const message = chatMessage.value.trim();
-        if (!message) { chatStatus.textContent = "Enter a computer task first."; return; }
+        if (!message) { chatStatus.textContent = "Describe the computer task first."; chatMessage.focus(); return; }
         const button = document.getElementById("agent-task");
+        chatMessage.value = "";
+        appendLocal(message);
         button.disabled = true;
         chatStatus.textContent = "Computer task running. Review any requested approval below.";
         try {
           const result = await api("/api/agent-task", "POST", { message, conversation_id: activeConversationId });
           activeConversationId = result.conversation_id;
-          chatMessage.value = "";
           await showConversation(activeConversationId);
           await loadConversations();
-          chatStatus.textContent = `Task complete (${result.steps.length} tool steps); saved locally. ${result.content}`;
-        } catch (error) { chatStatus.textContent = `Computer task stopped: ${error.message}`; }
-        finally { button.disabled = false; await loadApprovals(); }
+          chatStatus.textContent = `Task complete (${result.steps.length} tool steps) · saved locally`;
+        } catch (error) {
+          chatTranscript.append(bubble("error", error.message));
+          scrollChat();
+          chatStatus.textContent = "The computer task stopped.";
+        } finally { button.disabled = false; await loadApprovals(); }
       });
+
       async function loadApprovals() {
         try {
           const requests = await api("/api/approvals");
@@ -672,6 +983,7 @@
             card.append(details);
             for (const [label, approved] of [["Approve this action", true], ["Deny", false]]) {
               const decision = document.createElement("button"); decision.type = "button"; decision.textContent = label;
+              decision.className = approved ? "primary small" : "small";
               decision.addEventListener("click", async () => {
                 if (approved && !window.confirm(`Allow exactly this action?\n\n${request.description}`)) return;
                 decision.disabled = true;
@@ -685,9 +997,7 @@
         } catch (error) { approvalInbox.textContent = `Approval inbox unavailable: ${error.message}`; }
       }
       window.setInterval(loadApprovals, 700);
-      chatMessage.addEventListener("keydown", (event) => {
-        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") document.getElementById("chat-send").click();
-      });
+
       async function loadConversations() {
         try {
           const entries = await api("/api/conversations");
@@ -695,9 +1005,9 @@
           if (!entries.length) { conversationList.textContent = "No conversations stored yet."; return; }
           for (const entry of entries) {
             const row = document.createElement("div"); row.className = "list-row";
-            const view = document.createElement("button"); view.type = "button"; view.textContent = entry.title || "Conversation";
+            const view = document.createElement("button"); view.type = "button"; view.className = "small"; view.textContent = entry.title || "Conversation";
             view.addEventListener("click", () => showConversation(entry.id)); row.append(view);
-            const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Delete";
+            const remove = document.createElement("button"); remove.type = "button"; remove.className = "small danger"; remove.textContent = "Delete";
             remove.addEventListener("click", async () => {
               if (!window.confirm("Delete this conversation and its locally stored messages?")) return;
               try { await api("/api/conversations", "POST", { id: entry.id }); conversationView.textContent = "Select a conversation."; await loadConversations(); historyStatus.textContent = "Conversation deleted from local storage."; }
@@ -731,6 +1041,7 @@
       loadConversations();
       setInterval(loadImprovements, 10000);
       connect();
+      chatMessage.focus();
     </script>
   </body>
 </html>

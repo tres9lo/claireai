@@ -5,6 +5,38 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Fixed — the app page could not send a message
+
+- The composer sent only on Ctrl+Enter, and the answer was written into a
+  history box far down the page, so a typed message looked ignored. Enter now
+  sends, Shift+Enter adds a line, the message appears immediately in a
+  transcript beside the composer, and any failure appears there as a bubble
+  carrying the server's own text.
+- An unexpected error in a local API request closed the socket with no reply,
+  which the page could only report as "Failed to fetch". It now answers `500`
+  with the exception type and prints the traceback to the terminal.
+
+### Changed — one page instead of one long scroll
+
+- The presence page is an app shell now: a fixed rail switches Chat,
+  Preferences, Directives, History and Controls, each panel scrolls on its own,
+  and the chat transcript fills the window with the composer pinned underneath.
+  The layout no longer stacks five cards down a 520 px column.
+
+### Fixed — installing an extra could resolve into a conflict
+
+- `transformers>=4.40` resolved to 5.x, which requires `timm`, which requires
+  `torchvision` — the package this project deliberately does not install. The
+  result was an install that succeeded and then failed `pip check`. The `vision`
+  extra is capped below 5, the newest tree that stays clean.
+- Dependencies carry upper bounds now, so installing ClaireAI cannot silently
+  upgrade a package the owner already relies on, and `claireai[all]` installs
+  every optional runtime in a single resolution instead of one extra at a time.
+- `requirements.lock.txt` pinned the project with an absolute
+  `-e file:///home/...` path and listed `pip` itself, so replaying it on another
+  machine failed or downgraded the installer running it. It is portable, and it
+  now says what it is a snapshot of and what it leaves out.
+
 ### Added — a signed approval for runs with no terminal
 
 - Unattended runs still refuse writes, but can now consume one signed
