@@ -21,7 +21,12 @@ nothing has been released yet.
 - The presence page is an app shell now: a fixed rail switches Chat,
   Preferences, Directives, History and Controls, each panel scrolls on its own,
   and the chat transcript fills the window with the composer pinned underneath.
-  The layout no longer stacks five cards down a 520 px column.
+  The layout no longer stacks five cards down a 520 px column. Panels are
+  deep-linkable (`/#history`), and on a phone the rail wraps instead of
+  scrolling its last tabs out of sight.
+- A transcript longer than the window stays scrollable: the old bottom-aligned
+  layout pushed the overflow above the scrollport, so the first message could
+  not be reached at all.
 
 ### Fixed — installing an extra could resolve into a conflict
 

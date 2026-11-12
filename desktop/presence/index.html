@@ -131,7 +131,18 @@
         display: flex; flex-direction: column; gap: 14px;
         scroll-behavior: smooth;
       }
-      .transcript { display: flex; flex-direction: column; gap: 12px; max-width: 860px; width: 100%; margin: 0 auto; }
+      .transcript {
+        display: flex; flex-direction: column; gap: 12px;
+        /* Grow to fill a short conversation, but never shrink below the content:
+           `justify-content: flex-end` here would push the overflow above the
+           scrollport, where no amount of scrolling can reach it. */
+        flex: 1 0 auto;
+        max-width: 860px; width: 100%; margin: 0 auto;
+      }
+      .transcript > :first-child { margin-top: auto; }
+      /* A new conversation should sit in the middle of the space, not stranded
+         at the top with half the window empty underneath it. */
+      .transcript > .empty { margin: auto 0; }
       .msg { display: flex; flex-direction: column; gap: 4px; max-width: min(74ch, 88%); }
       .msg .who { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
       .msg .text {
@@ -216,13 +227,18 @@
       @media (max-width: 900px) {
         .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
         .rail {
-          flex-direction: row; align-items: center; gap: 12px;
-          padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--line);
-          overflow-x: auto;
+          flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+          padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line);
         }
         .brand span, .rail-foot { display: none; }
-        .brand { padding: 0 6px 0 2px; }
-        .rail-nav { flex-direction: row; gap: 2px; }
+        .brand { padding: 0 4px 0 0; }
+        /* Wrap instead of scrolling: a hidden "Controls" tab reads as a missing
+           feature, and a horizontal scrollbar in a nav strip is easy to miss. */
+        .rail-nav { flex-direction: row; flex-wrap: wrap; gap: 2px; flex: 1 1 auto; }
+        /* The rail's buttons are full-width for the vertical desktop rail; on a
+           phone that turned five tabs into five stacked rows. */
+        .rail-nav button { width: auto; padding: 8px 12px; white-space: nowrap; }
+        #voice-input-state { flex-basis: 100%; }
         .rail-nav button { padding: 8px 10px; white-space: nowrap; }
         ul.indicators { display: none; }
         .chat-scroll, .panel-body { padding: 16px; }
@@ -515,14 +531,25 @@
       // ---- section switching -------------------------------------------
       const navButtons = [...document.querySelectorAll("#rail-nav button[data-panel]")];
       const panels = [...document.querySelectorAll(".panel")];
-      function showPanel(name) {
+      function panelNameFromHash() {
+        const name = window.location.hash.replace(/^#/, "");
+        return panels.some((panel) => panel.id === `panel-${name}`) ? name : null;
+      }
+      function showPanel(name, { focus = false } = {}) {
         for (const panel of panels) panel.classList.toggle("on", panel.id === `panel-${name}`);
         for (const button of navButtons) button.classList.toggle("on", button.dataset.panel === name);
-        if (name === "chat") chatMessage.focus({ preventScroll: true });
+        if (focus && name === "chat") chatMessage.focus({ preventScroll: true });
       }
       for (const button of navButtons) {
-        button.addEventListener("click", () => showPanel(button.dataset.panel));
+        button.addEventListener("click", () => {
+          showPanel(button.dataset.panel, { focus: true });
+          window.history.replaceState(null, "", `#${button.dataset.panel}`);
+        });
       }
+      window.addEventListener("hashchange", () => {
+        const name = panelNameFromHash();
+        if (name) showPanel(name, { focus: true });
+      });
 
       function renderControls(next) {
         controls = next;
@@ -1041,7 +1068,9 @@
       loadConversations();
       setInterval(loadImprovements, 10000);
       connect();
-      chatMessage.focus();
+      const initialPanel = panelNameFromHash();
+      if (initialPanel) showPanel(initialPanel);
+      else chatMessage.focus();
     </script>
   </body>
 </html>
