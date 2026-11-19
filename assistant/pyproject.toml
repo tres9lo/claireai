@@ -59,7 +59,9 @@ all = [
 # No arguments starts the local app; any argument is passed to the CLI
 # unchanged, so `claireai --once "..."` and friends keep working.
 claireai = "claireai.app:main"
-claireai-desktop = "claireai.desktop.app:main"
+# Through the launcher, not straight at the window: app.py imports the toolkit at
+# module level, so a core install would fail before it could explain the extra.
+claireai-desktop = "claireai.desktop.launcher:main"
 claireai-ui = "claireai.app:main"
 
 [tool.hatch.build.targets.wheel]

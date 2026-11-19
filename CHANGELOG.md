@@ -16,6 +16,18 @@ nothing has been released yet.
   which the page could only report as "Failed to fetch". It now answers `500`
   with the exception type and prints the traceback to the terminal.
 
+### Fixed — `claireai-desktop` failed before it could explain itself
+
+- `claireai-desktop` is a core console script, but `claireai.desktop.app`
+  imports `customtkinter` at module level, so a plain `pip install claireai`
+  ended in a `ModuleNotFoundError` traceback with no way to run the check that
+  was supposed to produce a message. The script now goes through a launcher
+  that imports nothing optional: it reports the missing `desktop` extra
+  (`pip install "claireai[desktop]"`) or missing Tk bindings (`python3-tk` on
+  Debian/Ubuntu) as one line on stderr and exits 2. `claireai --desktop` and
+  `python -m claireai.desktop` (the command the autostart entry runs) take the
+  same path. A complete install still opens the window as before.
+
 ### Changed — a proper desktop-app surface
 
 - The presence page is rebuilt around the layout these apps actually use: a

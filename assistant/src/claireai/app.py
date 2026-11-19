@@ -295,7 +295,9 @@ def main(
         print("autostart entry removed" if removed else "no autostart entry was installed")
         return EXIT_OK
     if parsed.desktop:
-        from claireai.desktop.app import main as desktop_main
+        # The launcher, not the window module: it can report a missing toolkit
+        # instead of raising ModuleNotFoundError while importing it.
+        from claireai.desktop.launcher import main as desktop_main
 
         return desktop_main(["--data-dir", parsed.data_dir] if parsed.data_dir else [])
 

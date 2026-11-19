@@ -183,6 +183,10 @@ shows a live thinking indicator, and each page fades its surface in.
 assistant/.venv/bin/claireai-desktop      # or: ./scripts/start.sh --desktop
 ```
 
+If the window does not open, the command names the missing piece instead of
+printing a traceback: the `desktop` extra (`pip install "claireai[desktop]"`)
+or Python's Tk bindings (`python3-tk` on Debian/Ubuntu). It exits 2.
+
 - **Chat** runs real agent turns; write actions wait in **Approvals** until you
   press Approve, and the sidebar shows how many are waiting.
 - **Activity** lists every task with its status, and the error text when one failed.
