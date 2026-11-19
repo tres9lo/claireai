@@ -16,6 +16,35 @@ nothing has been released yet.
   which the page could only report as "Failed to fetch". It now answers `500`
   with the exception type and prints the traceback to the terminal.
 
+### Changed — a proper desktop-app surface
+
+- The presence page is rebuilt around the layout these apps actually use: a
+  sidebar with a primary New chat action, recent conversations and section
+  navigation; a minimal top bar with the conversation title and a compact
+  status chip; a centred, bottom-anchored transcript with plain assistant text
+  beside a gradient avatar and a soft bubble for your own messages; and a
+  floating composer card that grows as you type and sends with a circular
+  button. The five panels reuse the same token set (one neutral ramp, one
+  accent, two radii) instead of hand-picked colours per component.
+- The empty state is a real one now: a short explanation and four concrete
+  starting points that fill the composer, instead of a sentence stranded in
+  the middle of the window. Long answers are capped at a comfortable reading
+  measure, and scrollbars are styled for both Chromium and Firefox (Firefox
+  drew a bright system scrollbar through the chat column).
+- On a phone the sidebar becomes a brand row with the new-chat button on the
+  right and a wrapping tab row beneath it, rather than an icon wedged between
+  the name and the tabs.
+
+### Fixed — the wheel shipped an app that could not start
+
+- The page lived at `desktop/presence/index.html`, outside the Python package,
+  so `pip install claireai` produced an app that resolved no page at all:
+  `claireai --setup` reported "this build did not include the app page" and
+  exited 2. The wheel build now copies the page to `claireai/web/index.html`,
+  the location `app.web_page_path()` already checked first. Verified by
+  installing the built wheel in a clean virtual environment and serving the app
+  from `site-packages`.
+
 ### Changed — one page instead of one long scroll
 
 - The presence page is an app shell now: a fixed rail switches Chat,

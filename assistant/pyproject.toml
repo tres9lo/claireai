@@ -65,6 +65,13 @@ claireai-ui = "claireai.app:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/claireai"]
 
+# The app page is authored next to the desktop preview, outside the package
+# directory, so a plain `pip install` would otherwise ship an app that starts
+# and cannot find its own interface. Copy it to the location app.py looks in
+# first (`claireai/web/index.html`).
+[tool.hatch.build.targets.wheel.force-include]
+"../desktop/presence/index.html" = "claireai/web/index.html"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

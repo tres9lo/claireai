@@ -8,7 +8,9 @@ inspired by Jarvis-style interfaces, with one hard rule enforced everywhere —
 Status: **v0 preview available**. `claireai.presence` emits the stream,
 `claireai.presence_server` serves `/state` and `/events` over loopback using only
 the standard library, and `desktop/presence/index.html` is the canvas 2D HUD
-(`scripts/presence_preview.py --demo`). Still ahead: the Tauri window and the
+(`scripts/presence_preview.py --demo`). The wheel build copies that file to
+`claireai/web/index.html` so an installed copy serves it from `site-packages`;
+`CLAIREAI_WEB_DIR` points the app at a different directory during development. Still ahead: the Tauri window and the
 WebGL scene (no npm/Rust packages are installed yet), the speaking state with
 lip-sync, and the quality pass.
 
