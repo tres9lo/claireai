@@ -166,6 +166,12 @@ async def ask(
         if direct is None:
             direct = answer_date_question(question)
         if direct is None:
+            # A language model is not a calculator. Plain arithmetic,
+            # percentages and unit conversions are answered exactly here.
+            from claireai.calculations import answer_calculation
+
+            direct = answer_calculation(question)
+        if direct is None:
             # The model cannot know the calendar either, so an agenda question is
             # answered from the local table instead of being invented.
             from claireai.tools.calendar import answer_agenda

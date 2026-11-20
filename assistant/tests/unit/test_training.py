@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -104,6 +105,45 @@ def test_a_bounded_run_writes_a_candidate_and_asks_the_gate(tmp_path, monkeypatc
     assert "--init-from" not in commands[0]
     # A rejected candidate is not the installed checkpoint.
     assert not (tmp_path / "data" / "models" / "claire-scratch.pt").exists()
+
+
+def test_a_pending_review_is_retried_without_retraining(tmp_path) -> None:
+    data = tmp_path / "data"
+    candidate = data / "models" / "candidates" / "candidate.pt"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"candidate")
+    (data / "learning").mkdir(parents=True)
+    (data / "learning" / "training.json").write_text(
+        json.dumps(
+            {
+                "status": "candidate needs review",
+                "candidate": str(candidate),
+                "last_attempt": "2026-11-20T00:00:00+00:00",
+                "records": 58,
+            }
+        ),
+        encoding="utf-8",
+    )
+    reviewed: list[Path] = []
+
+    def training_must_not_run(*_args):  # noqa: ANN002, ANN202
+        raise AssertionError("a pending review must not start another training run")
+
+    def gate(path):  # noqa: ANN001, ANN202
+        reviewed.append(path)
+        return {"passed": False, "promoted": False, "reason": "tools did not improve"}
+
+    worker = training.TrainingWorker(
+        data,
+        enabled=lambda: True,
+        online_check=lambda: False,
+        runner=training_must_not_run,
+        gate=gate,
+    )
+
+    assert worker.tick() is True
+    assert reviewed == [candidate]
+    assert worker.status()["status"] == "candidate rejected"
 
 
 def test_a_gate_pass_is_reported_as_installed(tmp_path, monkeypatch) -> None:

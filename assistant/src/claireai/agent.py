@@ -255,6 +255,12 @@ async def run_task(
     direct = answer_date_question(request)
     answer_target = "date"
     if direct is None:
+        # Arithmetic belongs to code, not sampling.
+        from claireai.calculations import answer_calculation  # local import
+
+        direct = answer_calculation(request)
+        answer_target = "calculation"
+    if direct is None:
         # The model cannot know the calendar either; an invented meeting is a
         # worse answer than the local table's.
         from claireai.tools.calendar import answer_agenda  # local import

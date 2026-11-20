@@ -16,6 +16,9 @@ it, run `assistant/.venv/bin/python brain-lab/build_dataset.py --examples 320`.
 For additional data, add only UTF-8 text you own or are licensed to use under
 `brain-lab/data/raw/`. Record every source, license, retrieval date and
 processing step in `docs/model-and-data-licenses.md` and a tracked manifest.
+The curated starting catalog is [`data-sources.json`](data-sources.json) with
+licence/access notes in [`docs/training-data-sources.md`](../docs/training-data-sources.md).
+Sources marked `do-not-use` are excluded rather than scraped or worked around.
 Raw corpus files and checkpoints are ignored by Git.
 
 An optional downloader fetches the synthetic-only subset of GUI-Primitives

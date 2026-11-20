@@ -243,10 +243,27 @@ same fixed tool and conversation suites. Only a strict tool-check win with no
 conversation regression is installed; the previous checkpoint pair is archived
 under `models/archive/`, and a rejected candidate is kept under
 `models/candidates/`. The capability suite is recorded as a diagnostic. The
-worker runs while the ClaireAI window is open and the switch stays on, not as a
-system service. Training is local, it does not scrape, and it does not log into
-or post to any email or social account: those need separate connectors,
-credentials and explicit approvals.
+The worker also runs without the window through a **systemd user timer**:
+
+```bash
+claireai --install-training-service    # daily, no root, no display
+claireai --training-service-status     # active / next run
+claireai --uninstall-training-service
+```
+
+The timer respects the same **Background learning** switch and emergency stop. It
+runs at most once a day, retries a candidate whose review was unavailable, and
+never starts a second training run just because a review failed. Training is
+local, it does not scrape, and it does not log into or post to any email or
+social account: those need separate connectors, credentials and explicit
+approvals. The official routes and their requirements are in
+[docs/email-and-social.md](docs/email-and-social.md).
+
+Plain arithmetic, percentages and unit conversions are answered by deterministic
+code, not by the model, in `claireai/calculations.py`. Licensed data sources,
+licences and access routes are listed in
+[docs/training-data-sources.md](docs/training-data-sources.md) and the machine-
+readable [manifest](brain-lab/data-sources.json).
 
 ### Granting a folder
 

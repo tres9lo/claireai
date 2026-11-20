@@ -64,6 +64,8 @@ constraints rather than cosmetics.
 | `preflight.py` | OS/Python/Tk/display/package checks, a sized download plan and consent before `pip` runs | Download anything without an explicit yes |
 | `training.py` | Opt-in daily practice curriculum and one bounded local training run; writes a candidate only | Promote a candidate, log into accounts, or post |
 | `gate.py` | Scores candidate and installed checkpoints on fixed suites; archives the old pair before a strict-gate promotion | Promote on a tie, a regression, or a failed/missing suite |
+| `service.py` | Installs the daily training worker as a systemd user timer; no root or display | Enable training behind the owner's back |
+| `calculations.py` | Exact arithmetic, percentages and unit conversions before the model is called | Guess at a calculation |
 | `retention.py` | Plans and applies removal of old trash batches and summaries | Delete inside the audit log, or outside the data dir |
 | `summary.py` | Daily report from `tasks` + `task_log`, saved to `summaries` and markdown | Invent an event |
 | `scheduler.py` | APScheduler job that builds the summary each evening | Need a running app |

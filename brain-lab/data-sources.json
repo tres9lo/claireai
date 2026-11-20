@@ -1,0 +1,186 @@
+{
+  "updated": "2026-11-20",
+  "policy": "Only use data whose licence and terms permit this use. Record the source, licence, retrieval date and transformations. Never scrape private accounts or ignore an access restriction.",
+  "sources": [
+    {
+      "id": "fineweb-edu",
+      "name": "FineWeb-Edu",
+      "url": "https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu",
+      "license": "ODC-By 1.0 (Common Crawl terms also apply)",
+      "access": "public",
+      "domains": ["general knowledge", "education", "reading"],
+      "size": "~1.3T tokens / ~5.8 TB; use a small shard first",
+      "notes": "Educational web text. Attribute the dataset and comply with Common Crawl's terms; original pages keep their own rights."
+    },
+    {
+      "id": "wikipedia",
+      "name": "Wikipedia database dumps",
+      "url": "https://dumps.wikimedia.org/",
+      "license": "CC BY-SA 4.0",
+      "access": "public",
+      "domains": ["general knowledge", "research", "reference"],
+      "size": "Choose a language and a single dump, not the whole site",
+      "notes": "Attribute Wikipedia and share alike. Dumps are snapshots; they are not a live fact source."
+    },
+    {
+      "id": "openstax",
+      "name": "OpenStax textbooks",
+      "url": "https://openstax.org/",
+      "license": "CC BY 4.0 (check each book)",
+      "access": "public",
+      "domains": ["education", "science", "business", "mathematics"],
+      "size": "Book by book",
+      "notes": "Peer-reviewed open textbooks. Preserve attribution and do not imply endorsement by the publisher."
+    },
+    {
+      "id": "project-gutenberg",
+      "name": "Project Gutenberg",
+      "url": "https://www.gutenberg.org/",
+      "license": "Public domain in the US (check the book's country)",
+      "access": "public",
+      "domains": ["reading", "language", "literature"],
+      "size": "Book by book",
+      "notes": "The Gutenberg trademark and access rules still apply. Do not bulk-scrape the site."
+    },
+    {
+      "id": "oasst1",
+      "name": "OpenAssistant Conversations (OASST1)",
+      "url": "https://huggingface.co/datasets/OpenAssistant/oasst1",
+      "license": "Apache-2.0",
+      "access": "public",
+      "domains": ["conversation", "helpfulness", "multilingual"],
+      "size": "88.8k rows / ~106 MB",
+      "notes": "Human-written and human-ranked conversation trees. Filter for quality and remove personal data before use."
+    },
+    {
+      "id": "dolly-15k",
+      "name": "Databricks Dolly 15k",
+      "url": "https://huggingface.co/datasets/databricks/databricks-dolly-15k",
+      "license": "CC BY-SA 3.0",
+      "access": "public",
+      "domains": ["instructions", "business writing", "conversation"],
+      "size": "15k records",
+      "notes": "Human-written instruction data. Attribute and share alike. Review examples for factual errors."
+    },
+    {
+      "id": "helpsteer2",
+      "name": "HelpSteer2",
+      "url": "https://huggingface.co/datasets/nvidia/HelpSteer2",
+      "license": "CC BY 4.0",
+      "access": "public",
+      "domains": ["helpfulness", "advice", "conversation"],
+      "size": "~21k response pairs",
+      "notes": "Preference/helpfulness data. It teaches style and ranking, not domain truth; keep factual sources separate."
+    },
+    {
+      "id": "gsm8k",
+      "name": "GSM8K",
+      "url": "https://huggingface.co/datasets/openai/gsm8k",
+      "license": "MIT",
+      "access": "public",
+      "domains": ["mathematics", "reasoning", "calculation"],
+      "size": "8.5k problems / ~6 MB",
+      "notes": "Grade-school word problems with worked solutions. Hold out the test split; never train on evaluation cases."
+    },
+    {
+      "id": "openmathinstruct-2",
+      "name": "OpenMathInstruct-2",
+      "url": "https://huggingface.co/datasets/nvidia/OpenMathInstruct-2",
+      "license": "CC BY 4.0",
+      "access": "public",
+      "domains": ["mathematics", "reasoning", "calculation"],
+      "size": "Large; sample a small subset",
+      "notes": "Synthetic math instruction data. Verify the current dataset card and filter incorrect or duplicated solutions."
+    },
+    {
+      "id": "bfcl",
+      "name": "Berkeley Function Calling Leaderboard data",
+      "url": "https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard",
+      "license": "Apache-2.0 (verify data files)",
+      "access": "public",
+      "domains": ["tool calls", "coding", "agent behaviour"],
+      "size": "Case files, small",
+      "notes": "Use for held-out tool-call evaluation. Do not copy evaluation prompts into training."
+    },
+    {
+      "id": "the-stack-v2",
+      "name": "The Stack v2",
+      "url": "https://huggingface.co/datasets/bigcode/the-stack-v2",
+      "license": "The Stack v2 Terms of Use (gated; per-repository licences apply)",
+      "access": "request",
+      "domains": ["coding", "software"],
+      "size": "Very large; use permissive-language shards",
+      "notes": "Filter by permissive repository licences, honour opt-outs, and exclude secrets or generated code. Do not assume all code is reusable."
+    },
+    {
+      "id": "wikivoyage",
+      "name": "Wikivoyage",
+      "url": "https://www.wikivoyage.org/",
+      "license": "CC BY-SA 4.0",
+      "access": "public",
+      "domains": ["hospitality", "travel", "local information"],
+      "size": "Per-language dumps",
+      "notes": "Useful for travel and guest-service language. It is not a booking system or a source of live prices."
+    },
+    {
+      "id": "world-bank",
+      "name": "World Bank Open Data",
+      "url": "https://data.worldbank.org/",
+      "license": "CC BY 4.0",
+      "access": "public",
+      "domains": ["business", "economics", "research", "analysis"],
+      "size": "API and bulk downloads",
+      "notes": "Cite the indicator and year. Economic data is historical; do not present it as current advice."
+    },
+    {
+      "id": "sec-edgar",
+      "name": "SEC EDGAR",
+      "url": "https://www.sec.gov/edgar/sec-api-documentation",
+      "license": "US government public records (SEC access terms apply)",
+      "access": "public",
+      "domains": ["business", "accounting", "reports", "analysis"],
+      "size": "Company filings; fetch selectively",
+      "notes": "Set a descriptive User-Agent and respect rate limits. Filings are primary sources, not investment advice."
+    },
+    {
+      "id": "openalex",
+      "name": "OpenAlex",
+      "url": "https://openalex.org/",
+      "license": "CC0 for metadata",
+      "access": "public",
+      "domains": ["research", "citations", "analysis"],
+      "size": "API",
+      "notes": "Metadata and citation graph. Article full text may have a different licence; follow the linked work."
+    },
+    {
+      "id": "common-crawl",
+      "name": "Common Crawl",
+      "url": "https://commoncrawl.org/terms-of-use",
+      "license": "Common Crawl Terms of Use",
+      "access": "request",
+      "domains": ["general knowledge"],
+      "size": "Very large",
+      "notes": "Read and accept the terms first. Prefer a curated derivative such as FineWeb-Edu rather than crawling the web yourself."
+    },
+    {
+      "id": "stack-exchange",
+      "name": "Stack Exchange data dump",
+      "url": "https://meta.stackexchange.com/questions/224873/all-stack-exchange-data-dump-releases",
+      "license": "CC BY-SA, but the current dump has an LLM-training restriction",
+      "access": "do-not-use",
+      "domains": ["coding", "technical Q&A"],
+      "size": "Tens of GB",
+      "notes": "Excluded: the current distribution requires accepting terms that prohibit training an LLM. Do not bypass that restriction."
+    },
+    {
+      "id": "enron-email",
+      "name": "Enron email corpus",
+      "url": "https://www.cs.cmu.edu/~./enron/",
+      "license": "Research corpus containing personal data",
+      "access": "do-not-use",
+      "domains": ["email"],
+      "size": "~500k messages",
+      "notes": "Excluded: private communications and personal data. Use owned or synthetic email examples instead."
+    }
+  ]
+}

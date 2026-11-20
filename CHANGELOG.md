@@ -5,6 +5,21 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — training without the window, and exact calculations
+
+- `claireai --install-training-service` installs a systemd **user** timer for a
+  daily headless `--training-run`. It needs no root or display, honours the
+  Background learning switch and emergency stop, and can be inspected or removed
+  with `--training-service-status` / `--uninstall-training-service`.
+- A candidate whose review was unavailable is retried without training again; a
+  failed gate no longer strands it until a new candidate is made.
+- Plain arithmetic, percentages and common unit conversions are answered exactly
+  by `claireai/calculations.py`, in both the CLI and the agent path. The model is
+  no longer asked to calculate when code can.
+- Added a licensed training-source catalog with explicit access states, plus the
+  official Gmail, Microsoft Graph, WhatsApp, Instagram, Facebook, X and LinkedIn
+  routes. Restricted sources are marked `do-not-use` rather than worked around.
+
 ### Added — a candidate must pass the gate before install
 
 - Training candidates are now compared with the installed checkpoint on the

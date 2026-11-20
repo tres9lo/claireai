@@ -538,9 +538,71 @@ class TrainingWorker(threading.Thread):
 
     # -- training --------------------------------------------------------
 
+    def _review(
+        self,
+        candidate: Path,
+        *,
+        records: int | None = None,
+        domains: dict[str, int] | None = None,
+    ) -> bool:
+        """Apply the gate, preserving the candidate when review is unavailable."""
+        self.candidate = str(candidate)
+        try:
+            review = self.gate(candidate)
+        except Exception as error:  # noqa: BLE001 - a broken harness must not kill the worker
+            self._write_state(
+                status="candidate needs review",
+                candidate=str(candidate),
+                records=records if records is not None else self._state.get("records"),
+                domains=domains if domains is not None else self._state.get("domains"),
+                error=None,
+                gate={
+                    "passed": None,
+                    "promoted": False,
+                    "reason": f"review unavailable: {error}",
+                },
+            )
+            return True
+        promoted = bool(review.get("promoted"))
+        values: dict[str, Any] = {
+            "status": "installed" if promoted else "candidate rejected",
+            "candidate": str(candidate),
+            "error": None,
+            "gate": review,
+        }
+        if records is not None:
+            values["records"] = records
+        if domains is not None:
+            values["domains"] = domains
+        if records is not None or self._state.get("records") is not None:
+            values["last_success"] = _now().isoformat(timespec="seconds")
+        self._write_state(**values)
+        return True
+
+    def _retry_pending_review(self) -> bool:
+        """Retry a candidate that could not be reviewed, without retraining."""
+        if self._state.get("status") != "candidate needs review":
+            return False
+        candidate_value = self._state.get("candidate")
+        if not candidate_value:
+            return False
+        candidate = Path(str(candidate_value))
+        if not candidate.is_file():
+            return False
+        if self._state.get("status") != "candidate needs review":
+            return False
+        # The gate is local: a missing network must not strand a candidate.
+        # Do not hold the status lock while the evaluation runs; the desktop
+        # polls status() and would freeze for the whole review.
+        return self._review(candidate)
+
     def tick(self) -> bool:
-        """One attempt; returns whether a training run happened."""
-        if not self.enabled() or not self.due():
+        """One attempt; returns whether training or a retried review happened."""
+        if not self.enabled():
+            return False
+        if self._retry_pending_review():
+            return True
+        if not self.due():
             return False
         if not self.online_check():
             self.last_error = None
@@ -557,36 +619,8 @@ class TrainingWorker(threading.Thread):
                 self.last_error = str(error)
                 self._write_state(status="error", error=str(error))
                 return False
-            self.candidate = str(candidate)
             self.last_error = None
-            try:
-                review = self.gate(candidate)
-            except Exception as error:  # noqa: BLE001 - a broken harness must not kill the worker
-                self._write_state(
-                    status="candidate needs review",
-                    candidate=str(candidate),
-                    records=curriculum["total"],
-                    domains=curriculum["domains"],
-                    last_success=_now().isoformat(timespec="seconds"),
-                    error=None,
-                    gate={
-                        "passed": None,
-                        "promoted": False,
-                        "reason": f"review unavailable: {error}",
-                    },
-                )
-                return True
-            promoted = bool(review.get("promoted"))
-            self._write_state(
-                status="installed" if promoted else "candidate rejected",
-                candidate=str(candidate),
-                records=curriculum["total"],
-                domains=curriculum["domains"],
-                last_success=_now().isoformat(timespec="seconds"),
-                error=None,
-                gate=review,
-            )
-            return True
+            return self._review(candidate, records=curriculum["total"], domains=curriculum["domains"])
 
     def _train(self, curriculum: dict[str, Any]) -> Path:
         try:
@@ -646,10 +680,27 @@ class TrainingWorker(threading.Thread):
         self._stop.set()
 
 
+def run_service_tick(settings: Any) -> dict[str, Any]:
+    """One headless attempt for the systemd/cron entry point."""
+    from claireai.runtime_control import RuntimeControl
+
+    control = RuntimeControl(settings.control_state_path).read()
+    allowed = bool(control.get("self_improvement")) and not bool(control.get("shutdown"))
+    worker = TrainingWorker(
+        settings.resolved_data_dir,
+        enabled=lambda: allowed,
+    )
+    ran = worker.tick()
+    result = worker.status()
+    result["ran"] = ran
+    return result
+
+
 __all__ = [
     "DOMAINS",
     "TrainingCurriculum",
     "TrainingError",
     "TrainingWorker",
     "online",
+    "run_service_tick",
 ]

@@ -162,6 +162,8 @@ APP_FLAGS = frozenset(
         "--desktop", "--install-autostart", "--uninstall-autostart", "--autostart-status",
         "--install-menu", "--uninstall-menu",
         "--setup", "--install", "--yes", "--update", "--source",
+        "--training-run", "--install-training-service", "--uninstall-training-service",
+        "--training-service-status",
     }
 )
 
@@ -224,6 +226,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--source",
         help="with --update: the checkout root or its assistant directory (remembered afterwards)",
     )
+    parser.add_argument(
+        "--training-run",
+        action="store_true",
+        help="run one headless training attempt (used by the user timer)",
+    )
+    parser.add_argument(
+        "--install-training-service",
+        action="store_true",
+        help="install a daily systemd user timer for training",
+    )
+    parser.add_argument(
+        "--uninstall-training-service",
+        action="store_true",
+        help="remove the daily training timer",
+    )
+    parser.add_argument(
+        "--training-service-status",
+        action="store_true",
+        help="report the training timer state",
+    )
     parsed = parser.parse_args(args)
     if parsed.install and not parsed.setup:
         parser.error("--install is only valid together with --setup")
@@ -261,6 +283,63 @@ def main(argv: Sequence[str] | None = None) -> int:
             install_missing=parsed.install,
             assume_yes=parsed.yes,
         )
+
+    if (
+        parsed.training_run
+        or parsed.install_training_service
+        or parsed.uninstall_training_service
+        or parsed.training_service_status
+    ):
+        settings = (
+            Settings(data_dir=Path(parsed.data_dir).expanduser())
+            if parsed.data_dir
+            else Settings()
+        )
+        from claireai import service
+
+        if parsed.training_run:
+            from claireai.training import run_service_tick
+
+            result = run_service_tick(settings)
+            print(
+                f"training: {result.get('status', 'not started')} "
+                f"(enabled={result.get('enabled')}, ran={result.get('ran')})"
+            )
+            if result.get("candidate"):
+                print(f"candidate: {result['candidate']}")
+            gate = result.get("gate") or {}
+            if gate.get("reason"):
+                print(f"gate: {gate['reason']}")
+            if result.get("worker_error"):
+                print(f"training problem: {result['worker_error']}", file=sys.stderr)
+                return EXIT_CONFIG
+            return EXIT_OK
+        if parsed.training_service_status:
+            state = service.status()
+            print(f"training service {'installed' if state['installed'] else 'not installed'}")
+            for key in ("active", "enabled", "next"):
+                print(f"  {key}: {state.get(key)}")
+            print(f"  timer: {state['timer']}")
+            return EXIT_OK
+        if parsed.uninstall_training_service:
+            removed = service.uninstall()
+            print("training service removed" if removed else "no training service was installed")
+            return EXIT_OK
+        try:
+            from claireai.update import checkout_root
+
+            workdir = checkout_root(settings.resolved_data_dir)
+            paths = service.install(
+                settings.resolved_data_dir,
+                working_directory=workdir or Path.cwd(),
+            )
+        except service.ServiceError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return EXIT_CONFIG
+        print(f"training timer installed: {paths['timer']}")
+        print("It runs at most once a day when Background learning is on.")
+        print("Check it with: claireai --training-service-status")
+        return EXIT_OK
 
     from claireai import autostart
 
