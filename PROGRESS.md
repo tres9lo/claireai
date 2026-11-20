@@ -1,5 +1,78 @@
 # Progress log
 
+## 2026-11-20 (later) — Bilingual corpus and one-command training path
+
+- **Casual conversation is a data/capacity problem, not a decoding one.** The
+  installed checkpoint produced `The Amall you want to helpt archange...` for
+  "Hi Claire, how are you today?" at temperatures 0.2, 0.5 and 0.8, so lowering
+  the sampler is not a fix. The installed conversation baseline measured
+  **11/21** in this session; earlier runs recorded **13/21**, so single-run
+  differences are noise and the gate still compares at the same run count.
+- **Bilingual curriculum added.** The authored corpus now has an English/French
+  `languages` bucket covering everyday greetings, capability and identity
+  answers, common vocabulary, grammar, approximate pronunciation, language
+  switching and French variants of the file/summary/chat intents. It is
+  authored text, not model output, and remains balanced against the tool/format
+  records. This is preparation, not evidence that a candidate has learned it.
+- **OASST1 is reproducible instead of rate-limited.** The fetcher reads the
+  released `ready` message archive, walks each reply to its nearest human prompt
+  in the same language, and writes separate English and French files. FineWeb-2
+  French (`fra_Latn`) adds bounded prose with extractive leads.
+- **Training is memory-bounded.** Token ids are stored as compact `uint16`
+  arrays rather than boxed Python integers, so the larger corpus no longer
+  forces the 5k-record fallback. The trainer also uses the tokenizer's reserved
+  `PAD` id instead of a hard-coded 257.
+- **The installed 512 architecture was being used past its trained rows.** The
+  production checkpoint has 512 positions but only the first 288 were trained;
+  inference now records/reads `trained_context` and fits prompts to 288 until a
+  candidate trains the new rows. This removes a direct source of word salad and
+  is separate from the model-quality work.
+- **Prepared corpus:** `chat-v15` has **24,640 train / 2,430 validation** records
+  after merge, including 1,461 French OASST1 pairs and 4,000 French FineWeb-2
+  leads. This is data preparation; no new checkpoint was trained or installed.
+- **One command.** `brain-lab/train_claireai.py --profile full` fetches, builds,
+  merges, trains and runs both fixed evaluations, writing a candidate and a
+  pipeline log. It deliberately does not install or promote anything.
+- **10K is still not advisable.** The RoPE candidate loads, but the recall probe
+  failed at 512, 2,048, 8,192 and 10,240 tokens, and 9,734 prompt tokens took
+  18.7 s for four generated tokens. The default training context remains 512;
+  the `huge` profile uses 768, not 10K.
+- **Image training remains a placeholder.** `brain-lab/image_training.py` and
+  `data/image-training/manifest.json` reserve the schema (path, instruction,
+  point/box/text target, split, source, licence) and explicitly do not train.
+  The shipped model is text-only.
+
+## 2026-11-20 — Confirmed research, a 10K-capable candidate, and two rejected fine-tunes
+
+- **The resolver failure was transient, not a bad Rwanda edition.** `--news
+  Rwanda,Kenya` now succeeds and prints cited headlines. Retrieval retries DNS,
+  timeout and 5xx failures three times; a final resolver failure is named as DNS
+  and keeps the affected country in the `Could not retrieve` line.
+- **Email setup now verifies before storing.** `--email-setup` uses hidden input,
+  opens INBOX read-only to prove the credential, and writes only to the OS
+  keyring. `keyring` was missing from the environment despite being imported by
+  `secrets.py`; it is now a core dependency.
+- **Learning no longer teaches guesses.** Ordinary exchanges are journaled but
+  excluded from the corpus. Only owner-confirmed, source-bearing research is
+  compiled. The nightly worker also merges authored intent/conversation records
+  and confirmed lessons into the external corpus; previously it selected the
+  external corpus directly and dropped both.
+- **10K is loadable, not yet useful.** A RoPE conversion of the installed
+  checkpoint has a 10,240-token window. Measured: 9,734 prompt tokens, 18.7 s
+  for four generated tokens, 461 MB peak RSS on this 4-thread i5/7 GB host. The
+  `ORANGE-742` recall probe still fails at 512, 2,048, 8,192 and 10,240. The
+  installed checkpoint was not replaced.
+- **The 10K conversation candidate was rejected.** Thirty warm-start steps
+  lowered validation loss from 4.04 to 3.70, but the held-out conversation suite
+  scored **10/21** against the installed model's **13/21**, and recall still
+  failed. A separate 512-token 200-step intent candidate scored **11/21** and
+  **18/55 tool checks**, so neither was installed. The installed model still
+  scores **13/21** with the new attention path, which is the regression check
+  that mattered for the refactor.
+- **Open limits:** 10K recall needs more capacity or retrieval, not another
+  position-table widening; the service timer still needs its next scheduled run;
+  OASST1 remains rate-limited; live inbox reading still needs an owner account.
+
 ## 2026-11-07 (later) — A workspace calendar, and a corpus rebuilt to choose tools
 
 - **Calendar.** `list_appointments` (safe) and `add_appointment`

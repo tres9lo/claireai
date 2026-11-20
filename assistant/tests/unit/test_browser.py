@@ -117,6 +117,17 @@ def test_readable_text_keeps_prose_and_drops_tags_and_scripts() -> None:
     assert "<p>" not in text
 
 
+def test_readable_text_drops_navigation_and_footer_furniture() -> None:
+    _, text = readable_text(
+        "<nav>Main page Contents Random article</nav>"
+        "<main><p>The capital is Kigali.</p></main>"
+        "<footer>Privacy policy</footer>"
+    )
+    assert "Kigali" in text
+    assert "Random article" not in text
+    assert "Privacy policy" not in text
+
+
 def test_readable_text_is_clipped() -> None:
     _, text = readable_text("<p>" + ("word " * 500) + "</p>", limit=50)
     assert len(text) <= 50

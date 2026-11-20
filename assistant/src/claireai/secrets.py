@@ -34,6 +34,28 @@ def keyring_secret(account: str) -> str | None:
     return value or None
 
 
+def store_secret(account: str, value: str) -> None:
+    """Store a secret in the OS keyring, refusing to fall back to a file.
+
+    Email app passwords and connector keys must not be silently written into a
+    world-readable config file when the keyring backend is unavailable. The
+    caller shows this error and the owner can install/configure a keyring.
+    """
+    secret = str(value).strip()
+    if not secret:
+        raise ValueError("secret must not be empty")
+    try:
+        import keyring  # noqa: PLC0415 - optional dependency
+    except Exception as exc:  # noqa: BLE001 - any import failure means unavailable
+        raise RuntimeError(
+            "the OS keyring is not available; install a keyring backend before storing secrets"
+        ) from exc
+    try:
+        keyring.set_password(KEYRING_SERVICE, account, secret)
+    except Exception as exc:  # noqa: BLE001 - locked/unavailable backend
+        raise RuntimeError(f"the OS keyring refused to store the secret: {exc}") from exc
+
+
 def stored_secret(account: str) -> str | None:
     """Keyring first, then the CLAIREAI_ environment variable for that account."""
     value = keyring_secret(account)

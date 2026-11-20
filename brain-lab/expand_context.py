@@ -25,6 +25,12 @@ def main() -> int:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--context", type=int, default=512)
+    parser.add_argument(
+        "--position-encoding",
+        choices=("learned", "rope"),
+        default="learned",
+        help="keep learned absolute positions, or convert to rotary positions for a long window",
+    )
     parser.add_argument("--name", default=None)
     args = parser.parse_args()
 
@@ -42,30 +48,56 @@ def main() -> int:
     new_context = int(args.context)
     if new_context <= old_context:
         parser.error(f"--context {new_context} must be larger than {old_context}")
-    positions = state.get("position_embedding.weight")
-    if positions is None or tuple(positions.shape) != (old_context, width):
-        parser.error("checkpoint position table does not match its manifest")
-
-    expanded = dict(state)
-    table = torch.empty((new_context, width), dtype=positions.dtype)
-    table[:old_context] = positions
-    tail = positions[-min(8, old_context):]
-    table[old_context:] = tail.mean(dim=0, keepdim=True)
-    expanded["position_embedding.weight"] = table
+    old_encoding = str(architecture.get("position_encoding") or "learned")
+    if args.position_encoding == "learned":
+        positions = state.get("position_embedding.weight")
+        if positions is None or tuple(positions.shape) != (old_context, width):
+            parser.error("checkpoint position table does not match its manifest")
+        expanded = dict(state)
+        table = torch.empty((new_context, width), dtype=positions.dtype)
+        table[:old_context] = positions
+        tail = positions[-min(8, old_context):]
+        table[old_context:] = tail.mean(dim=0, keepdim=True)
+        expanded["position_embedding.weight"] = table
+        note = (
+            "Position rows beyond the old window are seeded from the last rows "
+            "and require training."
+        )
+    else:
+        # Rotary positions are computed rather than stored. Dropping the old
+        # learned table is the only tensor removed; every other learned weight
+        # is copied unchanged.
+        if old_encoding == "rope":
+            parser.error("checkpoint already uses rotary positions; only the context limit changes")
+        expanded = dict(state)
+        expanded.pop("position_embedding.weight", None)
+        note = (
+            "Converted from learned absolute positions to rotary positions. The old "
+            "position table was removed; all other weights were copied unchanged."
+        )
 
     architecture["context"] = new_context
+    architecture["position_encoding"] = args.position_encoding
     manifest = dict(manifest)
     manifest["name"] = args.name or f"{manifest.get('name', source.stem)}-ctx{new_context}"
     manifest["architecture"] = architecture
     manifest["expanded_from"] = str(source)
     manifest["expanded_from_context"] = old_context
-    manifest["notes"] = "Position rows beyond the old window are seeded from the last rows and require training."
+    # The architecture can now hold ``new_context`` tokens, but only positions
+    # 0..old_context-1 have learned meaning.  Inference must keep fitting
+    # prompts to this limit until a training run covers the new rows.
+    manifest["trained_context"] = old_context
+    manifest["position_conversion"] = f"{old_encoding}->{args.position_encoding}"
+    manifest["notes"] = note
 
     output = args.output.expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"state_dict": expanded, "manifest": manifest}, output)
     output.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    print(f"expanded {old_context} -> {new_context} positions: {output}")
+    print(
+        f"expanded {old_context} -> {new_context} positions "
+        f"({old_encoding} -> {args.position_encoding}): {output}"
+    )
     return 0
 
 

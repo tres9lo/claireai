@@ -134,6 +134,18 @@ def test_a_voice_model_must_match_the_language(tmp_path, monkeypatch) -> None:
     assert voice.piper_voice_for("fr") is None
 
 
+def test_an_installed_copy_finds_the_checkouts_neural_voices(tmp_path, monkeypatch) -> None:
+    from claireai import voice
+
+    checkout = tmp_path / "repo" / "assistant"
+    monkeypatch.delenv("CLAIREAI_PIPER_DIR", raising=False)
+    monkeypatch.setattr("claireai.update.checkout_root", lambda: checkout)
+
+    directories = voice.piper_model_dirs()
+
+    assert (checkout.parent / "runtime-data" / "models" / "voice" / "piper").resolve() in directories
+
+
 def test_a_model_without_its_config_is_not_used(tmp_path, monkeypatch) -> None:
     from claireai import voice
 

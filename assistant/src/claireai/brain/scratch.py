@@ -158,14 +158,35 @@ class ScratchBrain:
         parts.append("ASSISTANT: ")
         return "\n".join(parts)
 
+    def _prompt_context(self) -> int:
+        """The position range the checkpoint was actually trained on.
+
+        A structural context expansion copies the old position rows and seeds
+        the new rows from their mean; those new rows have no learned meaning
+        until a training run covers them.  Using the architecture's larger
+        window at inference then feeds the model untrained positions, which is
+        exactly how a short greeting produced word salad.  Manifest metadata
+        names the trained limit; an older expansion only carries
+        ``expanded_from_context``, so that is the fallback.  A fresh checkpoint
+        has neither field and legitimately uses its full context.
+        """
+        trained = self._manifest.get("trained_context")
+        if trained is None:
+            trained = self._manifest.get("expanded_from_context")
+        try:
+            limit = int(trained)
+        except (TypeError, ValueError):
+            limit = int(self._model.context)
+        return max(1, min(int(self._model.context), limit))
+
     def _fit_prompt(self, system: str, history: list[dict[str, Any]], tools: list[Mapping[str, Any]], render) -> str:  # noqa: ANN001
-        """Render a prompt inside the model's context, keeping the request.
+        """Render a prompt inside the model's trained context, keeping the request.
 
         Priority order: the current turn, the tool block, the system prompt.
         Dropping the user's request to make room for a long instruction list is
         how a small model ends up answering nothing.
         """
-        context = int(self._model.context)
+        context = self._prompt_context()
 
         def length(text: str, kept: list[dict[str, Any]]) -> int:
             return len(self._tokenizer.encode(render(text, kept, tools), append_eos=False))

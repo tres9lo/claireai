@@ -1,4 +1,17 @@
-"""Small decoder-only transformer, implemented directly with PyTorch."""
+"""Small decoder-only transformer, implemented directly with PyTorch.
+
+Two position schemes are supported:
+
+* ``learned`` -- the original absolute position table.  Every checkpoint made
+  before this option existed uses it, and remains loadable unchanged.
+* ``rope`` -- rotary position embeddings.  There is no context-sized position
+  table and no context-sized causal mask, so a 10,240-token window costs
+  attention time rather than hundreds of megabytes of buffers.
+
+Attention uses ``scaled_dot_product_attention`` with ``is_causal=True``.  That
+is mathematically the same as the original explicit mask, but the CPU backend
+can avoid materialising the full score matrix for long sequences.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +19,7 @@ from collections.abc import Callable
 
 try:
     import torch
+    import torch.nn.functional as F
     from torch import nn
 except ImportError as exc:  # pragma: no cover - depends on optional extra
     raise RuntimeError("Install the model extra with `pip install -e '.[model]'`.") from exc
@@ -13,9 +27,38 @@ except ImportError as exc:  # pragma: no cover - depends on optional extra
 from .tokenizer import BASE_VOCAB_SIZE
 from .tokenizer import EOS, PAD
 
+POSITION_ENCODINGS = ("learned", "rope")
+
+
+def _rotate_half(value: torch.Tensor) -> torch.Tensor:
+    left, right = value.chunk(2, dim=-1)
+    return torch.cat((-right, left), dim=-1)
+
+
+class RotaryEmbedding(nn.Module):
+    """Rotary positions for one attention head width."""
+
+    def __init__(self, head_width: int, *, base: float = 10_000.0) -> None:
+        super().__init__()
+        if head_width % 2:
+            raise ValueError("rotary attention needs an even per-head width")
+        self.head_width = head_width
+        inverse = 1.0 / (base ** (torch.arange(0, head_width, 2).float() / head_width))
+        self.register_buffer("inverse_frequencies", inverse, persistent=False)
+
+    def forward(
+        self, length: int, *, device: torch.device, dtype: torch.dtype
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        positions = torch.arange(length, device=device, dtype=torch.float32)
+        frequencies = torch.outer(
+            positions, self.inverse_frequencies.to(device=device, dtype=torch.float32)
+        )
+        embedded = torch.cat((frequencies, frequencies), dim=-1)
+        return embedded.cos().to(dtype), embedded.sin().to(dtype)
+
 
 class CausalAttention(nn.Module):
-    def __init__(self, width: int, heads: int, context: int) -> None:
+    def __init__(self, width: int, heads: int, context: int | None = None) -> None:
         super().__init__()
         if width % heads:
             raise ValueError("width must be divisible by heads")
@@ -23,43 +66,81 @@ class CausalAttention(nn.Module):
         self.head_width = width // heads
         self.qkv = nn.Linear(width, width * 3, bias=False)
         self.output = nn.Linear(width, width, bias=False)
-        self.register_buffer("mask", torch.tril(torch.ones(context, context)), persistent=False)
+        # ``context`` remains in the signature so older call sites keep working.
+        # The causal mask is implicit in scaled_dot_product_attention now; a
+        # 10k x 10k boolean buffer per layer would defeat the point.
+        del context
 
-    def forward(self, x):
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor | None = None,
+        sin: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         batch, length, width = x.shape
         q, k, v = self.qkv(x).chunk(3, dim=-1)
-        def split(t):
-            return t.view(batch, length, self.heads, self.head_width).transpose(1, 2)
+
+        def split(value: torch.Tensor) -> torch.Tensor:
+            return value.view(batch, length, self.heads, self.head_width).transpose(1, 2)
+
         q, k, v = split(q), split(k), split(v)
-        scores = (q @ k.transpose(-2, -1)) * (self.head_width ** -0.5)
-        scores = scores.masked_fill(self.mask[:length, :length] == 0, float("-inf"))
-        weights = scores.softmax(dim=-1)
-        attended = (weights @ v).transpose(1, 2).contiguous().view(batch, length, width)
+        if cos is not None and sin is not None:
+            q = (q * cos) + (_rotate_half(q) * sin)
+            k = (k * cos) + (_rotate_half(k) * sin)
+        attended = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=True
+        )
+        attended = attended.transpose(1, 2).contiguous().view(batch, length, width)
         return self.output(attended)
 
 
 class Block(nn.Module):
-    def __init__(self, width: int, heads: int, context: int) -> None:
+    def __init__(self, width: int, heads: int, context: int | None = None) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(width)
         self.attention = CausalAttention(width, heads, context)
         self.norm2 = nn.LayerNorm(width)
         self.mlp = nn.Sequential(nn.Linear(width, 4 * width), nn.GELU(), nn.Linear(4 * width, width))
 
-    def forward(self, x):
-        x = x + self.attention(self.norm1(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor | None = None,
+        sin: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        x = x + self.attention(self.norm1(x), cos, sin)
         return x + self.mlp(self.norm2(x))
 
 
 class ScratchTransformer(nn.Module):
     """A small CPU-oriented GPT-style model; all weights start randomly initialized."""
 
-    def __init__(self, *, context: int = 256, width: int = 128, layers: int = 4, heads: int = 4, vocab_size: int = BASE_VOCAB_SIZE) -> None:
+    def __init__(
+        self,
+        *,
+        context: int = 256,
+        width: int = 128,
+        layers: int = 4,
+        heads: int = 4,
+        vocab_size: int = BASE_VOCAB_SIZE,
+        position_encoding: str = "learned",
+    ) -> None:
         super().__init__()
+        if position_encoding not in POSITION_ENCODINGS:
+            raise ValueError(
+                f"position_encoding must be one of {', '.join(POSITION_ENCODINGS)}"
+            )
         self.context = context
+        self.position_encoding = position_encoding
         self.token_embedding = nn.Embedding(vocab_size, width)
-        self.position_embedding = nn.Embedding(context, width)
-        self.blocks = nn.Sequential(*(Block(width, heads, context) for _ in range(layers)))
+        if position_encoding == "learned":
+            self.position_embedding: nn.Embedding | None = nn.Embedding(context, width)
+            self.rotary: RotaryEmbedding | None = None
+        else:
+            # No context-sized table: the same frequencies describe any position.
+            self.position_embedding = None
+            self.rotary = RotaryEmbedding(width // heads)
+        self.blocks = nn.ModuleList([Block(width, heads, context) for _ in range(layers)])
         self.norm = nn.LayerNorm(width)
         self.lm_head = nn.Linear(width, vocab_size, bias=False)
         self.lm_head.weight = self.token_embedding.weight
@@ -85,12 +166,19 @@ class ScratchTransformer(nn.Module):
         _, length = tokens.shape
         if length > self.context:
             raise ValueError(f"sequence length {length} exceeds context {self.context}")
-        positions = torch.arange(length, device=tokens.device)
-        hidden = self.token_embedding(tokens) + self.position_embedding(positions)
-        logits = self.lm_head(self.norm(self.blocks(hidden)))
+        hidden = self.token_embedding(tokens)
+        cos = sin = None
+        if self.position_embedding is not None:
+            positions = torch.arange(length, device=tokens.device)
+            hidden = hidden + self.position_embedding(positions)
+        elif self.rotary is not None:
+            cos, sin = self.rotary(length, device=tokens.device, dtype=hidden.dtype)
+        for block in self.blocks:
+            hidden = block(hidden, cos, sin)
+        logits = self.lm_head(self.norm(hidden))
         loss = None
         if targets is not None:
-            flat = nn.functional.cross_entropy(
+            flat = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)), targets.reshape(-1), reduction="none"
             )
             if loss_mask is None:

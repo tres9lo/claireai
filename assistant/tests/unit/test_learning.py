@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 
-from claireai.learning import BackgroundLearner, LearningJournal
+import pytest
+
+from claireai.learning import BackgroundLearner, LearningError, LearningJournal
 
 
 def test_recording_is_opt_in_at_the_call_site_and_idempotent(tmp_path) -> None:
@@ -22,22 +24,46 @@ def test_recording_is_opt_in_at_the_call_site_and_idempotent(tmp_path) -> None:
 
 def test_compile_is_append_only_and_resumable(tmp_path) -> None:
     journal = LearningJournal(tmp_path / "data")
-    journal.record("one", "first answer")
-    journal.record("two", "second answer")
+    assert journal.record_lesson(
+        "one", "first source-backed answer", sources=["https://example.test/one"]
+    )
+    assert journal.record_lesson(
+        "two", "second source-backed answer", sources=["https://example.test/two"]
+    )
 
     assert journal.compile() == 2
     assert journal.compile() == 0
     assert journal.status()["compiled"] == 2
+    assert journal.status()["scanned"] == 2
     assert journal.status()["pending"] == 0
 
-    journal.record("three", "third answer")
+    assert journal.record_lesson(
+        "three", "third source-backed answer", sources=["https://example.test/three"]
+    )
     assert journal.compile() == 1
     assert journal.status()["compiled"] == 3
+    assert journal.status()["scanned"] == 3
 
     lines = journal.corpus_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 3
     assert '"content":"one"' in lines[0]
     assert '"role":"user"' in lines[0]
+    assert "Source: https://example.test/one" in lines[0]
+
+
+def test_unverified_answers_never_become_training_data(tmp_path) -> None:
+    journal = LearningJournal(tmp_path / "data")
+    assert journal.record("what is a tokenizer?", "a guess from the model") is True
+    assert journal.compile() == 0
+    assert journal.status()["verified"] == 0
+    assert journal.status()["scanned"] == 1
+    assert not journal.corpus_path.exists()
+
+
+def test_a_verified_lesson_needs_a_source(tmp_path) -> None:
+    journal = LearningJournal(tmp_path / "data")
+    with pytest.raises(LearningError, match=r"http\(s\) source"):
+        journal.record("q", "a", verified=True)
 
 
 def test_the_worker_does_nothing_while_disabled(tmp_path) -> None:
@@ -50,8 +76,8 @@ def test_the_worker_does_nothing_while_disabled(tmp_path) -> None:
     assert journal.status()["compiled"] == 0
 
     enabled = True
-    assert worker.tick() == 1
-    assert journal.status()["compiled"] == 1
+    assert worker.tick() == 0
+    assert journal.status()["scanned"] == 1
 
 
 def test_the_journal_is_private_to_the_owner(tmp_path) -> None:

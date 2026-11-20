@@ -23,7 +23,7 @@ Nothing is uploaded anywhere by the application.
 - No hosted model provider and no API keys in the runtime path.
 - No background sync, remote backup or cloud storage.
 
-The scratch model runs locally and makes no network requests. Browser tools are off by default; when enabled they fetch URLs you ask them to fetch directly from your machine.
+The scratch model runs locally and makes no network requests. Browser tools are off by default; when enabled they fetch URLs you ask them to fetch directly from your machine. When the local model says it does not know a **public factual** question, ClaireAI may offer a separate `research_web` approval: an approved run sends the query to a public search endpoint and reads the top result. Private and first-person requests are never sent automatically. The excerpt is offered as a local lesson only after a second explicit approval, and unverified model answers are never compiled into training data.
 
 ## What the model sees
 

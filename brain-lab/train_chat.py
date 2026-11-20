@@ -12,7 +12,7 @@ This is the chat-aware successor to ``train.py``.  The differences that matter:
 
     assistant/.venv/bin/python brain-lab/build_chat_dataset.py
     assistant/.venv/bin/python brain-lab/train_chat.py \
-        --corpus brain-lab/data/chat-v2 --steps 3000
+        --corpus brain-lab/data/chat-v15 --steps 3000
 
 The checkpoint is written in the same manifest format as ``train.py`` so
 ``claireai.brain.ScratchBrain`` can load it unchanged.
@@ -29,11 +29,12 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+import numpy as np
 import torch
 
 from claire_brain.model import ScratchTransformer
 from claire_brain.prompt import render_prompt
-from claire_brain.tokenizer import BytePairTokenizer, EOS
+from claire_brain.tokenizer import BytePairTokenizer, EOS, PAD
 
 ROOT = Path(__file__).resolve().parent
 
@@ -115,9 +116,15 @@ def build_examples(
     *,
     context: int,
     max_target_tokens: int | None = None,
-) -> list[tuple[list[int], int]]:
-    """Return ``(token_ids, prompt_length)`` for every assistant turn."""
-    examples: list[tuple[list[int], int]] = []
+) -> list[tuple[np.ndarray, int]]:
+    """Return ``(token_ids, prompt_length)`` for every assistant turn.
+
+    Token ids are stored as ``uint16`` arrays, not Python int lists.  A 50k-record
+    corpus otherwise keeps several hundred megabytes of boxed integers alive
+    before training even starts, which is what forced the old memory-bounded
+    corpus.  The vocabulary limit (65,536) is far above any scratch model here.
+    """
+    examples: list[tuple[np.ndarray, int]] = []
     target_cap = max_target_tokens or context
     for record in records:
         system = str(record.get("system") or "")
@@ -143,12 +150,12 @@ def build_examples(
             ids = prompt_ids + target_ids
             if len(ids) > context + 1:
                 continue
-            examples.append((ids, len(prompt_ids)))
+            examples.append((np.asarray(ids, dtype=np.uint16), len(prompt_ids)))
     return examples
 
 
 def collate(
-    batch: Sequence[tuple[list[int], int]],
+    batch: Sequence[tuple[np.ndarray, int]],
     *,
     pad: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -158,8 +165,8 @@ def collate(
     mask = torch.zeros((len(batch), width - 1), dtype=torch.float32)
     for row, (ids, prompt_len) in enumerate(batch):
         length = len(ids)
-        x[row, : length - 1] = torch.tensor(ids[:-1], dtype=torch.long)
-        y[row, : length - 1] = torch.tensor(ids[1:], dtype=torch.long)
+        x[row, : length - 1] = torch.from_numpy(ids[:-1].astype(np.int64))
+        y[row, : length - 1] = torch.from_numpy(ids[1:].astype(np.int64))
         # Predictions start at the last prompt token and cover every reply token.
         mask[row, prompt_len - 1 : length - 1] = 1.0
     return x, y, mask
@@ -167,7 +174,7 @@ def collate(
 
 def evaluate(
     model: ScratchTransformer,
-    examples: Sequence[tuple[list[int], int]],
+    examples: Sequence[tuple[np.ndarray, int]],
     *,
     batch_size: int,
     pad: int,
@@ -217,6 +224,12 @@ def main() -> int:
         help="vocabulary size for the tokenizer and the model embeddings",
     )
     parser.add_argument(
+        "--position-encoding",
+        choices=("learned", "rope"),
+        default="learned",
+        help="learned absolute positions (old checkpoints) or rotary positions (long context)",
+    )
+    parser.add_argument(
         "--width", type=int, default=192)
     parser.add_argument(
         "--layers", type=int, default=4)
@@ -237,7 +250,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--data-dir", type=Path, default=None)
-    parser.add_argument("--name", default="claire-chat-v2")
+    parser.add_argument("--name", default="claire-chat-v15")
     parser.add_argument("--resume", action="store_true", help="continue from <output>.partial if present")
     parser.add_argument(
         "--init-from",
@@ -326,17 +339,33 @@ def main() -> int:
         layers=args.layers,
         heads=args.heads,
         vocab_size=tokenizer.vocab_size,
+        position_encoding=args.position_encoding,
     )
     parameters = sum(weight.numel() for weight in model.parameters())
     print(
         f"model: width={args.width} layers={args.layers} heads={args.heads} "
-        f"context={args.context} vocab={tokenizer.vocab_size} params={parameters:,}",
+        f"context={args.context} vocab={tokenizer.vocab_size} "
+        f"positions={args.position_encoding} params={parameters:,}",
         flush=True,
     )
     if args.init_from is not None:
         warm = torch.load(args.init_from.expanduser(), map_location="cpu", weights_only=True)
+        state = warm["state_dict"]
+        if args.position_encoding == "rope" and "position_embedding.weight" in state:
+            # The learned position table has no counterpart in a rotary model.
+            # Dropping exactly that one tensor is a deliberate architecture
+            # conversion; every other learned tensor must still line up.
+            state = {
+                key: value
+                for key, value in state.items()
+                if key != "position_embedding.weight"
+            }
+            print(
+                "warm start: dropping the learned position table for rotary positions",
+                flush=True,
+            )
         try:
-            model.load_state_dict(warm["state_dict"])
+            model.load_state_dict(state)
         except RuntimeError as exc:
             parser.error(f"--init-from {args.init_from} does not fit this architecture: {exc}")
         print(f"warm start: weights from {args.init_from}", flush=True)
@@ -381,7 +410,7 @@ def main() -> int:
         for group in optimizer.param_groups:
             group["lr"] = lr_at(step)
         batch = [random.choice(train_examples) for _ in range(args.batch_size)]
-        x, y, mask = collate(batch, pad=257)
+        x, y, mask = collate(batch, pad=PAD)
         _, loss = model(x, y, loss_mask=mask)
         last_loss = loss.item()
         optimizer.zero_grad(set_to_none=True)
@@ -399,7 +428,7 @@ def main() -> int:
             )
         if step % args.eval_interval == 0 or step == args.steps:
             eval_set = validation_examples[: args.eval_batches * args.batch_size]
-            mean, perplexity = evaluate(model, eval_set, batch_size=args.batch_size, pad=257)
+            mean, perplexity = evaluate(model, eval_set, batch_size=args.batch_size, pad=PAD)
             print(f"  validation loss={mean:.4f} perplexity={perplexity:.2f}", flush=True)
             if mean < best_loss:
                 best_loss = mean
@@ -443,6 +472,7 @@ def main() -> int:
             "layers": args.layers,
             "heads": args.heads,
             "vocab_size": tokenizer.vocab_size,
+            "position_encoding": args.position_encoding,
         },
         "tokenizer": "corpus-bpe-v1",
         "tokenizer_merges": tokenizer.merges,

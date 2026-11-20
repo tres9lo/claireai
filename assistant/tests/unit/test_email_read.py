@@ -10,9 +10,10 @@ from claireai import email_read
 class FakeImap:
     instances: list["FakeImap"] = []
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, timeout: int | None = None) -> None:
         self.host = host
         self.port = port
+        self.timeout = timeout
         self.readonly: bool | None = None
         self.specs: list[str] = []
         self.logged_out = False
@@ -49,9 +50,31 @@ class FakeImap:
 def configured(monkeypatch):  # noqa: ANN001, ANN202
     FakeImap.instances.clear()
     monkeypatch.setenv("CLAIREAI_EMAIL_ADDRESS", "owner@example.test")
-    monkeypatch.setattr(email_read, "stored_secret", lambda account: "app-password")
+    monkeypatch.setattr(
+        email_read,
+        "stored_secret",
+        lambda account: "app-password" if account == "email_app_password" else None,
+    )
     monkeypatch.setattr(email_read.imaplib, "IMAP4_SSL", FakeImap)
     return FakeImap
+
+
+def test_keyring_address_and_host_work_without_environment(monkeypatch) -> None:  # noqa: ANN001
+    FakeImap.instances.clear()
+    stored = {
+        "email_address": "owner@example.test",
+        "email_imap_host": "imap.example.test",
+        "email_imap_port": "993",
+        "email_app_password": "app-password",
+    }
+    monkeypatch.delenv("CLAIREAI_EMAIL_ADDRESS", raising=False)
+    monkeypatch.delenv("CLAIREAI_EMAIL_IMAP_HOST", raising=False)
+    monkeypatch.delenv("CLAIREAI_EMAIL_IMAP_PORT", raising=False)
+    monkeypatch.setattr(email_read, "stored_secret", lambda account: stored.get(account))
+    monkeypatch.setattr(email_read.imaplib, "IMAP4_SSL", FakeImap)
+
+    assert email_read.read_inbox(limit=1)
+    assert FakeImap.instances[0].host == "imap.example.test"
 
 
 def test_headers_are_read_without_marking_messages(configured) -> None:  # noqa: ANN001
@@ -79,4 +102,20 @@ def test_missing_credentials_fail_before_connecting(monkeypatch) -> None:  # noq
     monkeypatch.delenv("CLAIREAI_EMAIL_ADDRESS", raising=False)
     monkeypatch.setattr(email_read, "stored_secret", lambda account: None)
     with pytest.raises(email_read.EmailError, match="CLAIREAI_EMAIL_ADDRESS"):
+        email_read.read_inbox()
+
+
+def test_verify_login_reads_no_messages(configured) -> None:  # noqa: ANN001
+    email_read.verify_login("owner@example.test", "app-password", "imap.example.test", 993)
+    mailbox = configured.instances[0]
+    assert mailbox.readonly is True
+    assert mailbox.specs == []
+    assert mailbox.logged_out is True
+
+
+def test_bad_port_is_rejected_before_connecting(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("CLAIREAI_EMAIL_ADDRESS", "owner@example.test")
+    monkeypatch.setenv("CLAIREAI_EMAIL_IMAP_PORT", "nonsense")
+    monkeypatch.setattr(email_read, "stored_secret", lambda account: "app-password")
+    with pytest.raises(email_read.EmailError, match="CLAIREAI_EMAIL_IMAP_PORT"):
         email_read.read_inbox()

@@ -1029,6 +1029,77 @@ async def test_a_second_unreadable_call_fails_the_task_with_a_clear_reason(
     assert rows[-1].status == "failed"
 
 
+async def test_unknown_public_question_can_search_then_save_a_confirmed_lesson(
+    conn: sqlite3.Connection, agent_settings: Settings, monkeypatch
+) -> None:  # noqa: ANN001
+    from claireai.research import ResearchResult
+
+    RuntimeControl(agent_settings.control_state_path).update(
+        {"browser": True, "self_improvement": True}
+    )
+    result = ResearchResult(
+        query="capital of France",
+        title="France",
+        url="https://example.test/france",
+        excerpt="Paris is the capital of France.",
+        sources=("https://example.test/france", "https://example.test/other"),
+    )
+    monkeypatch.setattr("claireai.research.web_research", lambda *a, **k: result)
+    brain = ScriptedBrain([answer("I do not know."), answer("Paris is the capital.")])
+    broker = FixedBroker(approved=True)
+
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="what is the capital of France?",
+        approvals=broker,
+    )
+
+    assert outcome.content == "Paris is the capital."
+    assert [request.tool for request in broker.requests] == ["research_web", "remember_research"]
+    actions = [row.action for row in AuditLog(conn).for_task(outcome.task_id)]
+    assert "research.result" in actions
+    assert "research.lesson" in actions
+    from claireai.learning import LearningJournal
+
+    entries = LearningJournal(agent_settings.resolved_data_dir).entries()
+    assert entries and entries[0]["verified"] is True
+    assert entries[0]["sources"] == ["https://example.test/france", "https://example.test/other"]
+
+
+async def test_denied_research_does_not_search_or_save(
+    conn: sqlite3.Connection, agent_settings: Settings, monkeypatch
+) -> None:  # noqa: ANN001
+    RuntimeControl(agent_settings.control_state_path).update(
+        {"browser": True, "self_improvement": True}
+    )
+    called = {"searched": False}
+
+    def must_not_search(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        called["searched"] = True
+        raise AssertionError("denied research must not touch the network")
+
+    monkeypatch.setattr("claireai.research.web_research", must_not_search)
+    brain = ScriptedBrain([answer("I do not know.")])
+    broker = FixedBroker(approved=False, reason="not now")
+
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="what is the capital of France?",
+        approvals=broker,
+    )
+
+    assert called["searched"] is False
+    assert outcome.content == "I do not know."
+    assert [request.tool for request in broker.requests] == ["research_web"]
+    from claireai.learning import LearningJournal
+
+    assert LearningJournal(agent_settings.resolved_data_dir).entries() == []
+
+
 async def test_the_route_row_records_the_prompt_saving(
     conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
 ) -> None:

@@ -1,21 +1,26 @@
-"""Country-aware headlines from public RSS, with no model in the loop.
+"""Country-aware headlines and summaries from public RSS, with no model.
 
 The assistant is allowed to say it could not fetch the news. It is never allowed
-to invent a headline. Google News publishes per-country RSS editions for personal
-feed-reader use; every item here keeps its publisher and link so the owner can
-check the original.
+to invent a headline or a summary. Bing's public news RSS carries a short
+description and the real publisher URL, which is what makes a briefing more than
+a list of links. For Rwanda the local outlets are read directly first: Google has
+been redirecting this host's ``RW`` edition to the US edition, so a country code
+alone was not a reliable promise.
 """
 
 from __future__ import annotations
 
 import html
 import re
+import socket
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from itertools import zip_longest
 from typing import Iterable
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
@@ -23,7 +28,19 @@ MAX_COUNTRIES = 5
 MAX_HEADLINES = 10
 MAX_FEED_BYTES = 3_000_000
 CACHE_SECONDS = 15 * 60
+FETCH_ATTEMPTS = 3
+RETRY_DELAYS = (0.4, 1.0)
 USER_AGENT = "ClaireAI/0.1 (personal local news reader)"
+
+# Direct publisher feeds. These are used before an index so a request for a
+# country's news is answered by that country's newsroom, not by a world feed
+# wearing the country's edition code.
+_LOCAL_FEEDS: dict[str, tuple[str, ...]] = {
+    "RW": (
+        "https://www.ktpress.rw/feed/",
+        "https://taarifa.rw/feed/",
+    ),
+}
 
 
 class NewsError(Exception):
@@ -75,6 +92,7 @@ class Headline:
     link: str
     publisher: str
     published: str
+    summary: str = ""
 
 
 def supported_countries() -> tuple[str, ...]:
@@ -108,22 +126,107 @@ def is_news_request(text: str) -> bool:
     return bool(_NEWS_WORD.search(text) and countries_in(text))
 
 
-def _feed_url(gl: str, hl: str) -> str:
+def _feed_url(gl: str, hl: str, name: str) -> str:
+    """Bing's news RSS for one country.
+
+    ``cc`` is a locale hint, while the query is what actually keeps the result
+    set on-topic; Bing's RSS also supplies the descriptions that Google's
+    country feed omits.
+    """
+    query = urlencode({"q": name, "format": "RSS", "cc": gl, "setlang": hl})
+    return f"https://www.bing.com/news/search?{query}"
+
+
+def _google_feed_url(gl: str, hl: str) -> str:
+    """Fallback top-stories edition, used only when Bing cannot be read."""
     return f"https://news.google.com/rss?hl={hl}&gl={gl}&ceid={gl}:{hl.split('-')[0]}"
 
 
+def _real_link(link: str) -> str:
+    """Unwrap Bing's ``apiclick`` redirect so the owner gets the publisher."""
+    parsed = urlparse(link)
+    if parsed.netloc.endswith("bing.com") and parsed.path.endswith("/apiclick.aspx"):
+        inner = parse_qs(parsed.query).get("url", [""])[0]
+        if inner.startswith(("https://", "http://")):
+            return inner
+    return link
+
+
+def _plain_text(value: str) -> str:
+    """Turn a feed's HTML description into one readable paragraph."""
+    text = html.unescape(re.sub(r"(?is)<(script|style).*?</\1>", " ", value))
+    text = re.sub(r"(?i)<br\s*/?>", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    # WordPress feeds append a boilerplate footer after the real standfirst.
+    text = re.sub(r"\s*The post .*? appeared first on .*?$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*Continue reading.*?$", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _dns_failure(error: BaseException) -> bool:
+    """True when an exception chain is a resolver failure rather than an HTTP one."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, socket.gaierror):
+            return True
+        message = str(current).lower()
+        if "name resolution" in message or "name or service not known" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _fetch_feed(url: str) -> bytes:
-    response = httpx.get(
-        url,
-        timeout=httpx.Timeout(12.0, connect=5.0),
-        follow_redirects=True,
-        headers={"User-Agent": USER_AGENT},
-    )
-    if response.status_code >= 400:
-        raise NewsError(f"the news feed answered HTTP {response.status_code}")
-    if len(response.content) > MAX_FEED_BYTES:
-        raise NewsError("the news feed was larger than the safety limit")
-    return response.content
+    """Fetch one feed, retrying transient DNS/timeout/5xx failures.
+
+    A single resolver blip used to discard a country from the whole briefing.
+    Three bounded attempts cost at most a couple of seconds and keep a partial
+    outage from looking like an unsupported country. Permanent HTTP errors are
+    not retried, and the final error names DNS explicitly when that was the
+    cause.
+    """
+    last_error: BaseException | None = None
+    for attempt in range(FETCH_ATTEMPTS):
+        try:
+            response = httpx.get(
+                url,
+                timeout=httpx.Timeout(12.0, connect=5.0),
+                follow_redirects=True,
+                headers={"User-Agent": USER_AGENT},
+            )
+        except (httpx.TransportError, OSError) as exc:
+            last_error = exc
+            if attempt + 1 < FETCH_ATTEMPTS:
+                time.sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+                continue
+            break
+        if response.status_code in {408, 429} or response.status_code >= 500:
+            last_error = NewsError(
+                f"the news feed answered HTTP {response.status_code}"
+            )
+            if attempt + 1 < FETCH_ATTEMPTS:
+                time.sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+                continue
+            break
+        if response.status_code >= 400:
+            raise NewsError(f"the news feed answered HTTP {response.status_code}")
+        if len(response.content) > MAX_FEED_BYTES:
+            raise NewsError("the news feed was larger than the safety limit")
+        return response.content
+
+    if last_error is not None and _dns_failure(last_error):
+        raise NewsError(
+            "temporary DNS failure while resolving the news feed; check the "
+            "network or DNS connection and try again"
+        ) from last_error
+    detail = str(last_error) if last_error is not None else "no response"
+    raise NewsError(
+        f"the news feed could not be reached after {FETCH_ATTEMPTS} attempts ({detail})"
+    ) from last_error
 
 
 def _published(value: str) -> str:
@@ -147,16 +250,53 @@ def _parse(payload: bytes) -> list[Headline]:
         link = (item.findtext("link") or "").strip()
         if not title or not link.startswith(("https://", "http://")):
             continue
+        link = _real_link(link)
+        # Google puts the publisher in <source>; Bing uses a namespaced
+        # <News:Source>, so match the local name instead of one namespace.
         source = item.find("source")
+        if source is None:
+            source = item.find("{*}Source")
         publisher = html.unescape((source.text if source is not None else "") or "").strip()
-        publisher = publisher or "unknown publisher"
+        # Publisher feeds (KT Press, Taarifa) omit <source>; the site is still a
+        # better citation than "unknown publisher".
+        publisher = publisher or urlparse(link).netloc.removeprefix("www.") or "unknown publisher"
         # Google often appends " - Publisher" to the title; keep the headline,
         # not a duplicate of the source column.
         suffix = f" - {publisher}"
         if title.endswith(suffix):
             title = title[: -len(suffix)].rstrip()
-        items.append(Headline(title, link, publisher, _published(item.findtext("pubDate") or "")))
+        summary = _plain_text(item.findtext("description") or "")
+        normalized_title = " ".join(title.lower().split())
+        normalized_summary = " ".join(summary.lower().split())
+        # Google's description is just the headline repeated inside a link list;
+        # keeping that would look like a summary while adding nothing.
+        if normalized_summary.startswith(normalized_title) and len(normalized_summary) <= len(normalized_title) + 100:
+            summary = ""
+        items.append(
+            Headline(
+                title,
+                link,
+                publisher,
+                _published(item.findtext("pubDate") or ""),
+                summary,
+            )
+        )
     return items
+
+
+def _merge(items: Iterable[Headline], limit: int) -> list[Headline]:
+    """Deduplicate the local and indexed copies of the same story."""
+    merged: list[Headline] = []
+    seen: set[str] = set()
+    for item in items:
+        key = " ".join(re.sub(r"[^a-z0-9 ]", " ", item.title.lower()).split())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+        if len(merged) >= limit:
+            break
+    return merged
 
 
 def fetch_country(country: str, *, limit: int = 5) -> list[Headline]:
@@ -177,7 +317,50 @@ def fetch_country(country: str, *, limit: int = 5) -> list[Headline]:
     cached = _CACHE.get(cache_key)
     if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
         return list(cached[1])
-    headlines = _parse(_fetch_feed(_feed_url(gl, hl)))[:limit]
+
+    failures: list[str] = []
+    local_batches: list[list[Headline]] = []
+    for url in _LOCAL_FEEDS.get(gl, ()):
+        try:
+            batch = _parse(_fetch_feed(url))
+        except (NewsError, httpx.HTTPError) as exc:
+            failures.append(f"{urlparse(url).netloc}: {exc}")
+            continue
+        if batch:
+            local_batches.append(batch)
+
+    # Round-robin the publisher feeds, so a prolific outlet cannot fill every
+    # slot while the second local newsroom is present but later in its own feed.
+    local = [item for group in zip_longest(*local_batches) for item in group if item is not None]
+    canonical = _CANONICAL.get(gl, country)
+    country_words = {word for word in re.findall(r"[a-z]+", canonical.lower()) if len(word) > 2}
+
+    def about_country(item: Headline) -> bool:
+        haystack = f"{item.title} {item.summary}".lower()
+        return bool(country_words) and country_words <= set(re.findall(r"[a-z]+", haystack))
+
+    # The index adds summaries and fills the list when a publisher feed is
+    # temporarily down. If it fails, use Google's edition only as a last resort
+    # and only when no local story was available.
+    indexed: list[Headline] = []
+    try:
+        indexed = _parse(_fetch_feed(_feed_url(gl, hl, canonical)))
+    except (NewsError, httpx.HTTPError) as exc:
+        failures.append(f"Bing News: {exc}")
+        if not local and not _dns_failure(exc):
+            try:
+                indexed = _parse(_fetch_feed(_google_feed_url(gl, hl)))
+            except (NewsError, httpx.HTTPError) as fallback_exc:
+                failures.append(f"Google News: {fallback_exc}")
+
+    # Keep the country the owner asked for in front: a local outlet's regional
+    # story is still local, but it should not crowd out the country itself.
+    focused = [item for item in local if about_country(item)]
+    regional = [item for item in local if not about_country(item)]
+    headlines = _merge([*focused, *indexed, *regional], limit)
+    if not headlines:
+        detail = "; ".join(failures) or "the feeds returned no headlines"
+        raise NewsError(f"could not retrieve news for {country}: {detail}")
     _CACHE[cache_key] = (time.monotonic(), headlines)
     return list(headlines)
 
@@ -195,7 +378,7 @@ def brief(countries: Iterable[str], *, limit: int = 5) -> str:
         try:
             headlines = fetch_country(name, limit=limit)
         except (NewsError, httpx.HTTPError) as exc:
-            failures.append(f"{name}: {exc}")
+            failures.append(f"{name.title()}: {exc}")
             continue
         lines.append(f"\n{name.title()}")
         if not headlines:
@@ -203,12 +386,16 @@ def brief(countries: Iterable[str], *, limit: int = 5) -> str:
             continue
         for index, item in enumerate(headlines, 1):
             when = f" ({item.published})" if item.published else ""
-            lines.append(f"  {index}. {item.title} — {item.publisher}{when}\n     {item.link}")
+            lines.append(f"  {index}. {item.title} — {item.publisher}{when}")
+            if item.summary:
+                lines.append(f"     {item.summary}")
+            lines.append(f"     {item.link}")
     if failures:
         lines.append("\nCould not retrieve: " + "; ".join(failures))
     lines.append(
-        "\nSource: Google News country editions (public RSS). Headlines are links, "
-        "not verified facts; check the publisher before acting."
+        "\nSource: public RSS news feeds (Bing News index; KT Press and Taarifa "
+        "are read directly for Rwanda). Summaries are the publisher's standfirst, "
+        "not verified facts; open the link before acting."
     )
     return "\n".join(lines)
 

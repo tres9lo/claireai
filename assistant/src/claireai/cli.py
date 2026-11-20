@@ -557,6 +557,19 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
             conn.close()
         return EXIT_OK
 
+    if args.email_setup:
+        from claireai.email_read import EmailError
+        from claireai.email_setup import setup_interactive
+
+        try:
+            print(setup_interactive())
+        except (EmailError, RuntimeError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return EXIT_CONFIG
+        finally:
+            conn.close()
+        return EXIT_OK
+
     if args.inbox:
         from claireai.email_read import EmailError, read_inbox, render
 
@@ -733,6 +746,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         metavar="COUNTRIES",
         help="comma-separated countries for --briefing/--briefing-at (e.g. Kenya,France)",
+    )
+    parser.add_argument(
+        "--email-setup",
+        action="store_true",
+        help="verify IMAP access and store an app password in the OS keyring",
     )
     parser.add_argument(
         "--inbox",

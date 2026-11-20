@@ -13,6 +13,16 @@
       "notes": "Educational web text. Attribute the dataset and comply with Common Crawl's terms; original pages keep their own rights."
     },
     {
+      "id": "fineweb-2-fr",
+      "name": "FineWeb-2 French (fra_Latn)",
+      "url": "https://huggingface.co/datasets/HuggingFaceFW/fineweb-2",
+      "license": "ODC-By 1.0 (Common Crawl terms also apply)",
+      "access": "public",
+      "domains": ["French", "language", "reading"],
+      "size": "Large; fetch a bounded sample only",
+      "notes": "French web text for orthography and sentence rhythm. Fetched as extractive leads, not as factual answers; original pages keep their own rights."
+    },
+    {
       "id": "wikipedia",
       "name": "Wikipedia database dumps",
       "url": "https://dumps.wikimedia.org/",

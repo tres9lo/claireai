@@ -107,6 +107,8 @@ class FakeRuntime:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
         self._stopped = False
+        self.preference_updates: list[dict[str, object]] = []
+        self.speech_stops = 0
 
     def preferences(self):
         return {
@@ -145,10 +147,11 @@ class FakeRuntime:
         return []
 
     def update_preferences(self, values):
+        self.preference_updates.append(dict(values))
         return self.preferences() | values
 
     def stop_speaking(self):
-        return None
+        self.speech_stops += 1
 
     def start_background_learning(self):
         return None
@@ -207,6 +210,36 @@ def test_every_page_is_its_own_screen(tmp_path, tk_root) -> None:
     # Every page has a distinct frame, so nothing is one long scrolling form.
     frames = {id(app.pages[page_class].frame) for page_class in PAGES}
     assert len(frames) == len(PAGES)
+
+
+def test_saving_voice_tuning_does_not_turn_speech_on(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from claireai.desktop.pages import VoicePage
+
+    page = object.__new__(VoicePage)
+    page.app = SimpleNamespace(runtime=FakeRuntime(tmp_path))
+    page.pitch = SimpleNamespace(get=lambda: 60)
+    page.rate = SimpleNamespace(get=lambda: 190)
+    page.transcript_note = SimpleNamespace(configure=lambda **_kwargs: None)
+    page.save()
+
+    assert page.runtime.preference_updates == [{"voice_pitch": 60, "voice_rate": 190}]
+
+
+def test_turning_speak_replies_off_persists_and_stops_audio(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from claireai.desktop.pages import ChatPage
+
+    page = object.__new__(ChatPage)
+    page.app = SimpleNamespace(runtime=FakeRuntime(tmp_path))
+    page.speak_replies = SimpleNamespace(get=lambda: False)
+    page.append = lambda *_args: None
+    page._toggle_voice()
+
+    assert page.runtime.preference_updates[-1] == {"voice_enabled": False}
+    assert page.runtime.speech_stops == 1
 
 
 def test_the_chat_page_appends_and_resets(tmp_path, tk_root) -> None:

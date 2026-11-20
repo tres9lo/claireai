@@ -187,6 +187,7 @@ class ChatPage(Page):
         self.voice_switch = ctk.CTkSwitch(
             bar, text="Speak replies", variable=self.speak_replies, progress_color=theme.ACCENT,
             text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=12),
+            command=self._toggle_voice,
         )
         self.voice_switch.pack(side="left", padx=18)
         self.button(bar, "Stop speaking", self._stop_speaking).pack(side="right")
@@ -448,6 +449,23 @@ class ChatPage(Page):
             self.append("·", "I need a local checkpoint before I can answer that — see the card above.", "meta")
             return
         self.append("!", f"{type(error).__name__}: {error}", "error")
+
+    def _toggle_voice(self) -> None:
+        """Persist the switch, and never let "off" finish with speech.
+
+        Previously only ``on_show`` read the preference, so this switch changed
+        the current window but not the saved setting (and the Voice page wrote
+        ``voice_enabled: True`` whenever pitch or rate was saved). A reply could
+        therefore still be spoken after the owner turned this off.
+        """
+        enabled = bool(self.speak_replies.get())
+        try:
+            self.runtime.update_preferences({"voice_enabled": enabled})
+        except (ValueError, OSError) as error:
+            self.append("!", f"could not save the voice setting: {error}", "error")
+            return
+        if not enabled:
+            self.runtime.stop_speaking()
 
     def on_show(self) -> None:
         self.speak_replies.set(bool(self.runtime.preferences().get("voice_enabled")))
@@ -831,8 +849,10 @@ class VoicePage(Page):
         )
 
     def save(self) -> None:
+        # Saving pitch/rate is not permission to speak. The old unconditional
+        # ``voice_enabled: True`` overrode the Chat switch and the Settings page.
         self.runtime.update_preferences(
-            {"voice_pitch": int(self.pitch.get()), "voice_rate": int(self.rate.get()), "voice_enabled": True}
+            {"voice_pitch": int(self.pitch.get()), "voice_rate": int(self.rate.get())}
         )
         self.transcript_note.configure(text="Voice settings saved.", text_color=theme.OK)
 

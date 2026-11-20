@@ -5,6 +5,52 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — bilingual corpus, one-command training, and trained-context fitting
+
+- `brain-lab/train_claireai.py --profile full` is the single reproducible path:
+  fetch the bounded licensed sources, build the authored English/French corpus,
+  merge it, train a candidate and run both fixed evaluations. It never installs
+  or promotes automatically; a pipeline log records each stage.
+- The authored curriculum now teaches everyday English and French conversation,
+  vocabulary, grammar, approximate pronunciation and French intent variants.
+  OASST1 is read from its released archive as separate English and French
+  splits, and FineWeb-2 French adds bounded prose.
+- `train_chat.py` stores token ids in compact arrays, so the larger corpus no
+  longer forces the 5k-record fallback, and uses the tokenizer's reserved pad id.
+- Context-only expansions now record `trained_context`, and `ScratchBrain` fits
+  prompts to the positions that were actually trained. Feeding an expanded
+  checkpoint's untrained rows was producing gibberish on short greetings.
+- `brain-lab/image_training.py` and an empty manifest reserve the future
+  image/point/box/text schema; training remains unimplemented and the model is
+  still text-only.
+
+### Added — confirmed research, intent training, and a 10K-capable architecture
+
+- `--email-setup` guides Gmail/IMAP setup, verifies a read-only login before
+  storing anything, uses hidden input, and writes only to the OS keyring. It
+  stores the address/host/port beside the password so `--inbox` works from the
+  desktop menu; environment variables still override them. The `keyring`
+  package is now a core dependency instead of an uninstalled optional import;
+  the setup reports a missing backend instead of falling back to a file.
+- News retrieval retries transient DNS/timeout/5xx failures three times and
+  reports a resolver failure as a DNS problem with the affected country, instead
+  of surfacing `[Errno -3] Temporary failure in name resolution`.
+- The runtime can detect that the local model does not know a public factual
+  answer, ask `research_web` approval, search, read the top public result, and
+  ask a second time before saving a source-bearing lesson. Private requests are
+  never searched automatically, page text is stripped of prompt-role markers,
+  and only owner-confirmed lessons can enter training.
+- Background learning no longer compiles every model answer. Ordinary answers
+  remain journaled for inspection but are not training targets; confirmed
+  lessons require an http(s) source. The nightly worker now merges authored
+  intent/conversation records and confirmed lessons into the external corpus
+  rather than silently choosing the external corpus and dropping both.
+- The transformer supports an optional **10,240-token rotary-position**
+  architecture with memory-efficient causal attention. A converted candidate ran
+  at 9,734 prompt tokens in 18.7 s and 461 MB RSS on the reference i5; it failed
+  the recall probe and was not installed. Old learned-position checkpoints keep
+  loading unchanged.
+
 ### Added — daily briefing, read-only inbox, and corpus cleanup
 
 - `claireai --briefing [--countries Kenya,France]` combines cited country news,

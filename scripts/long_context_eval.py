@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -40,13 +41,16 @@ def _prompt(tokenizer: BytePairTokenizer, target: int) -> str:
     )
     tail = "\nWhat was the access code I asked you to remember?\nASSISTANT:"
     filler = "The archive contains routine records and no action is needed. "
-    text = head
-    while len(tokenizer.encode(text + filler + tail, append_eos=False)) < target:
-        text += filler
-    # Keep the system prompt, the marker and the final question. Trimming only
-    # the filler is the point of this probe.
-    while len(tokenizer.encode(text + tail, append_eos=False)) > target + 8 and len(text) > len(head):
-        text = text[: -len(filler)]
+    # Estimate from one encoded filler first. Encoding the growing prompt on
+    # every iteration is quadratic and makes a 10K probe spend minutes in the
+    # tokenizer before the model is even called.
+    filler_tokens = max(1, len(tokenizer.encode(filler, append_eos=False)))
+    base_tokens = len(tokenizer.encode(head + tail, append_eos=False))
+    copies = max(0, (target - base_tokens) // filler_tokens)
+    text = head + filler * copies
+    while len(tokenizer.encode(text + tail, append_eos=False)) > target and copies:
+        copies -= 1
+        text = head + filler * copies
     return text + tail
 
 
@@ -58,6 +62,12 @@ def main() -> int:
         default=Path.home() / ".local/share/ClaireAI/models/claire-scratch.pt",
     )
     parser.add_argument("--lengths", default="128,320,480")
+    parser.add_argument(
+        "--new-tokens",
+        type=int,
+        default=12,
+        help="answer tokens per probe; keep this small for a 10K CPU run",
+    )
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     model, tokenizer, manifest = _load(args.checkpoint)
@@ -70,13 +80,15 @@ def main() -> int:
             continue
         prompt = _prompt(tokenizer, min(wanted, length_cap - 8))
         ids = tokenizer.encode(prompt, append_eos=False)[-length_cap:]
+        started = time.perf_counter()
         with torch.inference_mode():
             output = model.generate(
                 torch.tensor([ids], dtype=torch.long),
-                max_new_tokens=24,
+                max_new_tokens=max(1, args.new_tokens),
                 temperature=0.0,
                 repetition_penalty=1.15,
             )[0].tolist()[len(ids):]
+        elapsed = time.perf_counter() - started
         reply = tokenizer.decode(output).strip()
         passed = "ORANGE-742" in reply or "ORANGE 742" in reply.upper()
         results.append(
@@ -85,9 +97,13 @@ def main() -> int:
                 "prompt_tokens": len(ids),
                 "passed": passed,
                 "reply": reply[:240],
+                "seconds": round(elapsed, 2),
             }
         )
-        print(f"{wanted:>4} requested / {len(ids):>4} actual: {'PASS' if passed else 'FAIL'} {reply[:160]!r}")
+        print(
+            f"{wanted:>5} requested / {len(ids):>5} actual: "
+            f"{'PASS' if passed else 'FAIL'} {elapsed:6.2f}s {reply[:120]!r}"
+        )
     print(f"context={length_cap} checkpoint={args.checkpoint} name={manifest.get('name')}")
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

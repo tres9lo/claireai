@@ -31,6 +31,55 @@ def test_building_writes_a_train_and_validation_split(tmp_path) -> None:
     assert summary["total"] >= 40
 
 
+def test_only_confirmed_lessons_enter_the_curriculum(tmp_path) -> None:
+    from claireai.learning import LearningJournal
+
+    journal = LearningJournal(tmp_path)
+    journal.record("an unverified guess", "a model answer")
+    journal.record_lesson(
+        "a confirmed fact",
+        "a sourced answer",
+        sources=["https://example.test/fact"],
+    )
+    records = training.TrainingCurriculum(tmp_path, journal=journal).examples()
+    questions = [record["messages"][0]["content"] for record in records]
+    assert "a confirmed fact" in questions
+    assert "an unverified guess" not in questions
+
+
+def test_merge_keeps_authored_intent_and_confirmed_lessons(tmp_path) -> None:
+    authored = tmp_path / "authored"
+    external = tmp_path / "external"
+    authored.mkdir()
+    external.mkdir()
+    record = lambda prompt, reply: {  # noqa: E731
+        "messages": [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": reply},
+        ]
+    }
+    (authored / "train.jsonl").write_text(
+        json.dumps(record("an intent example", "clarify")) + "\n", encoding="utf-8"
+    )
+    (authored / "validation.jsonl").write_text(
+        json.dumps(record("a held out intent", "chat")) + "\n", encoding="utf-8"
+    )
+    (external / "train.jsonl").write_text(
+        json.dumps(record("external", "answer")) + "\n", encoding="utf-8"
+    )
+    (external / "validation.jsonl").write_text(
+        json.dumps(record("external held out", "answer")) + "\n", encoding="utf-8"
+    )
+
+    output = training.merge_training_corpus(authored, external, tmp_path / "merged")
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["train"] == 2
+    assert manifest["validation"] == 2
+    assert manifest["authored_train"] == 1
+    train = (output / "train.jsonl").read_text(encoding="utf-8")
+    assert "an intent example" in train and "external" in train
+
+
 def test_an_offline_tick_writes_no_candidate(tmp_path) -> None:
     worker = training.TrainingWorker(
         tmp_path, enabled=lambda: True, online_check=lambda: False

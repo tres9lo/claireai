@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "dataset": "image-training-v1",
+  "status": "placeholder",
+  "notes": [
+    "The current chat model is text-only. This file reserves the schema and split names for a future vision run.",
+    "Add only images the owner created or is licensed to use. Record source and licence on every example.",
+    "Image files and trained vision checkpoints stay local and out of git."
+  ],
+  "splits": {
+    "train": 0,
+    "validation": 0,
+    "test": 0
+  },
+  "examples": []
+}

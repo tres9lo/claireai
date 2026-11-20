@@ -33,6 +33,32 @@ assistant/.venv/bin/python brain-lab/fetch_gui_images.py
 Those image/annotation pairs are prepared for the visual model stage. The
 current transformer is text-only, so do not merge them into its text corpus.
 
+## One-command bilingual training
+
+For a reproducible run that fetches the bounded licensed sources, builds the
+authored corpus, merges it, trains a fresh candidate and runs both fixed
+evaluations:
+
+```bash
+assistant/.venv/bin/python brain-lab/train_claireai.py --profile full
+```
+
+The command writes only to `brain-lab/data/chat-v14`, `brain-lab/data/chat-v15`
+and `runtime-data/models/candidates/`. It **never installs** the candidate. Only
+after the tool and conversation gates pass should the owner promote it
+explicitly. A `*.pipeline.json` file beside the candidate records the exact
+stage exit codes and corpus counts.
+
+| Profile | Authored quota | External sample per source | Steps | Model | Intended use |
+| --- | ---: | ---: | ---: | --- | --- |
+| `quick` | 8,000 | 500 | 1,500 | 224 wide, 5 layers, 512 context | pipeline smoke run on this laptop |
+| `full` | 34,000 | 4,000 | 8,000 | 224 wide, 5 layers, 512 context | practical CPU quality run |
+| `huge` | 60,000 | 8,000 | 15,000 | 320 wide, 6 layers, 768 context | larger-data run; many hours on CPU |
+
+Even `huge` is a bounded sample, not a claim that the model has general
+knowledge. The 10K window remains unproven: the RoPE candidate loads and runs,
+but the recall probe failed, so a larger window is not the default.
+
 ## Train a conversation model (recommended)
 
 `train.py` treats the corpus as one long document. That is enough for prose, but
@@ -51,24 +77,28 @@ Build the conversation corpus and train:
 ```bash
 assistant/.venv/bin/python brain-lab/build_chat_dataset.py
 assistant/.venv/bin/python brain-lab/train_chat.py \
-  --corpus brain-lab/data/chat-v2 --steps 6000 \
-  --output runtime-data/models/claire-chat-v2.pt
+  --corpus brain-lab/data/chat-v14 --steps 6000 \
+  --output runtime-data/models/claire-chat-v14.pt
 ```
 
 The builder mixes original synthetic templates (small talk, refusals, intent
-routing, slot extraction, tool-call transcripts, summaries and in-context
-recall), Dolly 15k, TinyStories and the repository's bootstrap examples. It
-removes any user turn that exactly matches a prompt in either fixed suite
-(`scripts/model_eval_cases.json` or `scripts/conversation_cases.json`), so both
-evaluations stay held out.
+routing, slot extraction, tool-call transcripts, summaries, in-context recall
+and an authored English/French language curriculum), Dolly 15k, TinyStories and
+the repository's bootstrap examples. It removes any user turn that exactly
+matches a prompt in either fixed suite (`scripts/model_eval_cases.json` or
+`scripts/conversation_cases.json`), so both evaluations stay held out.
+
+`train_chat.py` stores token ids as compact arrays rather than boxed Python
+integers. That keeps a 50k-record corpus within this host's RAM budget; the old
+representation is what forced the earlier memory-bounded corpus.
 
 Measure it with both suites:
 
 ```bash
 assistant/.venv/bin/python scripts/eval_model.py \
-  --model-checkpoint runtime-data/models/claire-chat-v2.pt --runs 1
+  --model-checkpoint runtime-data/models/claire-chat-v15.pt --runs 1
 assistant/.venv/bin/python scripts/conversation_eval.py \
-  --model-checkpoint runtime-data/models/claire-chat-v2.pt
+  --model-checkpoint runtime-data/models/claire-chat-v15.pt
 ```
 
 `eval_model.py` checks one-shot formatting and safety. `conversation_eval.py`
@@ -142,23 +172,41 @@ version does not terminate the CLI process itself.
 
 The catalog in `data-sources.json` is a starting point, not blanket permission.
 `fetch_corpora.py` downloads bounded samples and records licence, URL, date and
-SHA-256 beside each file. `merge_corpora.py` merges those records with `chat-v12`,
+SHA-256 beside each file. `merge_corpora.py` merges those records with `chat-v14`,
 removes held-out evaluation prompts, exact duplicate pairs and pairs that also
-appear in validation, then writes `chat-v13` or a memory-bounded
-`chat-v13-small`. The manifest records how many rows each cleanup removed:
+appear in validation, then writes `chat-v15`. The manifest records how many rows
+each cleanup removed:
 
 ```bash
 assistant/.venv/bin/python brain-lab/fetch_corpora.py --source all --limit 800
-assistant/.venv/bin/python brain-lab/merge_corpora.py --base-limit 5000 \
-  --output brain-lab/data/chat-v13-small
+assistant/.venv/bin/python brain-lab/merge_corpora.py \
+  --base brain-lab/data/chat-v14 --output brain-lab/data/chat-v15
 ```
 
-A full 15k-record build at 512 tokens exceeded this host's RAM; the small corpus
-is the reproducible default. The OASST1 endpoint is rate-limited, so a failed
-sample is reported rather than written as an empty success. The current mix is
-GSM8K (MIT), FineWeb-Edu (ODC-By 1.0), and the already-present Dolly/TinyStories
-material. FineWeb answers are extractive two-sentence summaries, not model
-output.
+The current mix is GSM8K (MIT), FineWeb-Edu (ODC-By 1.0), French FineWeb-2
+(ODC-By 1.0), OASST1 English/French (Apache-2.0), and the already-present
+Dolly/TinyStories material. OASST1 is read from the released `ready` message
+archive instead of the rate-limited rows API, so both languages are reproducible.
+FineWeb answers are extractive leads, not model output. A failed fetch is
+reported rather than written as an empty success.
+
+## Bilingual curriculum
+
+The authored `languages` bucket teaches everyday English and French turn-taking,
+common vocabulary, grammar and approximate pronunciation, plus French variants
+of the file/summary/chit-chat intents. It is deliberately not a dictionary: a
+224-wide model should learn how to answer a language question, not memorise a
+lexicon. The external OASST1 and FineWeb-2 French samples add human-written
+French dialogue and prose. Language practice is balanced against the product's
+tool/format records; it does not replace the deny-by-default behaviour.
+
+## Image-training placeholder
+
+`image_training.py` and `data/image-training/manifest.json` reserve the future
+vision schema (image path, instruction, point/box/text target, split, source and
+licence). The module validates the manifest and explicitly refuses to train;
+the shipped chat transformer remains text-only. No images are bundled, and
+`fetch_gui_images.py` remains the only optional image downloader.
 
 To widen an existing checkpoint without changing its learned weights:
 
@@ -173,8 +221,31 @@ assistant/.venv/bin/python brain-lab/install_context_upgrade.py \
 ```
 
 The installer refuses unless every old tensor and the old position rows match,
-and it archives the previous checkpoint. This is a structural window increase,
-not a substitute for the training-candidate gate.
+and it archives the previous checkpoint. The new manifest also records
+`trained_context` (the old window), and `ScratchBrain` fits prompts to that
+limit: copying rows is not the same as training them. This is a structural
+window increase, not a substitute for the training-candidate gate.
+
+For a long window, convert to rotary positions. This removes only the learned
+position table; every other tensor is copied. The model uses
+`scaled_dot_product_attention` so a 10K window does not allocate a 10K x 10K
+mask per layer:
+
+```bash
+assistant/.venv/bin/python brain-lab/expand_context.py \
+  --source ~/.local/share/ClaireAI/models/claire-scratch.pt \
+  --context 10240 --position-encoding rope \
+  --output runtime-data/models/candidates/claire-context10240-rope.pt
+assistant/.venv/bin/python scripts/long_context_eval.py \
+  --checkpoint runtime-data/models/candidates/claire-context10240-rope.pt \
+  --lengths 512,2048,8192,10240 --new-tokens 4
+```
+
+Measured on the reference i5/7 GB host: 9,734 prompt tokens, 18.7 s for four
+generated tokens, 461 MB peak RSS. The recall probe still failed at every length,
+so the 10K window is infrastructure, not a proven capability. Train and gate a
+candidate before installing it; the old learned-position checkpoint remains a
+valid separate architecture.
 
 ## Limits
 

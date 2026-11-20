@@ -10,19 +10,46 @@ approval. No amount of local code removes those requirements.
 ## Read-only inbox
 
 ```bash
+claireai --email-setup       # verify first, then store in the OS keyring
 claireai --inbox 10
 ```
 
-Set `CLAIREAI_EMAIL_ADDRESS` and (optionally) `CLAIREAI_EMAIL_IMAP_HOST`
-(default `imap.gmail.com`). Store the app password in the OS keyring under the
-account `email_app_password`; `CLAIREAI_EMAIL_APP_PASSWORD` is the environment
-fallback. Only `FROM`, `SUBJECT` and `DATE` headers are fetched. There is no
-send, delete, move or flag-changing path in `claireai.email_read`.
+`--email-setup` asks for the address, IMAP host/port and app password with hidden
+input. It **verifies** a read-only IMAP login before storing anything, and it
+never falls back to a plaintext file. The address, host, port and app password
+are stored in the OS keyring, so `--inbox` also works when the window is started
+from the desktop menu; `CLAIREAI_EMAIL_ADDRESS` and
+`CLAIREAI_EMAIL_IMAP_HOST` / `CLAIREAI_EMAIL_IMAP_PORT` still override them.
+Only `FROM`, `SUBJECT` and `DATE` headers are fetched. There is no send, delete,
+move or flag-changing path in `claireai.email_read`.
 
-A Gmail app password requires 2-Step Verification. Microsoft 365 may require an
-app password or OAuth depending on the tenant; OAuth reading is not implemented
-yet. Without credentials, `--inbox` reports the missing configuration and exits
-without connecting.
+### Gmail App Password
+
+1. Open your Google Account → **Security**.
+2. Turn on **2-Step Verification**. App Passwords are unavailable without it.
+3. Open **App Passwords** (search for it in Security if it is not shown).
+4. Create a password named `ClaireAI` and copy the 16-character value.
+5. Run `claireai --email-setup`, enter the Gmail address, accept
+   `imap.gmail.com:993`, and paste the App Password at the hidden prompt.
+6. Check it:
+
+```bash
+claireai --inbox 10
+```
+
+If you prefer environment overrides for a particular shell:
+
+```bash
+export CLAIREAI_EMAIL_ADDRESS='you@gmail.com'
+export CLAIREAI_EMAIL_IMAP_HOST='imap.gmail.com'
+claireai --inbox 10
+```
+
+Use the App Password, **not** your normal Google password. If the login is
+rejected, revoke the old App Password, create a new one and run setup again.
+Microsoft 365 may require an app password or OAuth depending on the tenant;
+OAuth reading is not implemented yet. Without credentials, `--inbox` reports the
+missing configuration and exits without connecting.
 
 ## Official APIs
 
@@ -53,7 +80,9 @@ without connecting.
 
 Until those credentials exist, the safe workflow is: ClaireAI drafts, the owner
 copies the draft into the official client, and the owner sends it. The training
-curriculum only contains synthetic or owner-authored examples.
+curriculum only contains synthetic, owner-authored, or owner-confirmed
+source-bearing examples; an ordinary model answer is journaled but never
+compiled into training data.
 
 ## Why no scraping fallback
 

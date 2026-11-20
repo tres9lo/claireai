@@ -69,3 +69,16 @@ async def test_stop_during_generation_discards_partial_answer(tmp_path: Path) ->
         await brain.generate([Message(role="user", content="hello")])
 
     assert model.checked_after_stop is True
+
+
+def test_context_expansion_uses_only_trained_positions() -> None:
+    brain = ScratchBrain(checkpoint=Path("unused.pt"))
+    brain._model = SimpleNamespace(context=512)
+    brain._manifest = {"expanded_from_context": 288}
+    assert brain._prompt_context() == 288
+
+    brain._manifest = {"trained_context": 512, "expanded_from_context": 288}
+    assert brain._prompt_context() == 512
+
+    brain._manifest = {}
+    assert brain._prompt_context() == 512

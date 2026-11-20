@@ -112,10 +112,30 @@ def piper_model_dirs() -> list[Path]:
         return [Path(override).expanduser()]
     dirs: list[Path] = []
     dirs.append(Path.home() / ".local" / "share" / "ClaireAI" / "models" / "voice" / "piper")
-    # <repo>/runtime-data is the development data directory. voice.py sits at
-    # <repo>/assistant/src/claireai/voice.py, hence parents[3].
-    dirs.append(Path(__file__).resolve().parents[3] / "runtime-data" / "models" / "voice" / "piper")
-    return dirs
+    # A checkout: this file is <repo>/assistant/src/claireai/voice.py.
+    checkout = Path(__file__).resolve().parents[3]
+    dirs.append(checkout / "runtime-data" / "models" / "voice" / "piper")
+    dirs.append(Path.cwd() / "runtime-data" / "models" / "voice" / "piper")
+    # An installed copy lives in site-packages, so its own path says nothing
+    # about the checkout. Reuse the same remembered/discovered source lookup as
+    # checkpoint discovery; otherwise the installed app silently fell back to
+    # eSpeak while the neural voices sat in the checkout's runtime-data.
+    try:
+        from claireai.update import checkout_root
+
+        source = checkout_root()
+    except Exception:  # noqa: BLE001 - voice discovery is best-effort
+        source = None
+    if source is not None:
+        dirs.append(source.parent / "runtime-data" / "models" / "voice" / "piper")
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for directory in dirs:
+        resolved = directory.resolve(strict=False)
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(resolved)
+    return unique
 
 
 def piper_voice_for(language: str) -> Path | None:
@@ -160,7 +180,17 @@ def synthesize_with_piper(spoken: str, model: Path, *, rate: int = 175) -> bytes
     length_scale = max(0.5, min(2.5, 175.0 / max(1, rate)))
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav:
-        voice.synthesize_wav(spoken, wav, syn_config=SynthesisConfig(length_scale=length_scale))
+        voice.synthesize_wav(
+            spoken,
+            wav,
+            syn_config=SynthesisConfig(
+                length_scale=length_scale,
+                # Slightly steadier than Piper's defaults: less wavering on
+                # long vowels reads as smoother without sounding flat.
+                noise_scale=0.55,
+                noise_w_scale=0.65,
+            ),
+        )
     return buffer.getvalue()
 
 

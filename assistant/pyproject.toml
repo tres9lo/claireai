@@ -18,6 +18,10 @@ dependencies = [
   # OS-specific application-data locations, maintained rather than hard-coded.
   "platformdirs>=4.2,<5",
   "apscheduler>=3.10,<4",
+  # Email app passwords and connector keys belong in the OS keyring. The code
+  # already imported this optionally; without it --email-setup could verify a
+  # login and then have nowhere safe to put the password.
+  "keyring>=24,<26",
 ]
 
 [project.optional-dependencies]

@@ -33,7 +33,8 @@ COMPILE_INTERVAL_SECONDS = 30.0
 CORPUS_SYSTEM = (
     "You are ClaireAI, a local-first personal assistant running on the owner's computer. "
     "Answer briefly and concretely, use tools when offered, and never claim an action you "
-    "did not take."
+    "did not take. Use confirmed lessons only when they are relevant, and cite the "
+    "source when one is given."
 )
 
 
@@ -88,23 +89,34 @@ class LearningJournal:
             entries.append(entry)
         return entries
 
-    def _compiled_count(self) -> int:
+    def _state(self) -> dict[str, int]:
         if not self.state_path.exists():
-            return 0
+            return {"scanned": 0, "compiled": 0}
         try:
             state = json.loads(self.state_path.read_text(encoding="utf-8"))
         except ValueError as exc:
             raise LearningError("learning state is not valid JSON") from exc
-        compiled = state.get("compiled", 0) if isinstance(state, dict) else 0
-        return compiled if isinstance(compiled, int) and compiled >= 0 else 0
+        if not isinstance(state, dict):
+            return {"scanned": 0, "compiled": 0}
+        # Older state stored only ``compiled`` and used it as the scan cursor.
+        scanned = state.get("scanned", state.get("compiled", 0))
+        compiled = state.get("compiled", 0)
+        return {
+            "scanned": scanned if isinstance(scanned, int) and scanned >= 0 else 0,
+            "compiled": compiled if isinstance(compiled, int) and compiled >= 0 else 0,
+        }
 
     def status(self) -> dict[str, Any]:
         entries = self.entries()
-        compiled = min(self._compiled_count(), len(entries))
+        state = self._state()
+        scanned = min(state["scanned"], len(entries))
+        verified = sum(1 for entry in entries if entry.get("verified") is True)
         return {
             "total": len(entries),
-            "compiled": compiled,
-            "pending": max(0, len(entries) - compiled),
+            "verified": verified,
+            "compiled": state["compiled"],
+            "scanned": scanned,
+            "pending": max(0, len(entries) - scanned),
             "last_at": entries[-1].get("at") if entries else None,
             "corpus": str(self.corpus_path) if self.corpus_path.exists() else None,
         }
@@ -118,55 +130,119 @@ class LearningJournal:
         *,
         model: str | None = None,
         route: str | None = None,
+        verified: bool = False,
+        sources: list[str] | None = None,
     ) -> bool:
-        """Append one exchange. Returns ``False`` for an empty or duplicate one."""
+        """Append one exchange. Returns ``False`` for an empty or duplicate one.
+
+        ``verified`` is not a decoration: only verified, source-bearing lessons
+        are compiled into future training data. An ordinary model answer is a
+        guess that may repeat its own mistakes, so it is journaled for the owner
+        but never taught back to the model as fact.
+        """
         asked = _clip(" ".join(str(question).split()))
         replied = _clip(str(answer).strip())
         if not asked or not replied:
             return False
-        digest = hashlib.sha256(f"{asked}\0{replied}".encode("utf-8")).hexdigest()[:24]
+        clean_sources = [
+            str(source).strip()
+            for source in (sources or [])
+            if str(source).strip().startswith(("http://", "https://"))
+        ]
+        if verified and not clean_sources:
+            raise LearningError("a verified lesson needs at least one http(s) source")
+        fingerprint = "\0".join(
+            [asked, replied, "verified" if verified else "unverified", *clean_sources]
+        )
+        digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:24]
         with self._lock:
             if any(entry.get("id") == digest for entry in self.entries()):
                 return False
-            _write_line(
-                self.journal_path,
-                {
-                    "id": digest,
-                    "at": _now(),
-                    "question": asked,
-                    "answer": replied,
-                    "model": model or "claireai-runtime",
-                    "route": route,
-                },
-            )
+            payload: dict[str, Any] = {
+                "id": digest,
+                "at": _now(),
+                "question": asked,
+                "answer": replied,
+                "model": model or "claireai-runtime",
+                "route": route,
+                "verified": verified,
+            }
+            if clean_sources:
+                payload["sources"] = clean_sources
+            _write_line(self.journal_path, payload)
         return True
 
+    def record_lesson(
+        self,
+        question: str,
+        answer: str,
+        *,
+        sources: list[str],
+        model: str = "owner-confirmed-research",
+    ) -> bool:
+        """Store knowledge the owner explicitly approved, with its sources."""
+        return self.record(
+            question,
+            answer,
+            model=model,
+            route="confirmed-research",
+            verified=True,
+            sources=sources,
+        )
+
     def compile(self) -> int:
-        """Turn new journal lines into corpus records. Returns how many were added."""
+        """Compile verified lessons into corpus records.
+
+        Unverified exchanges are still retained in the journal for the owner to
+        inspect, but they do not become training targets. This is the difference
+        between remembering a conversation and teaching a guess as fact.
+        """
         with self._lock:
             entries = self.entries()
-            start = min(self._compiled_count(), len(entries))
+            state = self._state()
+            start = min(state["scanned"], len(entries))
             added = 0
             for entry in entries[start:]:
+                if entry.get("verified") is not True:
+                    continue
+                sources = [
+                    str(source)
+                    for source in entry.get("sources") or []
+                    if str(source).startswith(("http://", "https://"))
+                ]
+                if not sources:
+                    continue
                 _write_line(
                     self.corpus_path,
                     {
                         "system": CORPUS_SYSTEM,
                         "messages": [
                             {"role": "user", "content": entry["question"]},
-                            {"role": "assistant", "content": entry["answer"]},
+                            {
+                                "role": "assistant",
+                                "content": f"{entry['answer']}\n\nSource: {sources[0]}",
+                            },
                         ],
-                        "source": "claireai-learning",
+                        "source": "claireai-confirmed-research",
                         "recorded_at": entry.get("at"),
                         "model": entry.get("model"),
+                        "sources": sources,
                     },
                 )
                 added += 1
-            if added:
+            if start < len(entries):
                 self.state_path.parent.mkdir(parents=True, exist_ok=True)
                 temporary = self.state_path.with_suffix(".tmp")
                 temporary.write_text(
-                    json.dumps({"compiled": start + added, "updated_at": _now()}, sort_keys=True) + "\n",
+                    json.dumps(
+                        {
+                            "scanned": len(entries),
+                            "compiled": state["compiled"] + added,
+                            "updated_at": _now(),
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n",
                     encoding="utf-8",
                 )
                 os.replace(temporary, self.state_path)

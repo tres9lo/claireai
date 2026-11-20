@@ -19,6 +19,7 @@ Deliberate limits:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -57,6 +58,7 @@ DOMAINS: dict[str, str] = {
     "social": "social media drafting",
     "research": "research and sources",
     "business": "business, sales and margins",
+    "intent": "understanding what the owner is asking for",
 }
 
 
@@ -206,6 +208,79 @@ def _conversation() -> list[dict[str, Any]]:
             "Goodbye",
             "Goodbye. Your work is saved locally.",
         ),
+        # Multi-turn intent repair. These teach the model to ask for the missing
+        # slot instead of guessing when a request is ambiguous, and to carry the
+        # clarified meaning into the next answer.
+        {
+            "system": SYSTEM,
+            "messages": [
+                {"role": "user", "content": "Move it to the other folder."},
+                {
+                    "role": "assistant",
+                    "content": "Which file do you mean, and which folder should it move to?",
+                },
+                {"role": "user", "content": "the budget file, to reports"},
+                {
+                    "role": "assistant",
+                    "content": "I understand: move the budget file into reports. I will show the exact move for approval before anything changes.",
+                },
+            ],
+            "source": "claireai-curriculum:intent",
+        },
+        {
+            "system": SYSTEM,
+            "messages": [
+                {"role": "user", "content": "Send it."},
+                {
+                    "role": "assistant",
+                    "content": "What should I send, and to whom? I do not send anything without the exact text and an explicit approval.",
+                },
+                {"role": "user", "content": "the draft invoice to the client"},
+                {
+                    "role": "assistant",
+                    "content": "Understood: the draft invoice to the client. I will show the recipient and body for approval first.",
+                },
+            ],
+            "source": "claireai-curriculum:intent",
+        },
+        {
+            "system": SYSTEM,
+            "messages": [
+                {"role": "user", "content": "What is the latest on that thing we discussed?"},
+                {
+                    "role": "assistant",
+                    "content": "I do not know which topic you mean. Is it the news story from earlier, or a task in this conversation?",
+                },
+            ],
+            "source": "claireai-curriculum:intent",
+        },
+    ]
+
+
+def _intent() -> list[dict[str, Any]]:
+    """Explicit request-shape examples, kept separate from small talk."""
+    examples = [
+        ("Find the biggest files in Downloads.", "list_files"),
+        ("What is inside my Documents folder?", "list_files"),
+        ("Move report.pdf from Downloads to Documents.", "move_file"),
+        ("Rename the draft to final.", "rename_file"),
+        ("Put this file in the bin; I do not need it any more.", "trash_file"),
+        ("Add lunch with Ada tomorrow at 13:00.", "add_appointment"),
+        ("What is on my calendar tomorrow?", "list_appointments"),
+        ("Summarise what we did today.", "summarize"),
+        ("Explain what a tokenizer does.", "chat"),
+        ("I need help, but I have not decided what yet.", "clarify"),
+    ]
+    return [
+        _record(
+            "intent",
+            "Route this request to one intent. Allowed intents: chat, list_files, "
+            "move_file, rename_file, trash_file, add_appointment, list_appointments, "
+            "summarize, clarify. Reply with the single intent word and nothing else.\n"
+            f"Request: {request}",
+            intent,
+        )
+        for request, intent in examples
     ]
 
 
@@ -363,6 +438,7 @@ def _business() -> list[dict[str, Any]]:
 
 BUILDERS: dict[str, Callable[[], list[dict[str, Any]]]] = {
     "conversation": _conversation,
+    "intent": _intent,
     "hospitality": _hospitality,
     "reports": _reports,
     "accounting": _accounting,
@@ -408,11 +484,21 @@ class TrainingCurriculum:
             records.extend(builder())
         try:
             for entry in self.journal.entries()[-200:]:
+                sources = [
+                    str(source)
+                    for source in entry.get("sources") or []
+                    if str(source).startswith(("http://", "https://"))
+                ]
+                if entry.get("verified") is not True or not sources:
+                    # An ordinary model answer is not ground truth. It stays in
+                    # the journal but never becomes a training target.
+                    continue
+                answer = str(entry.get("answer", ""))
                 records.append(
                     _record(
-                        "conversation",
+                        "research",
                         str(entry.get("question", "")),
-                        str(entry.get("answer", "")),
+                        f"{answer}\n\nSource: {sources[0]}",
                     )
                 )
         except (LearningError, OSError):
@@ -454,6 +540,84 @@ def _write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _record_key(record: dict[str, Any]) -> str:
+    payload = json.dumps(record.get("messages") or [], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError as exc:
+            raise TrainingError(f"{path} line {number} is not valid JSON") from exc
+        if isinstance(record, dict) and record.get("messages"):
+            records.append(record)
+    return records
+
+
+def merge_training_corpus(
+    curriculum_dir: Path,
+    external_dir: Path,
+    output_dir: Path,
+) -> Path:
+    """Merge authored/confirmed records into the external corpus, exactly once.
+
+    The nightly worker used to choose the external corpus and silently drop the
+    authored intent examples and the owner-confirmed lessons. This writes a
+    combined corpus under the learning directory and rejects cross-split
+    duplicates, so those records are actually trained on without contaminating
+    validation.
+    """
+    authored_train = _read_jsonl(curriculum_dir / "train.jsonl")
+    authored_validation = _read_jsonl(curriculum_dir / "validation.jsonl")
+    external_train = _read_jsonl(external_dir / "train.jsonl")
+    external_validation = _read_jsonl(external_dir / "validation.jsonl")
+
+    train: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in [*external_train, *authored_train]:
+        key = _record_key(record)
+        if key not in seen:
+            seen.add(key)
+            train.append(record)
+    validation: list[dict[str, Any]] = []
+    for record in [*external_validation, *authored_validation]:
+        key = _record_key(record)
+        if key not in seen:
+            seen.add(key)
+            validation.append(record)
+    if not train or not validation:
+        raise TrainingError("the merged corpus has an empty train or validation split")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(output_dir / "train.jsonl", train)
+    _write_jsonl(output_dir / "validation.jsonl", validation)
+    (output_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "authored_train": len(authored_train),
+                "external_train": len(external_train),
+                "train": len(train),
+                "validation": len(validation),
+                "deduplicated": len(external_train)
+                + len(authored_train)
+                + len(external_validation)
+                + len(authored_validation)
+                - len(train)
+                - len(validation),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return output_dir
 
 
 class TrainingWorker(threading.Thread):
@@ -635,14 +799,22 @@ class TrainingWorker(threading.Thread):
         if not trainer.is_file():
             raise TrainingError(f"the trainer is missing: {trainer}")
 
-        # Prefer the merged licensed corpus when the checkout has one. The
-        # small variant exists because a full 15k-record build at a 512-token
-        # window exceeds this host's RAM while examples are being tokenised.
+        # Prefer the merged licensed corpus when the checkout has one. chat-v15
+        # is the bilingual build from train_claireai.py; the v13 names remain
+        # valid for older checkouts. The compact token arrays in train_chat.py
+        # removed the old 15k-record memory ceiling, so a larger corpus is no
+        # longer rejected just because it is large. Whatever is chosen, the
+        # authored intent examples and confirmed lessons are merged in first;
+        # selecting the external corpus directly silently discarded both.
         corpus = Path(curriculum["path"])
-        for name in ("chat-v13-small", "chat-v13"):
+        for name in ("chat-v15", "chat-v13-small", "chat-v13"):
             candidate_corpus = source.parent / "brain-lab" / "data" / name
             if (candidate_corpus / "train.jsonl").is_file() and (candidate_corpus / "validation.jsonl").is_file():
-                corpus = candidate_corpus
+                corpus = merge_training_corpus(
+                    Path(curriculum["path"]),
+                    candidate_corpus,
+                    self.data_dir / "learning" / "curriculum-merged",
+                )
                 break
 
         stamp = _now().strftime("%Y%m%dT%H%M%SZ")
@@ -677,6 +849,8 @@ class TrainingWorker(threading.Thread):
                     ("--heads", "heads"),
                 ):
                     command += [flag, str(int(architecture[key]))]
+                position = str(architecture.get("position_encoding") or "learned")
+                command += ["--position-encoding", position]
                 command += ["--init-from", str(installed)]
             except (KeyError, OSError, TypeError, ValueError):
                 # A malformed sidecar must not stop the nightly run; the trainer
@@ -733,6 +907,7 @@ __all__ = [
     "TrainingCurriculum",
     "TrainingError",
     "TrainingWorker",
+    "merge_training_corpus",
     "online",
     "run_service_tick",
 ]

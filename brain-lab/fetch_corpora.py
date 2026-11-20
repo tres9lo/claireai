@@ -17,6 +17,7 @@ Sources:
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import re
@@ -32,10 +33,15 @@ OUTPUT = ROOT / "data" / "external"
 USER_AGENT = "ClaireAI-corpus-fetcher/0.1 (personal research; contact local owner)"
 SYSTEM = "You are ClaireAI, a helpful local assistant. Be concise, correct and honest; never invent a fact or an action."
 
-OASST_API = "https://datasets-server.huggingface.co/rows"
-OASST_DATASET = "OpenAssistant/oasst1"
+OASST_READY_URL = (
+    "https://huggingface.co/datasets/OpenAssistant/oasst1/resolve/main/"
+    "2023-04-12_oasst_ready.messages.jsonl.gz"
+)
+OASST_LANGS = {"en": "English", "fr": "French"}
 FINEWEB_API = "https://datasets-server.huggingface.co/rows"
 FINEWEB_DATASET = "HuggingFaceFW/fineweb-edu"
+FINEWEB_FR_DATASET = "HuggingFaceFW/fineweb-2"
+FINEWEB_FR_CONFIG = "fra_Latn"
 GSM8K_URL = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/train.jsonl"
 
 
@@ -99,75 +105,71 @@ def _record(user: str, assistant: str, *, source: str, license_name: str, url: s
     }
 
 
-def fetch_oasst(limit: int) -> list[dict[str, Any]]:
-    """Sample English assistant replies whose tree has a user prompt."""
-    rows: list[dict[str, Any]] = []
-    page = 100
-    offset = 0
-    # Fetch enough tree rows to find pairs; stop at a bounded page count even if
-    # the API returns fewer usable examples than requested.
-    wanted_rows = max(200, min(8_000, limit * 3))
-    while len(rows) < wanted_rows:
-        query = urllib.parse.urlencode(
-            {
-                "dataset": OASST_DATASET,
-                "config": "default",
-                "split": "train",
-                "offset": offset,
-                "length": page,
-            }
-        )
+def fetch_oasst(limit: int) -> dict[str, list[dict[str, Any]]]:
+    """Download reviewed OASST1 prompt/reply pairs in English and French.
+
+    The public rows endpoint rate-limits and returns a different field name for
+    the tree id than the released file.  The ready-message archive is a single
+    34 MB gzip, so fetching it once is both faster and reproducible; the SHA-256
+    written beside each split is the actual bytes used.
+    """
+    raw = _get(OASST_READY_URL, timeout=180)
+    try:
+        text = gzip.decompress(raw).decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise FetchError(f"OASST1 archive was not valid gzip text: {exc}") from exc
+
+    rows: dict[str, dict[str, Any]] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
         try:
-            payload = _get_json(f"{OASST_API}?{query}")
-        except FetchError:
-            # The free datasets server occasionally returns 502 on a later page.
-            # Keep the pages already fetched instead of losing the whole sample.
-            if rows:
-                break
-            raise
-        batch = payload.get("rows") or []
-        if not batch:
-            break
-        rows.extend(item.get("row") or {} for item in batch if isinstance(item, dict))
-        offset += len(batch)
-        if len(batch) < page:
-            break
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict) and item.get("message_id"):
+            rows[str(item["message_id"])] = item
 
-    by_tree: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        if row.get("tree_id"):
-            by_tree.setdefault(str(row["tree_id"]), []).append(row)
-
-    records: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for tree in by_tree.values():
-        ordered = sorted(tree, key=lambda item: str(item.get("created_date") or ""))
-        users = [item for item in ordered if item.get("role") in {"user", "prompter"}]
-        for item in ordered:
-            if item.get("role") != "assistant" or item.get("deleted") or item.get("lang") != "en":
-                continue
-            if item.get("synthetic") or item.get("review_count", 0) < 1:
-                continue
-            earlier = [user for user in users if str(user.get("created_date") or "") <= str(item.get("created_date") or "")]
-            if not earlier:
-                continue
-            prompt = _clean(earlier[-1].get("text"))
-            answer = _clean(item.get("text"))
-            digest = hashlib.sha256((prompt + "\x00" + answer).encode("utf-8")).hexdigest()
-            if digest in seen:
-                continue
-            record = _record(
-                prompt,
-                answer,
-                source="oasst1",
-                license_name="Apache-2.0",
-                url="https://huggingface.co/datasets/OpenAssistant/oasst1",
-            )
-            if record:
-                seen.add(digest)
-                records.append(record)
-                if len(records) >= limit:
-                    return records
+    records: dict[str, list[dict[str, Any]]] = {lang: [] for lang in OASST_LANGS}
+    seen: dict[str, set[str]] = {lang: set() for lang in OASST_LANGS}
+    for item in rows.values():
+        lang = str(item.get("lang") or "")
+        if lang not in OASST_LANGS or item.get("role") != "assistant":
+            continue
+        if len(records[lang]) >= limit:
+            continue
+        if item.get("deleted") or item.get("synthetic") or item.get("review_count", 0) < 1:
+            continue
+        if item.get("review_result") is False:
+            continue
+        # Walk up to the nearest human prompt in the same language.  A reply to
+        # another assistant turn is skipped rather than paired with the wrong
+        # question, which is how synthetic follow-ups ended up in chat data.
+        parent = rows.get(str(item.get("parent_id") or ""))
+        while parent is not None and parent.get("role") != "prompter":
+            parent = rows.get(str(parent.get("parent_id") or ""))
+        if parent is None or str(parent.get("lang") or "") != lang:
+            continue
+        prompt = _clean(parent.get("text"))
+        answer = _clean(item.get("text"))
+        digest = hashlib.sha256((prompt + "\x00" + answer).encode("utf-8")).hexdigest()
+        if digest in seen[lang]:
+            continue
+        record = _record(
+            prompt,
+            answer,
+            source=f"oasst1-{lang}",
+            license_name="Apache-2.0",
+            url="https://huggingface.co/datasets/OpenAssistant/oasst1",
+        )
+        if record:
+            record["lang"] = lang
+            seen[lang].add(digest)
+            records[lang].append(record)
+            if len(records[lang]) >= limit:
+                # Keep scanning only if the other language still needs rows.
+                if all(len(records[code]) >= limit for code in OASST_LANGS):
+                    break
     return records
 
 
@@ -210,6 +212,56 @@ def fetch_fineweb(limit: int) -> list[dict[str, Any]]:
                 source="fineweb-edu",
                 license_name="ODC-By 1.0",
                 url=str(row.get("url") or "https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu"),
+            )
+            if record:
+                records.append(record)
+                if len(records) >= limit:
+                    break
+        offset += len(batch)
+        if len(batch) < page:
+            break
+    return records
+
+
+def fetch_fineweb_french(limit: int) -> list[dict[str, Any]]:
+    """Bounded French reading sample from FineWeb-2 (ODC-By 1.0).
+
+    The target is an extractive lead, not a model-written summary.  It teaches
+    French orthography and sentence rhythm, not factual question answering.
+    """
+    records: list[dict[str, Any]] = []
+    page = 100
+    offset = 0
+    while len(records) < limit:
+        query = urllib.parse.urlencode(
+            {
+                "dataset": FINEWEB_FR_DATASET,
+                "config": FINEWEB_FR_CONFIG,
+                "split": "train",
+                "offset": offset,
+                "length": page,
+            }
+        )
+        payload = _get_json(f"{FINEWEB_API}?{query}")
+        batch = payload.get("rows") or []
+        if not batch:
+            break
+        for item in batch:
+            row = item.get("row") or {}
+            if str(row.get("language") or "").lower() not in {"fra", "fr", "french"}:
+                continue
+            passage = _clean(row.get("text"))[:1600]
+            if len(passage) < 240:
+                continue
+            summary = _clip(passage, 360)
+            if len(summary.split()) < 12 or summary == passage:
+                continue
+            record = _record(
+                "Lis ce passage et donne son idée principale en deux phrases :\n" + passage,
+                summary,
+                source="fineweb-2-fr",
+                license_name="ODC-By 1.0",
+                url=str(row.get("url") or "https://huggingface.co/datasets/HuggingFaceFW/fineweb-2"),
             )
             if record:
                 records.append(record)
@@ -269,7 +321,9 @@ def _write(records: Iterable[dict[str, Any]], output: Path, *, source: str, lice
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--source", choices=("oasst1", "gsm8k", "fineweb", "all"), default="all"
+        "--source",
+        choices=("oasst1", "gsm8k", "fineweb", "fineweb-fr", "all"),
+        default="all",
     )
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--output", type=Path, default=OUTPUT)
@@ -278,25 +332,27 @@ def main() -> int:
         parser.error("--limit must be positive")
 
     sources = (
-        ("oasst1", "gsm8k", "fineweb") if args.source == "all" else (args.source,)
+        ("oasst1", "gsm8k", "fineweb", "fineweb-fr")
+        if args.source == "all"
+        else (args.source,)
     )
-    filenames = {
-        "oasst1": "oasst1.jsonl",
-        "gsm8k": "gsm8k.jsonl",
-        "fineweb": "fineweb-edu.jsonl",
-    }
     failed = False
     for source in sources:
         try:
             if source == "oasst1":
-                records = fetch_oasst(args.limit)
-                manifest = _write(
-                    records,
-                    args.output / "oasst1.jsonl",
-                    source="oasst1",
-                    license_name="Apache-2.0",
-                    url="https://huggingface.co/datasets/OpenAssistant/oasst1",
-                )
+                by_lang = fetch_oasst(args.limit)
+                for lang, records in by_lang.items():
+                    manifest = _write(
+                        records,
+                        args.output / f"oasst1-{lang}.jsonl",
+                        source=f"oasst1-{lang}",
+                        license_name="Apache-2.0",
+                        url="https://huggingface.co/datasets/OpenAssistant/oasst1",
+                    )
+                    print(
+                        f"oasst1-{lang}: {manifest['records']} records -> "
+                        f"{args.output / f'oasst1-{lang}.jsonl'}"
+                    )
             elif source == "gsm8k":
                 records = fetch_gsm8k(args.limit)
                 manifest = _write(
@@ -305,6 +361,20 @@ def main() -> int:
                     source="gsm8k",
                     license_name="MIT",
                     url="https://github.com/openai/grade-school-math",
+                )
+                print(f"gsm8k: {manifest['records']} records -> {args.output / 'gsm8k.jsonl'}")
+            elif source == "fineweb-fr":
+                records = fetch_fineweb_french(args.limit)
+                manifest = _write(
+                    records,
+                    args.output / "fineweb-2-fr.jsonl",
+                    source="fineweb-2-fr",
+                    license_name="ODC-By 1.0",
+                    url="https://huggingface.co/datasets/HuggingFaceFW/fineweb-2",
+                )
+                print(
+                    f"fineweb-2-fr: {manifest['records']} records -> "
+                    f"{args.output / 'fineweb-2-fr.jsonl'}"
                 )
             else:
                 records = fetch_fineweb(args.limit)
@@ -315,11 +385,14 @@ def main() -> int:
                     license_name="ODC-By 1.0",
                     url="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu",
                 )
+                print(
+                    f"fineweb-edu: {manifest['records']} records -> "
+                    f"{args.output / 'fineweb-edu.jsonl'}"
+                )
         except FetchError as exc:
             failed = True
             print(f"ERROR: {source}: {exc}")
             continue
-        print(f"{source}: {manifest['records']} records -> {args.output / filenames[source]}")
     return 2 if failed else 0
 
 

@@ -60,7 +60,10 @@ class _ReadableText(HTMLParser):
         self._in_title = False
 
     def handle_starttag(self, tag: str, attrs) -> None:  # noqa: ANN001
-        if tag in {"script", "style", "noscript"}:
+        # Navigation, headers and footers are page furniture, not evidence. A
+        # Wikipedia article spent its whole 2,000-character budget on menus
+        # before this; skipping them leaves room for the actual prose.
+        if tag in {"script", "style", "noscript", "nav", "header", "footer", "aside", "form"}:
             self._skipping += 1
         elif tag == "title":
             self._in_title = True
@@ -68,7 +71,7 @@ class _ReadableText(HTMLParser):
             self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in {"script", "style", "noscript"} and self._skipping:
+        if tag in {"script", "style", "noscript", "nav", "header", "footer", "aside", "form"} and self._skipping:
             self._skipping -= 1
         elif tag == "title":
             self._in_title = False

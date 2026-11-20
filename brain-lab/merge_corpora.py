@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Merge the curated corpus with downloaded public instruction samples.
 
-The base corpus (chat-v12) carries the assistant's own formats and the licensed
+The base corpus (chat-v14) carries the assistant's own formats and the licensed
 Dolly/TinyStories material. This script adds bounded external records, removes
 held-out evaluation prompts, and writes a new corpus. It never downloads
 anything; run ``fetch_corpora.py`` first.
@@ -125,9 +125,9 @@ def load_external(directory: Path, limit: int) -> tuple[list[dict[str, Any]], di
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", type=Path, default=ROOT / "data" / "chat-v12")
+    parser.add_argument("--base", type=Path, default=ROOT / "data" / "chat-v14")
     parser.add_argument("--external", type=Path, default=ROOT / "data" / "external")
-    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v13")
+    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v15")
     parser.add_argument("--limit", type=int, default=4000, help="maximum records per external source")
     parser.add_argument("--base-limit", type=int, default=0, help="optional cap on base training records (0 = all)")
     parser.add_argument("--seed", type=int, default=SEED)
@@ -169,7 +169,7 @@ def main() -> int:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
     manifest = {
-        "dataset": "claireai-chat-v13",
+        "dataset": "claireai-chat-v15",
         "built_from": str(args.base),
         "external": manifests,
         "records_by_split": {"train": len(train), "validation": len(validation)},

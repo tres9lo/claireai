@@ -100,9 +100,14 @@ responses are truncated to fit a 256-token context, which makes this a
 Bounded external samples are handled by `brain-lab/fetch_corpora.py`, which
 writes a sidecar with licence, URL, retrieval time and SHA-256. Current sources:
 GSM8K (`openai/grade-school-math`, MIT), FineWeb-Edu (ODC-By 1.0, with extractive
-two-sentence answers), and OASST1 (Apache-2.0; best-effort because its public
-rows endpoint rate-limits). FineWeb-Edu passages are truncated to 1,600
-characters and are not redistributed with this repository. The full source list,
+answers), French FineWeb-2 (`HuggingFaceFW/fineweb-2`, `fra_Latn`, ODC-By 1.0,
+with extractive French leads), and OASST1 English/French (Apache-2.0). OASST1 is
+read from the released `2023-04-12_oasst_ready.messages.jsonl.gz` archive rather
+than the rate-limited rows endpoint; only reviewed, non-deleted, non-synthetic
+assistant replies with a human prompt in the same language are kept. The
+English and French splits are written separately (`oasst1-en.jsonl` and
+`oasst1-fr.jsonl`). FineWeb passages are truncated to 1,600 characters, and no
+third-party text is redistributed with this repository. The full source list,
 including the gated/forbidden cases, is in `brain-lab/data-sources.json`. Do not
 raise a sample limit without re-reading the dataset card and this file.
 
