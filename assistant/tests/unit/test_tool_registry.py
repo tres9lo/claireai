@@ -44,6 +44,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "search_files",
         "search_web",
         "see_screen",
+        "world_news",
         "write_to_file",
     )
     safe = {tool.name for tool in registry if tool.risk == "safe"}
@@ -56,6 +57,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "list_folder",
         "read_text_file",
         "search_files",
+        "world_news",  # reads public RSS only; registered only when browsing is on
     }
     assert all(tool.risk == "needs_approval" for tool in registry if tool.name not in safe)
     # Risk and mutation are separate: reaching the web needs approval but does

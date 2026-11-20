@@ -138,6 +138,41 @@ desktop window with `assistant/.venv/bin/claireai --data-dir ./runtime-data`
 default. The pause control is checked after in-flight model calls; this first
 version does not terminate the CLI process itself.
 
+## External corpora and context expansion
+
+The catalog in `data-sources.json` is a starting point, not blanket permission.
+`fetch_corpora.py` downloads bounded samples and records licence, URL, date and
+SHA-256 beside each file. `merge_corpora.py` merges those records with `chat-v12`,
+removes held-out evaluation prompts, and writes `chat-v13` or a memory-bounded
+`chat-v13-small`:
+
+```bash
+assistant/.venv/bin/python brain-lab/fetch_corpora.py --source all --limit 800
+assistant/.venv/bin/python brain-lab/merge_corpora.py --base-limit 5000 \
+  --output brain-lab/data/chat-v13-small
+```
+
+A full 15k-record build at 512 tokens exceeded this host's RAM; the small corpus
+is the reproducible default. The OASST1 endpoint is rate-limited, so a failed
+sample is reported rather than written as an empty success. GSM8K and the
+already-present Dolly/TinyStories material are the current third-party mix.
+
+To widen an existing checkpoint without changing its learned weights:
+
+```bash
+assistant/.venv/bin/python brain-lab/expand_context.py \
+  --source ~/.local/share/ClaireAI/models/claire-scratch.pt \
+  --context 512 \
+  --output runtime-data/models/candidates/claire-context512-base.pt
+assistant/.venv/bin/python brain-lab/install_context_upgrade.py \
+  --candidate runtime-data/models/candidates/claire-context512-base.pt \
+  --installed ~/.local/share/ClaireAI/models/claire-scratch.pt --yes
+```
+
+The installer refuses unless every old tensor and the old position rows match,
+and it archives the previous checkpoint. This is a structural window increase,
+not a substitute for the training-candidate gate.
+
 ## Limits
 
 Training loss only measures next-token prediction on this corpus. It does not

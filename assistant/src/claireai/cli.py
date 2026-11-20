@@ -177,6 +177,18 @@ async def ask(
             from claireai.tools.calendar import answer_agenda
 
             direct = answer_agenda(conn, question)
+        if direct is None:
+            # Headlines come from a live public RSS feed, with publisher links.
+            from claireai.news import answer_news, is_news_request
+
+            if is_news_request(question):
+                if not control["browser"]:
+                    direct = (
+                        "News retrieval is off. Turn on browser access in the local "
+                        "control panel, then ask again."
+                    )
+                else:
+                    direct = await asyncio.to_thread(answer_news, question)
         if direct is not None:
             # The model has no clock, so a dated answer from it is confidently
             # wrong. Date and time questions are answered from the runtime.
@@ -510,6 +522,24 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
         conn.close()
         return EXIT_OK
 
+    if args.news:
+        from claireai.news import NewsError, brief
+
+        control = RuntimeControl(settings.control_state_path).read()
+        if not control["browser"]:
+            print("ERROR: news retrieval is off; enable browser access first.", file=sys.stderr)
+            conn.close()
+            return EXIT_CONFIG
+        countries = [item.strip() for item in args.news.split(",") if item.strip()]
+        try:
+            print(brief(countries))
+        except NewsError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            conn.close()
+            return EXIT_CONFIG
+        conn.close()
+        return EXIT_OK
+
     brain = build_brain(settings)
     try:
         health = await brain.health()
@@ -631,6 +661,11 @@ def _run_preauthorize(args: argparse.Namespace, settings: Settings) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="claireai", description="Chat with the local ClaireAI model.")
     parser.add_argument("--once", "-q", metavar="QUESTION", help="ask one question, print the answer, exit")
+    parser.add_argument(
+        "--news",
+        metavar="COUNTRIES",
+        help="print cited headlines for comma-separated countries (e.g. Kenya,France) and exit",
+    )
     parser.add_argument("--model-checkpoint", type=Path, help="override CLAIREAI_MODEL_CHECKPOINT for this run")
     parser.add_argument("--data-dir", help="override the application data directory (development use)")
     parser.add_argument("--db", help="use a specific SQLite file instead of the default location")

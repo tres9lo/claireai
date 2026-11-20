@@ -8,7 +8,10 @@ refuses them — that refusal is the point, not a bug.
 
 from __future__ import annotations
 
+from pydantic import BaseModel, Field
+
 from claireai.tools.base import Tool, ToolContext, ToolError, ToolRegistry, ToolResult, UnknownTool
+from claireai.news import NewsError, brief
 from claireai.tools.browser import (
     DownloadFileArgs,
     OpenUrlArgs,
@@ -149,7 +152,42 @@ WRITE_TOOLS: tuple[Tool, ...] = (
 )
 
 
+class WorldNewsArgs(BaseModel):
+    countries: list[str] = Field(
+        min_length=1,
+        max_length=5,
+        description="Country names or two-letter codes, e.g. ['Kenya', 'FR'].",
+    )
+    limit: int = Field(default=5, ge=1, le=10, description="Headlines per country.")
+
+
+def world_news(context: ToolContext, arguments: WorldNewsArgs) -> ToolResult:
+    """Read public country editions; never invent a missing headline."""
+    if getattr(context, "browser", None) is None:
+        raise ToolError("news retrieval is unavailable because browser access is off")
+    if context.dry_run:
+        return ToolResult(
+            text=f"[dry run] would read headlines for {', '.join(arguments.countries)}",
+            detail={"countries": arguments.countries, "dry_run": True},
+        )
+    try:
+        text = brief(arguments.countries, limit=arguments.limit)
+    except NewsError as exc:
+        raise ToolError(str(exc)) from exc
+    return ToolResult(
+        text=text,
+        detail={"countries": arguments.countries, "limit": arguments.limit},
+    )
+
+
 BROWSER_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="world_news",
+        description="Current headlines by country, with publisher links. Use when asked for news from a named country.",
+        risk="safe",
+        args_model=WorldNewsArgs,
+        handler=world_news,
+    ),
     Tool(
         name="open_url",
         description="Open an http(s) page and return its readable text.",
@@ -237,6 +275,8 @@ __all__ = [
     "BROWSER_TOOLS",
     "CALENDAR_TOOLS",
     "FILE_TOOLS",
+    "WorldNewsArgs",
+    "world_news",
     "ListAppointmentsArgs",
     "LargestFilesArgs",
     "VISION_TOOLS",

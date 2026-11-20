@@ -635,6 +635,16 @@ class TrainingWorker(threading.Thread):
         if not trainer.is_file():
             raise TrainingError(f"the trainer is missing: {trainer}")
 
+        # Prefer the merged licensed corpus when the checkout has one. The
+        # small variant exists because a full 15k-record build at a 512-token
+        # window exceeds this host's RAM while examples are being tokenised.
+        corpus = Path(curriculum["path"])
+        for name in ("chat-v13-small", "chat-v13"):
+            candidate_corpus = source.parent / "brain-lab" / "data" / name
+            if (candidate_corpus / "train.jsonl").is_file() and (candidate_corpus / "validation.jsonl").is_file():
+                corpus = candidate_corpus
+                break
+
         stamp = _now().strftime("%Y%m%dT%H%M%SZ")
         output_dir = self.data_dir / "models" / "candidates"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -643,7 +653,7 @@ class TrainingWorker(threading.Thread):
             sys.executable,
             str(trainer),
             "--corpus",
-            curriculum["path"],
+            str(corpus),
             "--steps",
             str(self.steps),
             "--output",
@@ -651,6 +661,28 @@ class TrainingWorker(threading.Thread):
             "--name",
             f"claire-curriculum-{stamp}",
         ]
+        # Continue from the installed weights with the installed architecture.
+        # Training a fresh 256-token model every night made every candidate
+        # incomparable with the installed one; this keeps the comparison real.
+        installed = self.data_dir / "models" / "claire-scratch.pt"
+        sidecar = installed.with_suffix(".json")
+        if installed.is_file() and sidecar.is_file():
+            try:
+                architecture = json.loads(sidecar.read_text(encoding="utf-8"))["architecture"]
+                for flag, key in (
+                    ("--context", "context"),
+                    ("--vocab-size", "vocab_size"),
+                    ("--width", "width"),
+                    ("--layers", "layers"),
+                    ("--heads", "heads"),
+                ):
+                    command += [flag, str(int(architecture[key]))]
+                command += ["--init-from", str(installed)]
+            except (KeyError, OSError, TypeError, ValueError):
+                # A malformed sidecar must not stop the nightly run; the trainer
+                # will fall back to its own architecture, and the gate will reject
+                # a candidate that does not fit.
+                pass
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as log:
             log.write(f"\n=== {stamp} ({self.steps} steps) ===\n")

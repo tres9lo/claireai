@@ -5,6 +5,21 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — 512-token context, public corpora, and country news
+
+- The installed scratch checkpoint now uses **512 tokens**, expanded from the
+  proven 288-token weights. A structural installer verifies every old tensor and
+  the first 288 position rows before replacing the checkpoint, and archives the
+  old pair. The merged-corpus pipeline is included, and the nightly worker now
+  continues from the installed architecture.
+- `fetch_corpora.py` downloads bounded, licensed samples (GSM8K MIT, OASST1
+  Apache-2.0 best-effort) with sidecar licence/hash records. `merge_corpora.py`
+  combines them with the curated corpus, removes evaluation prompts, and writes
+  `chat-v13` / `chat-v13-small`.
+- `claireai --news Kenya,France` and plain “latest news from Kenya” requests read
+  public Google News country editions and return cited headlines. The model never
+  invents a headline; an unavailable feed is reported as unavailable.
+
 ### Added — training without the window, and exact calculations
 
 - `claireai --install-training-service` installs a systemd **user** timer for a

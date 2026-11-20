@@ -49,6 +49,13 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
         ("list_appointments", "add_appointment"),
         "asking what is scheduled; the calendar answers from the local database",
     ),
+    (
+        "news",
+        r"\b(news|headlines?|briefing|top stories|what(?:'s| is) happening)\b",
+        r"\b(world|country|countries|from|in|about|latest)\b",
+        ("world_news",),
+        "asking for live headlines by country",
+    ),
     # Before `read_contents`: "open https://example.com and tell me what it says"
     # is a web request, and the read rule would otherwise claim it.
     (

@@ -228,6 +228,7 @@ async def test_tool_schemas_are_offered_to_the_model(
         "read_text_file",
         "search_files",
         "find_largest_files",
+        "world_news",
         "create_folder",
         "create_text_file",
         "write_to_file",

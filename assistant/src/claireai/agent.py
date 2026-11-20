@@ -18,6 +18,7 @@ decisions are logged too, and the tool row carries the same ``approval_ref``.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -267,6 +268,20 @@ async def run_task(
 
         direct = answer_agenda(conn, request)
         answer_target = "calendar"
+    if direct is None:
+        # News is a live feed, not a memory. Fetch it outside the event loop and
+        # keep every publisher link; a failed fetch is reported, never filled in.
+        from claireai.news import answer_news, is_news_request  # local import
+
+        if is_news_request(request):
+            answer_target = "news"
+            if not control_state["browser"]:
+                direct = (
+                    "News retrieval is off. Turn on browser access in the local "
+                    "control panel, then ask again."
+                )
+            else:
+                direct = await asyncio.to_thread(answer_news, request)
     if direct is not None:
         started = time.perf_counter()
         with transaction(conn):
@@ -483,7 +498,7 @@ async def run_task(
                 state = controls.read()
                 if state["shutdown"]:
                     raise BrainStopped("ClaireAI was stopped before the proposed action could run.")
-                if call.name in {"open_url", "get_page_text", "search_web", "download_file"} and not state["browser"]:
+                if call.name in {"world_news", "open_url", "get_page_text", "search_web", "download_file"} and not state["browser"]:
                     raise BrainResponseError("browser access was disabled before the action could run")
                 step = await _execute(
                     call=call,
