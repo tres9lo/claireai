@@ -5,6 +5,17 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — a candidate must pass the gate before install
+
+- Training candidates are now compared with the installed checkpoint on the
+  same fixed tool-call, conversation and capability suites at the same run
+  count. Promotion requires a strict tool-check win and no conversation
+  regression; an unavailable or failed suite rejects the candidate instead of
+  guessing. The old `.pt`/`.json` pair is archived in `models/archive/` before
+  replacement, and rejected candidates stay in `models/candidates/`. Settings
+  shows the gate reason. The capability score is diagnostic, not a promotion
+  criterion.
+
 ### Added — background curriculum and bounded training
 
 - With **Background learning** on in Settings, a second worker turns the journal

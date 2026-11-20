@@ -1005,7 +1005,7 @@ class SettingsPage(Page):
                 text=(
                     f"Off — {status['total']} exchanges are kept from earlier sessions. "
                     "While on, new exchanges are journaled here and compiled in the background; "
-                    "a trained checkpoint still has to pass the install gate."
+                    "candidates are evaluated automatically and only a passing one is installed."
                 )
             )
             return
@@ -1027,6 +1027,15 @@ class SettingsPage(Page):
                 note += f"; candidate {Path(str(training['candidate'])).name}"
             if training.get("worker_error"):
                 note += f"; last training problem: {training['worker_error']}"
+            gate = training.get("gate") or {}
+            if gate:
+                if gate.get("promoted"):
+                    note += "; candidate passed the gate and was installed"
+                elif gate.get("passed") is True:
+                    note += "; candidate passed the gate"
+                else:
+                    reason = str(gate.get("reason") or "not evaluated")[:170]
+                    note += f"; candidate not installed — {reason}"
         self.learning_note.configure(text=note)
 
     def on_show(self) -> None:

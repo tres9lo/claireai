@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from claireai.gate import CandidateGate
 from claireai.learning import LearningError, LearningJournal
 
 SYSTEM = (
@@ -468,6 +469,7 @@ class TrainingWorker(threading.Thread):
         tick: float = TICK_SECONDS,
         online_check: Callable[[], bool] = online,
         runner: Callable[[list[str], Path, int], subprocess.CompletedProcess] | None = None,
+        gate: Callable[[Path], dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(name="claireai-training", daemon=True)
         self.data_dir = Path(data_dir).expanduser()
@@ -481,6 +483,7 @@ class TrainingWorker(threading.Thread):
         self.tick_seconds = max(5.0, float(tick))
         self.online_check = online_check
         self.runner = runner
+        self.gate = gate or CandidateGate(self.data_dir).review
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self.state_path = self.data_dir / "learning" / "training.json"
@@ -556,13 +559,32 @@ class TrainingWorker(threading.Thread):
                 return False
             self.candidate = str(candidate)
             self.last_error = None
+            try:
+                review = self.gate(candidate)
+            except Exception as error:  # noqa: BLE001 - a broken harness must not kill the worker
+                self._write_state(
+                    status="candidate needs review",
+                    candidate=str(candidate),
+                    records=curriculum["total"],
+                    domains=curriculum["domains"],
+                    last_success=_now().isoformat(timespec="seconds"),
+                    error=None,
+                    gate={
+                        "passed": None,
+                        "promoted": False,
+                        "reason": f"review unavailable: {error}",
+                    },
+                )
+                return True
+            promoted = bool(review.get("promoted"))
             self._write_state(
-                status="candidate ready",
+                status="installed" if promoted else "candidate rejected",
                 candidate=str(candidate),
                 records=curriculum["total"],
                 domains=curriculum["domains"],
                 last_success=_now().isoformat(timespec="seconds"),
                 error=None,
+                gate=review,
             )
             return True
 

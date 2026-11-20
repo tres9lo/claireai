@@ -63,6 +63,7 @@ constraints rather than cosmetics.
 | `desktop/` | Native Tk/customtkinter window: Chat, Activity, Approvals, History, Voice, Settings, About | Open a network listener or run a tool without approval |
 | `preflight.py` | OS/Python/Tk/display/package checks, a sized download plan and consent before `pip` runs | Download anything without an explicit yes |
 | `training.py` | Opt-in daily practice curriculum and one bounded local training run; writes a candidate only | Promote a candidate, log into accounts, or post |
+| `gate.py` | Scores candidate and installed checkpoints on fixed suites; archives the old pair before a strict-gate promotion | Promote on a tie, a regression, or a failed/missing suite |
 | `retention.py` | Plans and applies removal of old trash batches and summaries | Delete inside the audit log, or outside the data dir |
 | `summary.py` | Daily report from `tasks` + `task_log`, saved to `summaries` and markdown | Invent an event |
 | `scheduler.py` | APScheduler job that builds the summary each evening | Need a running app |

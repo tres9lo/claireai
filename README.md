@@ -237,8 +237,12 @@ once a day — only when the network check succeeds — one bounded CPU training
 turns that material plus an authored practice curriculum into a **candidate** in
 `models/candidates/`. The curriculum covers conversation, guest service,
 reports, accounting, arithmetic and unit calculations, small coding tasks,
-routines, email and social-media drafting, research, and business margins andsales. A candidate never replaces the installed checkpoint on its own; review it
-(for example with `scripts/eval_model.py`) and install it deliberately. The
+routines, email and social-media drafting, research, and business margins and
+sales. Every candidate is then scored against the installed checkpoint on the
+same fixed tool and conversation suites. Only a strict tool-check win with no
+conversation regression is installed; the previous checkpoint pair is archived
+under `models/archive/`, and a rejected candidate is kept under
+`models/candidates/`. The capability suite is recorded as a diagnostic. The
 worker runs while the ClaireAI window is open and the switch stays on, not as a
 system service. Training is local, it does not scrape, and it does not log into
 or post to any email or social account: those need separate connectors,
