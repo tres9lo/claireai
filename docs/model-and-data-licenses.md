@@ -99,10 +99,12 @@ responses are truncated to fit a 256-token context, which makes this a
 
 Bounded external samples are handled by `brain-lab/fetch_corpora.py`, which
 writes a sidecar with licence, URL, retrieval time and SHA-256. Current sources:
-GSM8K (`openai/grade-school-math`, MIT) and OASST1 (Apache-2.0; best-effort
-because its public rows endpoint rate-limits). The full source list, including
-the gated/forbidden cases, is in `brain-lab/data-sources.json`. Do not raise a
-sample limit without re-reading the dataset card and this file.
+GSM8K (`openai/grade-school-math`, MIT), FineWeb-Edu (ODC-By 1.0, with extractive
+two-sentence answers), and OASST1 (Apache-2.0; best-effort because its public
+rows endpoint rate-limits). FineWeb-Edu passages are truncated to 1,600
+characters and are not redistributed with this repository. The full source list,
+including the gated/forbidden cases, is in `brain-lab/data-sources.json`. Do not
+raise a sample limit without re-reading the dataset card and this file.
 
 Any later external dataset must have its source, licence, retrieval date, size,
 and processing steps recorded in `brain-lab/data/manifests/` before use. Raw

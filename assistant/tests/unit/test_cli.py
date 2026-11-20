@@ -16,10 +16,27 @@ import pytest
 from claireai.approval import ApprovalRequest
 from claireai.audit import AuditLog
 from claireai.brain import BrainHealth, BrainResponse, BrainUnavailable, ToolCall
-from claireai.cli import CliApprovalBroker, _handle_turn, _read_input_or_stop, _speak_answer, ask
+from claireai.cli import (
+    CliApprovalBroker,
+    _handle_turn,
+    _read_input_or_stop,
+    _speak_answer,
+    ask,
+    build_parser,
+)
 from claireai.runtime_control import RuntimeControl
 from claireai.config import Settings
 from claireai.storage import TaskRepository
+
+
+def test_briefing_and_inbox_flags_are_parsed() -> None:
+    args = build_parser().parse_args(
+        ["--briefing", "--countries", "Kenya,France", "--inbox", "5"]
+    )
+    assert args.briefing is True
+    assert args.countries == "Kenya,France"
+    assert args.inbox == 5
+    assert build_parser().parse_args(["--inbox"]).inbox == 10
 
 
 def test_stop_interrupts_an_idle_cli_input_wait(tmp_path: Path, monkeypatch) -> None:

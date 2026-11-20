@@ -5,6 +5,25 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — daily briefing, read-only inbox, and corpus cleanup
+
+- `claireai --briefing [--countries Kenya,France]` combines cited country news,
+  today's appointments and pending tasks in one local report;
+  `--briefing-at HH:MM` runs it daily in the foreground. The report is assembled
+  by code, not the model, and omits news while browser access is off.
+- `claireai --inbox [N]` reads unread message headers through IMAP over TLS in a
+  read-only mailbox with `BODY.PEEK`, so nothing is marked read. There is no
+  send, delete or move path. Credentials come from the OS keyring account
+  `email_app_password`, with `CLAIREAI_EMAIL_ADDRESS` and
+  `CLAIREAI_EMAIL_IMAP_HOST` selecting the mailbox.
+- `fetch_corpora.py` now includes a bounded FineWeb-Edu reading sample (ODC-By
+  1.0). `merge_corpora.py` removes exact duplicate pairs, drops training pairs
+  that also appear in validation, and records the removed counts. A rebuilt
+  `chat-v13-small` removed 948 duplicates/overlaps and 20 validation duplicates.
+- A long-context probe (`scripts/long_context_eval.py`) tests fact retrieval at
+  short, medium and near-limit prompt lengths. It is diagnostic, not a gate: the
+  installed 512-token checkpoint did not retrieve the marker at any tested length.
+
 ### Added — 512-token context, public corpora, and country news
 
 - The installed scratch checkpoint now uses **512 tokens**, expanded from the

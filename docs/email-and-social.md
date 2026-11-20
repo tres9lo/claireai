@@ -1,9 +1,28 @@
 # Email and social posting: status and official routes
 
-ClaireAI can **draft** email and social posts locally. It does **not** currently
-read mailboxes or publish to any account. That is not a missing button: posting
-requires an owner account, an approved API application, scoped credentials and a
-per-action approval. No amount of local code removes those requirements.
+ClaireAI can **draft** email and social posts locally. It can also read the
+**unread headers** of an IMAP inbox through TLS, opened read-only with
+`BODY.PEEK`, so no message is marked seen, deleted, moved or sent. It does **not**
+publish to any account. That is not a missing button: posting requires an owner
+account, an approved API application, scoped credentials and a per-action
+approval. No amount of local code removes those requirements.
+
+## Read-only inbox
+
+```bash
+claireai --inbox 10
+```
+
+Set `CLAIREAI_EMAIL_ADDRESS` and (optionally) `CLAIREAI_EMAIL_IMAP_HOST`
+(default `imap.gmail.com`). Store the app password in the OS keyring under the
+account `email_app_password`; `CLAIREAI_EMAIL_APP_PASSWORD` is the environment
+fallback. Only `FROM`, `SUBJECT` and `DATE` headers are fetched. There is no
+send, delete, move or flag-changing path in `claireai.email_read`.
+
+A Gmail app password requires 2-Step Verification. Microsoft 365 may require an
+app password or OAuth depending on the tenant; OAuth reading is not implemented
+yet. Without credentials, `--inbox` reports the missing configuration and exits
+without connecting.
 
 ## Official APIs
 

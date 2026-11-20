@@ -143,8 +143,9 @@ version does not terminate the CLI process itself.
 The catalog in `data-sources.json` is a starting point, not blanket permission.
 `fetch_corpora.py` downloads bounded samples and records licence, URL, date and
 SHA-256 beside each file. `merge_corpora.py` merges those records with `chat-v12`,
-removes held-out evaluation prompts, and writes `chat-v13` or a memory-bounded
-`chat-v13-small`:
+removes held-out evaluation prompts, exact duplicate pairs and pairs that also
+appear in validation, then writes `chat-v13` or a memory-bounded
+`chat-v13-small`. The manifest records how many rows each cleanup removed:
 
 ```bash
 assistant/.venv/bin/python brain-lab/fetch_corpora.py --source all --limit 800
@@ -154,8 +155,10 @@ assistant/.venv/bin/python brain-lab/merge_corpora.py --base-limit 5000 \
 
 A full 15k-record build at 512 tokens exceeded this host's RAM; the small corpus
 is the reproducible default. The OASST1 endpoint is rate-limited, so a failed
-sample is reported rather than written as an empty success. GSM8K and the
-already-present Dolly/TinyStories material are the current third-party mix.
+sample is reported rather than written as an empty success. The current mix is
+GSM8K (MIT), FineWeb-Edu (ODC-By 1.0), and the already-present Dolly/TinyStories
+material. FineWeb answers are extractive two-sentence summaries, not model
+output.
 
 To widen an existing checkpoint without changing its learned weights:
 

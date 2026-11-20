@@ -286,9 +286,10 @@ claireai --once "latest headlines from Kenya and France"
 Google News editions are used as a personal feed reader; headlines are not
 verified facts and the publisher link is the source to check. The daily worker
 trains on `brain-lab/data/chat-v13-small` when present: the existing licensed
-Dolly/TinyStories mix plus the downloaded GSM8K sample. `fetch_corpora.py` and
-`merge_corpora.py` rebuild it; the OASST1 sampler is best-effort because the
-public datasets server rate-limits this host.
+Dolly/TinyStories mix plus bounded GSM8K and FineWeb-Edu samples. `fetch_corpora.py`
+and `merge_corpora.py` rebuild it; the merge removes exact duplicates and
+train/validation overlap, and records the counts. The OASST1 sampler is
+best-effort because the public datasets server rate-limits this host.
 
 ### Granting a folder
 
@@ -312,6 +313,15 @@ assistant/.venv/bin/python -m claireai.cli --dry-run "clean up my downloads"
 
 # Today's summary, printed and saved (no model needed)
 assistant/.venv/bin/python -m claireai.cli --summary
+
+# Daily briefing now, or every day at 07:30 local time
+assistant/.venv/bin/python -m claireai.cli --briefing --countries Kenya,France
+assistant/.venv/bin/python -m claireai.cli --briefing-at 07:30 --countries Kenya,France
+
+# Unread inbox headers, read-only
+# Set CLAIREAI_EMAIL_ADDRESS and CLAIREAI_EMAIL_IMAP_HOST, then store the app
+# password in the OS keyring under the account "email_app_password".
+assistant/.venv/bin/python -m claireai.cli --inbox 10
 
 # Daily summary at 18:00 local time
 assistant/.venv/bin/python -m claireai.cli --summary-at 18:00

@@ -9,8 +9,9 @@ before increasing ``--limit``.
     assistant/.venv/bin/python brain-lab/fetch_corpora.py --source all --limit 1000
 
 Sources:
-  oasst1  OpenAssistant Conversations, Apache-2.0
-  gsm8k   OpenAI grade-school math, MIT
+  oasst1     OpenAssistant Conversations, Apache-2.0
+  gsm8k      OpenAI grade-school math, MIT
+  fineweb    FineWeb-Edu sample, ODC-By 1.0
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ SYSTEM = "You are ClaireAI, a helpful local assistant. Be concise, correct and h
 
 OASST_API = "https://datasets-server.huggingface.co/rows"
 OASST_DATASET = "OpenAssistant/oasst1"
+FINEWEB_API = "https://datasets-server.huggingface.co/rows"
+FINEWEB_DATASET = "HuggingFaceFW/fineweb-edu"
 GSM8K_URL = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/train.jsonl"
 
 
@@ -168,6 +171,56 @@ def fetch_oasst(limit: int) -> list[dict[str, Any]]:
     return records
 
 
+def fetch_fineweb(limit: int) -> list[dict[str, Any]]:
+    """Bounded reading-comprehension sample from FineWeb-Edu.
+
+    The answer is an extractive two-sentence summary, so the target is checked
+    against the passage rather than invented by a model.
+    """
+    records: list[dict[str, Any]] = []
+    page = 100
+    offset = 0
+    while len(records) < limit:
+        query = urllib.parse.urlencode(
+            {
+                "dataset": FINEWEB_DATASET,
+                "config": "default",
+                "split": "train",
+                "offset": offset,
+                "length": page,
+            }
+        )
+        payload = _get_json(f"{FINEWEB_API}?{query}")
+        batch = payload.get("rows") or []
+        if not batch:
+            break
+        for item in batch:
+            row = item.get("row") or {}
+            if str(row.get("language") or "en").lower() not in {"en", "eng"}:
+                continue
+            passage = _clean(row.get("text"))[:1600]
+            if len(passage) < 240:
+                continue
+            summary = _clip(passage, 360)
+            if len(summary.split()) < 12 or summary == passage:
+                continue
+            record = _record(
+                "Read this passage and state its main point in two sentences:\n" + passage,
+                summary,
+                source="fineweb-edu",
+                license_name="ODC-By 1.0",
+                url=str(row.get("url") or "https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu"),
+            )
+            if record:
+                records.append(record)
+                if len(records) >= limit:
+                    break
+        offset += len(batch)
+        if len(batch) < page:
+            break
+    return records
+
+
 def fetch_gsm8k(limit: int) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for line in _get(GSM8K_URL).decode("utf-8").splitlines():
@@ -215,14 +268,23 @@ def _write(records: Iterable[dict[str, Any]], output: Path, *, source: str, lice
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", choices=("oasst1", "gsm8k", "all"), default="all")
+    parser.add_argument(
+        "--source", choices=("oasst1", "gsm8k", "fineweb", "all"), default="all"
+    )
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--output", type=Path, default=OUTPUT)
     args = parser.parse_args()
     if args.limit < 1:
         parser.error("--limit must be positive")
 
-    sources = ("oasst1", "gsm8k") if args.source == "all" else (args.source,)
+    sources = (
+        ("oasst1", "gsm8k", "fineweb") if args.source == "all" else (args.source,)
+    )
+    filenames = {
+        "oasst1": "oasst1.jsonl",
+        "gsm8k": "gsm8k.jsonl",
+        "fineweb": "fineweb-edu.jsonl",
+    }
     failed = False
     for source in sources:
         try:
@@ -235,7 +297,7 @@ def main() -> int:
                     license_name="Apache-2.0",
                     url="https://huggingface.co/datasets/OpenAssistant/oasst1",
                 )
-            else:
+            elif source == "gsm8k":
                 records = fetch_gsm8k(args.limit)
                 manifest = _write(
                     records,
@@ -244,11 +306,20 @@ def main() -> int:
                     license_name="MIT",
                     url="https://github.com/openai/grade-school-math",
                 )
+            else:
+                records = fetch_fineweb(args.limit)
+                manifest = _write(
+                    records,
+                    args.output / "fineweb-edu.jsonl",
+                    source="fineweb-edu",
+                    license_name="ODC-By 1.0",
+                    url="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu",
+                )
         except FetchError as exc:
             failed = True
             print(f"ERROR: {source}: {exc}")
             continue
-        print(f"{source}: {manifest['records']} records -> {args.output / (source + '.jsonl')}")
+        print(f"{source}: {manifest['records']} records -> {args.output / filenames[source]}")
     return 2 if failed else 0
 
 

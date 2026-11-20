@@ -517,6 +517,58 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
         finally:
             conn.close()
 
+    if args.briefing or args.briefing_at:
+        from claireai.briefing import build_briefing, build_scheduler as build_briefing_scheduler
+
+        countries = [item.strip() for item in args.countries.split(",") if item.strip()]
+        news_enabled = RuntimeControl(settings.control_state_path).read()["browser"]
+        if args.briefing_at:
+            try:
+                scheduler = build_briefing_scheduler(
+                    conn,
+                    countries=countries,
+                    when=args.briefing_at,
+                    news_enabled=lambda: RuntimeControl(
+                        settings.control_state_path
+                    ).read()["browser"],
+                )
+                print(
+                    f"daily briefing scheduled for {args.briefing_at} local time; "
+                    "Ctrl+C stops it"
+                )
+                print(f"next run: {next_run_label(scheduler)}")
+                scheduler.start()
+            except ValueError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return EXIT_CONFIG
+            except KeyboardInterrupt:
+                pass
+            finally:
+                conn.close()
+            return EXIT_OK
+        try:
+            print(
+                build_briefing(conn, countries=countries, news_enabled=news_enabled)
+            )
+        except (sqlite3.Error, OSError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return EXIT_CONFIG
+        finally:
+            conn.close()
+        return EXIT_OK
+
+    if args.inbox:
+        from claireai.email_read import EmailError, read_inbox, render
+
+        try:
+            print(render(read_inbox(limit=args.inbox)))
+        except EmailError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return EXIT_CONFIG
+        finally:
+            conn.close()
+        return EXIT_OK
+
     if RuntimeControl(settings.control_state_path).read()["shutdown"]:
         print("ClaireAI is stopped. Allow it to run from the local control panel.")
         conn.close()
@@ -665,6 +717,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--news",
         metavar="COUNTRIES",
         help="print cited headlines for comma-separated countries (e.g. Kenya,France) and exit",
+    )
+    parser.add_argument(
+        "--briefing",
+        action="store_true",
+        help="print today's news, calendar and pending-work briefing, then exit",
+    )
+    parser.add_argument(
+        "--briefing-at",
+        metavar="HH:MM",
+        help="run the daily briefing at this local time and stay in the foreground",
+    )
+    parser.add_argument(
+        "--countries",
+        default="",
+        metavar="COUNTRIES",
+        help="comma-separated countries for --briefing/--briefing-at (e.g. Kenya,France)",
+    )
+    parser.add_argument(
+        "--inbox",
+        nargs="?",
+        const=10,
+        type=int,
+        metavar="N",
+        help="print up to N unread inbox headers (read-only; no message is marked read)",
     )
     parser.add_argument("--model-checkpoint", type=Path, help="override CLAIREAI_MODEL_CHECKPOINT for this run")
     parser.add_argument("--data-dir", help="override the application data directory (development use)")

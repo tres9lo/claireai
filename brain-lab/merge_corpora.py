@@ -69,6 +69,39 @@ def _key(record: dict[str, Any]) -> tuple[str, str]:
     return user, assistant
 
 
+def dedupe(
+    records: Iterable[dict[str, Any]],
+    *,
+    skip_prompts: set[str] | frozenset[str] = frozenset(),
+    exclude: set[tuple[str, str]] | frozenset[tuple[str, str]] = frozenset(),
+) -> tuple[list[dict[str, Any]], int]:
+    """Drop malformed, held-out and exact duplicate pairs without merging stories.
+
+    The same user prompt with different answers can be legitimate ("tell me a
+    short story"). An exact duplicate pair is not: it inflated the old corpus by
+    thousands of rows and made a first-batch loss of 0.0001 look plausible.
+    """
+    seen: set[tuple[str, str]] = set()
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for record in records:
+        messages = record.get("messages") or []
+        if len(messages) < 2:
+            dropped += 1
+            continue
+        user, assistant = _key(record)
+        if not user or not assistant or user in skip_prompts:
+            dropped += 1
+            continue
+        pair = (user, assistant)
+        if pair in seen or pair in exclude:
+            dropped += 1
+            continue
+        seen.add(pair)
+        kept.append(record)
+    return kept, dropped
+
+
 def load_external(directory: Path, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     records: list[dict[str, Any]] = []
     manifests: dict[str, Any] = {}
@@ -113,27 +146,20 @@ def main() -> int:
 
     held_out = held_out_prompts()
     rng = random.Random(args.seed)
-    seen: set[tuple[str, str]] = set()
-    clean_external: list[dict[str, Any]] = []
-    for record in external:
-        messages = record.get("messages") or []
-        if len(messages) < 2:
-            continue
-        user, assistant = _key(record)
-        if not user or not assistant or user in held_out:
-            continue
-        if (user, assistant) in seen:
-            continue
-        seen.add((user, assistant))
-        clean_external.append(record)
+    clean_external, external_dropped = dedupe(external, skip_prompts=held_out)
 
     rng.shuffle(clean_external)
     split = max(1, len(clean_external) // 10)
-    ext_validation = clean_external[:split]
-    ext_train = clean_external[split:]
+    ext_validation, _ = dedupe(clean_external[:split])
+    ext_train, _ = dedupe(clean_external[split:])
 
-    train = base_train + ext_train
-    validation = base_validation + ext_validation
+    validation, validation_dropped = dedupe(base_validation + ext_validation)
+    # Never train on a pair that also appears in validation: that is evaluation
+    # leakage, and it makes the validation loss look better than the model is.
+    validation_pairs = {_key(record) for record in validation}
+    train, train_dropped = dedupe(
+        base_train + ext_train, skip_prompts=held_out, exclude=validation_pairs
+    )
     rng.shuffle(train)
     rng.shuffle(validation)
     write_jsonl(args.output / "train.jsonl", train)
@@ -150,6 +176,11 @@ def main() -> int:
         "external_records": len(clean_external),
         "base_train_records": len(base_train),
         "held_out_prompts_removed": len(held_out),
+        "duplicate_or_overlap_removed": {
+            "external": external_dropped,
+            "train": train_dropped,
+            "validation": validation_dropped,
+        },
         "seed": args.seed,
         "licenses": {
             name: {"license": item.get("license"), "url": item.get("url"), "sha256": item.get("sha256")}
