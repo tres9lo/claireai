@@ -60,8 +60,8 @@ text are never captured into a routine.
 
 ## Current implementation evidence
 
-- The local HUD now has opt-in push-to-talk capture and transcript review, and
-  can install/use an optional local Whisper tiny speech-recognition model. The
+- The desktop Voice page now has opt-in push-to-talk capture and transcript
+  review, and can install/use an optional local Whisper tiny speech-recognition model. The
   user still presses Send; this local chat path does not invoke computer tools.
 - There is no wake-word engine, speaker enrollment, vocal approval or routine
   recorder/replayer yet. eSpeak NG output remains optional and separately

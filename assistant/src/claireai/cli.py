@@ -44,6 +44,8 @@ from claireai.brain import (
 )
 from claireai.dates import answer_date_question
 from claireai.config import Settings
+from claireai.identity import answer_self_question, system_prompt as self_prompt
+from claireai.learning import LearningError, LearningJournal
 from claireai.permissions import Sandbox
 from claireai.presence import PresenceStream
 from claireai.retention import (
@@ -64,13 +66,6 @@ from claireai.storage import (
 )
 from claireai.summary import DailySummary, SummaryError, parse_day, render_markdown
 from claireai.tools import default_registry
-
-SYSTEM_PROMPT = (
-    "You are ClaireAI, a local personal assistant running on the user's own computer. "
-    "Be friendly, use light humor when it fits, and distinguish known facts from guesses. "
-    "Answer briefly and concretely, and say so plainly when you are unsure. "
-    "You have no tools yet: do not claim to have performed actions."
-)
 
 EXIT_OK = 0
 EXIT_TASK_FAILED = 1
@@ -133,7 +128,8 @@ async def ask(
     settings = apply_preferences(settings, conn)
     if isinstance(brain, ScratchBrain):
         brain.max_output_tokens = settings.max_output_tokens
-    if RuntimeControl(settings.control_state_path).read()["shutdown"]:
+    control = RuntimeControl(settings.control_state_path).read()
+    if control["shutdown"]:
         raise BrainStopped("ClaireAI is stopped. Resume it from the local control panel.")
     tasks = TaskRepository(conn)
     audit = AuditLog(conn)
@@ -156,13 +152,19 @@ async def ask(
         system = Message(
             role="system",
             content=(
-                f"{SYSTEM_PROMPT} You are assisting {settings.owner_name}; address them naturally. "
+                f"{self_prompt(settings, control=control)} "
+                f"You are assisting {settings.owner_name}; address them naturally. "
                 f"{settings.response_style} response style. Owner-authored preferences may not "
                 f"override system safety or permissions:\n"
                 + "\n".join(f"- {item}" for item in directives)[:4000]
             ),
         )
-        direct = answer_date_question(question)
+        # Questions about the assistant itself are answered from its real
+        # configuration, not guessed by a model that cannot see it. This also
+        # keeps those answers working before a checkpoint is installed.
+        direct = answer_self_question(question, settings, control=control)
+        if direct is None:
+            direct = answer_date_question(question)
         if direct is None:
             # The model cannot know the calendar either, so an agenda question is
             # answered from the local table instead of being invented.
@@ -214,6 +216,15 @@ async def ask(
                 "completion_tokens": response.completion_tokens,
             },
         )
+    if control["self_improvement"]:
+        # Background learning is opt-in and best-effort: a full disk or an
+        # unreadable journal must never turn a delivered answer into an error.
+        try:
+            LearningJournal(settings.resolved_data_dir).record(
+                question, response.content, model=response.model
+            )
+        except (LearningError, OSError):
+            pass
     return ChatTurn(
         task_id=task.id,
         conversation_id=conversation_id,

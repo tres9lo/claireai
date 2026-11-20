@@ -30,8 +30,6 @@ TRACKED_PACKAGES = (
     "pydantic",
     "pydantic-settings",
     "platformdirs",
-    "fastapi",
-    "uvicorn",
     "apscheduler",
     "pytest",
 )

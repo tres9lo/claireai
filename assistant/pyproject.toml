@@ -17,9 +17,6 @@ dependencies = [
   "pydantic-settings>=2.3,<3",
   # OS-specific application-data locations, maintained rather than hard-coded.
   "platformdirs>=4.2,<5",
-  # API layer, installed now, wired up only after the core services are tested.
-  "fastapi>=0.115,<1",
-  "uvicorn>=0.30,<1",
   "apscheduler>=3.10,<4",
 ]
 
@@ -33,10 +30,21 @@ dev = [
   "Pillow>=10,<13",
 ]
 model = ["torch>=2.2,<3"]
-voice = ["faster-whisper>=1.1,<2"]
-# The native window draws its own surfaces, so it needs a styling toolkit on top
-# of Tk. Nothing else in the package does.
-desktop = ["customtkinter>=5.2,<7"]
+# av 19 removed the `metadata_errors` keyword faster-whisper still passes to
+# av.open, so an unbounded resolution installs cleanly and then fails on the
+# first recording. Keep the decoder on a version its API supports.
+voice = ["faster-whisper>=1.1,<2", "av>=11,<16"]
+# `desktop` is the complete application, not just the widget toolkit: the
+# window is useless without the local model runtime, and its Voice page is
+# useless without faster-whisper. Installing the desktop app must not leave
+# half of it behind. The granular `model` and `voice` extras stay available for
+# a headless install that wants one of them only.
+desktop = [
+  "customtkinter>=5.2,<7",
+  "torch>=2.2,<3",
+  "faster-whisper>=1.1,<2",
+  "av>=11,<16",
+]
 # Local image understanding: CLIP through transformers. torchvision is
 # deliberately not listed, because the wheel that resolves here does not
 # register its operators against the installed torch and CLIP does not need it.
@@ -50,31 +58,27 @@ vision = ["transformers>=4.40,<6", "torch>=2.2,<3", "Pillow>=10,<13"]
 all = [
   "torch>=2.2,<3",
   "faster-whisper>=1.1,<2",
+  "av>=11,<16",
   "customtkinter>=5.2,<7",
   "transformers>=4.40,<6",
   "Pillow>=10,<13",
 ]
 
 [project.scripts]
-# No arguments starts the local app; any argument is passed to the CLI
+# No arguments opens the native window; any argument is passed to the CLI
 # unchanged, so `claireai --once "..."` and friends keep working.
 claireai = "claireai.app:main"
 # Through the launcher, not straight at the window: app.py imports the toolkit at
 # module level, so a core install would fail before it could explain the extra.
 claireai-desktop = "claireai.desktop.launcher:main"
-claireai-ui = "claireai.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claireai"]
 
-# The app page is authored next to the desktop preview, outside the package
-# directory, so a plain `pip install` would otherwise ship an app that starts
-# and cannot find its own interface. Copy it to the location app.py looks in
-# first (`claireai/web/index.html`).
-[tool.hatch.build.targets.wheel.force-include]
-"../desktop/presence/index.html" = "claireai/web/index.html"
-
 [tool.pytest.ini_options]
+# Always test the checkout, not a wheel that happens to be installed in the
+# virtual environment. A stale site-packages copy otherwise hides source edits.
+pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

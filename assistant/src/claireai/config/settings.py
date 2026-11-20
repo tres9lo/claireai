@@ -170,12 +170,32 @@ class Settings(BaseSettings):
         return self.resolved_data_dir / "db" / "claireai.sqlite3"
 
     @property
+    def model_directory(self) -> Path:
+        return self.resolved_data_dir / "models"
+
+    @property
     def resolved_model_checkpoint(self) -> Path:
-        return (
-            Path(self.model_checkpoint).expanduser()
-            if self.model_checkpoint
-            else self.resolved_data_dir / "models" / "claire-scratch.pt"
-        )
+        """An explicit checkpoint, else the canonical one, else the newest run.
+
+        A fresh install has no checkpoint, so the path still has to be named for
+        the error to be useful. Once a data directory holds checkpoints from a
+        training run, pointing the app at the newest complete one means an
+        installed copy starts working without an environment variable; partial
+        downloads and sidecar manifests are ignored.
+        """
+        if self.model_checkpoint:
+            return Path(self.model_checkpoint).expanduser()
+        canonical = self.model_directory / "claire-scratch.pt"
+        if canonical.is_file():
+            return canonical
+        candidates = [
+            path
+            for path in self.model_directory.glob("claire-*.pt")
+            if path.is_file() and not path.name.endswith(".partial")
+        ]
+        if candidates:
+            return max(candidates, key=lambda path: path.stat().st_mtime)
+        return canonical
 
     @property
     def control_state_path(self) -> Path:

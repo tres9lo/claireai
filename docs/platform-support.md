@@ -3,22 +3,21 @@
 Feature status is only marked ✅ after it was actually run on that OS. Everything
 else says what is missing. A compile or a mocked test is not a platform result.
 
-Last updated: 2026-11-03 (scratch model and local opt-in control groundwork).
+Last updated: 2026-11-19 (desktop-only surface and consent-based installer).
 
 | Capability | Linux | Windows | Android |
 | --- | --- | --- | --- |
 | Text chat with local model | 🟨 scratch checkpoint wiring verified; no useful task model trained | 🟨 unit tests only | ⛔ not started (Phase 3) |
-| Local model management | 🟨 opt-in candidate ledger and owner promotion in loopback HUD | 🟨 unit tests only | ⛔ not planned |
+| Local model management | 🟨 opt-in candidate ledger and owner promotion in desktop Settings | 🟨 unit tests only | ⛔ not planned |
 | File tools, calendar and allow-list | ✅ tested 2026-10-30/31 on Linux: 5 read-only + 6 approval-gated write tools (now 6 + 8; the calendar tools added 2026-11-07 are unit-tested only); allow-list refusal and non-interactive approval refusal verified against the live model; every step logged | 🟨 unit tests pass on `windows-latest`; CLI, approval prompt and trash folder never run by a human there | ⛔ n/a |
 | Browser tools | ✅ tested 2026-10-31 on Linux against live pages: `open_url`, `get_page_text`, `search_web` (10 results, redirects unwrapped), `download_file` into the sandbox. **HTTP only — no JavaScript**, so a client-rendered page comes back empty; the Playwright engine itself is ⛔ | 🟨 mocked-transport unit tests only | ⛔ n/a |
-| Presence renderer (visual state sync) | 🟨 canvas 2D v0 preview verified over HTTP on Linux (SSE state stream, indicators, 30 fps cap); WebGL scene and Tauri window ⛔ | 🟨 unit tests only; preview never opened there | ⛔ optional mirror later |
 | Camera / screen capture | ⛔ Phase 2, deny-by-default; this machine is **Wayland** and has `/dev/video0`–`/dev/video1` | ⛔ never run | ⛔ Android APIs only |
 | Cursor / keyboard control | ⛔ Phase 2, `dangerous`; on Wayland needs the portal or `ydotool` (neither installed here) — may be unsupported | ⛔ never run | ⛔ not planned |
 | Push-to-talk voice | 🟨 UI, local transcription API and safety bounds implemented; no microphone device on this host, so live capture is unverified | 🟨 unit tests only; live microphone path unverified | ⛔ later |
 | Wake-word detection | ⛔ no "Hey Claire" model exists yet; treat as pending | ⛔ never run | ⛔ separate implementation, may not be permitted in background |
 | Daily summary and local log | ✅ log, `--summary`, `/summary` and `--summary-at` (no model needed) | ⛔ never run | ⛔ client phase |
-| Installer / package | ⛔ not started | ⛔ not started | ⛔ not started |
-| OS detection | 🟨 reported by diagnostics; no OS-specific screen/input adapters | 🟨 unit tests only | ⛔ not started |
+| Installer / package | 🟨 `./install.sh` + `claireai --setup --install`: OS/Python/Tk/display detection, a sized consent list, streamed pip output and the local speech model; dry-run and editable install verified | 🟨 `install.ps1` written, never run on Windows | ⛔ not started |
+| OS detection | 🟨 reported by setup/diagnostics; install paths differ per OS | 🟨 unit tests only | ⛔ not started |
 
 ## Tested environments
 
@@ -29,12 +28,12 @@ Last updated: 2026-11-03 (scratch model and local opt-in control groundwork).
 | Windows (GitHub runner) | `windows-latest`, CI run 41144463051 | 3.11, 3.12 | 155 unit tests pass on both; **no manual run** — no CLI, audio, installer or desktop evidence |
 | Android | Tecno Spark 20 | — | not tested |
 
-## What the desktop window (Tauri) still needs
+## Desktop window
 
-The presence HUD is served over loopback and verified in a browser; the Tauri
-window that is meant to wrap it is not started, because the toolchain is not
-present on the development machine. Two blocked steps, both needing `sudo` or a
-network fetch that the build agent cannot perform:
+The current window is Tk/customtkinter, runs natively on Linux (verified) and
+has no browser or loopback server behind it. A future Tauri shell is still
+blocked on the toolchain below and is not part of this install; two steps need
+`sudo` or a network fetch the build agent cannot perform:
 
 ```bash
 # 1. WebKit/GTK runtime the window links against (Ubuntu/Debian family)
@@ -47,9 +46,8 @@ source "$HOME/.cargo/env"
 cargo --version   # expect 1.9x or newer
 ```
 
-Until both are done, `python scripts/presence_preview.py --demo` is the UI, and
-the `/today` page is the read-only one — both are the same HTML/CSS the window
-will wrap, so no work is wasted, only the shell is missing.
+Until both are done, the Tk window is the desktop UI and `claireai --cli` is the
+terminal UI. Nothing waits on the Tauri shell.
 
 ## Known platform differences to keep in mind
 
@@ -74,7 +72,6 @@ will wrap, so no work is wasted, only the shell is missing.
   `ydotool`, `xdotool` or `grim` is installed. Do not promise Linux input control
   until that path is tested, and report "unsupported" instead of falling back to
   a risky workaround.
-- The presence renderer is GPU-bound, not CPU-bound: an integrated GPU may only
-  hold the 2D HUD comfortably. `CLAIREAI_PRESENCE_MODE=auto` picks 2D when WebGL2
-  is unavailable or the frame budget is missed; measure on the target machine
-  before raising quality.
+- The Tk window is CPU-rendered, so no GPU is required; animations drop frames
+  rather than slowing down. A future Tauri shell would be GPU-bound and must be
+  measured on the target machine before raising quality.

@@ -129,9 +129,8 @@ archives the current checkpoint first. Training data and candidate files remain
 local. Disabling the switch prevents new improvement training runs.
 
 After a checkpoint exists, run `assistant/.venv/bin/python scripts/doctor.py`
-and `assistant/.venv/bin/python scripts/eval_model.py --runs 1`. Start the
-matching local control panel with
-`assistant/.venv/bin/python scripts/presence_preview.py --data-dir ./runtime-data`
+and `assistant/.venv/bin/python scripts/eval_model.py --runs 1`. Open the
+desktop window with `assistant/.venv/bin/claireai --data-dir ./runtime-data`
 (adjust the data directory to match your runtime). Browser access is off by
 default. The pause control is checked after in-flight model calls; this first
 version does not terminate the CLI process itself.

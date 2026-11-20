@@ -101,6 +101,10 @@ checkpoint and must be reported separately from test results.
 ## Checking the install end to end
 
 ```bash
+# First run: detect the OS, Python, Tk and display; print every download and
+# ask before fetching it. --dry-run shows the list without changing anything.
+./install.sh
+
 assistant/.venv/bin/python scripts/smoke.py              # needs a scratch checkpoint
 assistant/.venv/bin/python scripts/smoke.py --skip-model # runtime only
 ```
@@ -120,7 +124,7 @@ ClaireAI prints the exact tool, arguments, target and approval reference, then
 asks `approve? [y/N]`. Only `y`/`yes` runs it. Piped input, cron jobs and
 non-interactive shells are refused by design.
 
-## Presence HUD preview
+## Speech output
 
 Optional speech output uses the host's eSpeak NG package and an installed audio
 player. On Ubuntu-based systems, one-time install:
@@ -129,13 +133,5 @@ player. On Ubuntu-based systems, one-time install:
 sudo apt install espeak-ng pulseaudio-utils
 ```
 
-Then enable speech, adjust pitch/rate, and use Preview from the HUD settings.
-If eSpeak NG is missing, the UI reports that speech is unavailable.
-
-```bash
-assistant/.venv/bin/python scripts/presence_preview.py --demo
-# then open http://127.0.0.1:8765/
-```
-
-Standard library only, loopback only. Without `--demo` it shows `idle` until
-something feeds the stream (the desktop window does that in Week 4).
+Then enable speech, adjust pitch/rate, and use Preview from the desktop Voice
+page. If eSpeak NG is missing, the window reports that speech is unavailable.

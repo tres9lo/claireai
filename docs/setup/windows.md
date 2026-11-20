@@ -119,14 +119,13 @@ ClaireAI prints the tool, arguments, target and approval reference, then asks
 `approve? [y/N]`. Non-interactive runs refuse every write. A moved file goes to
 `%LOCALAPPDATA%\ClaireAI\ClaireAI\trash\<timestamp>\`, never to permanent deletion.
 
-## 10. Presence HUD preview
+## 10. Speech output
 
 Optional speech output requires a separately installed eSpeak NG executable;
-ClaireAI does not bundle it. The local UI provides enable, pitch/rate and preview
-controls. Windows uses Python's built-in `winsound` playback path; this has not
-been verified on a Windows machine yet.
+ClaireAI does not bundle it. The desktop Voice page provides enable, pitch/rate
+and preview controls. Windows uses Python's built-in `winsound` playback path;
+this has not been verified on a Windows machine yet.
 
-```powershell
-.\assistant\.venv\Scripts\python.exe scripts\presence_preview.py --demo
-Start-Process http://127.0.0.1:8765/
-```
+For the checked install path, run `.\install.ps1` from the repository root. It
+prints the detected OS and Python, lists every download with its size, and asks
+before fetching anything; `-dry-run` only prints the plan.

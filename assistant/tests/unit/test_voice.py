@@ -60,8 +60,10 @@ def test_voice_pipes_text_to_local_engine_and_audio_to_player(monkeypatch) -> No
         "/opt/bin/espeak-ng", "--stdout", "--stdin", "-v", "en", "-p", "63", "-s", "190"
     ]
     assert synth_options["input"] == b"Hello Ange"
-    assert calls[1][0] == ["/usr/bin/paplay", "-"]
-    assert calls[1][1]["stdin"] is not None
+    assert calls[1][0][0] == "/usr/bin/paplay"
+    assert calls[1][0][-1].endswith(".wav")
+    # paplay has no stdin interface; the WAV is played from a temp file.
+    assert "stdin" not in calls[1][1]
 
 
 def test_a_neural_voice_is_preferred_when_one_is_installed(monkeypatch) -> None:

@@ -60,8 +60,9 @@ constraints rather than cosmetics.
 | `agent.py` | The loop: validate, authorize, run, log, feed back | Trust model output |
 | `routing.py` | Narrow the tool set per request (deterministic, no model call) | Remove the fallback to all tools |
 | `presence.py` | `PresenceEvent` stream (idle, thinking, tool_running, …) | Hold any capability |
-| `presence_server.py` | Loopback stdlib HTTP server: state/events, HUD, read-only `/today`, same-origin local chat/history/directive/preference APIs and gated controls | Let web chat invoke tools or accept cross-origin writes |
-| `today.py` | The read-only page: summary plus the day's tasks, fully escaped, `mode=ro` | Act, approve, or render stored strings as HTML |
+| `desktop/` | Native Tk/customtkinter window: Chat, Activity, Approvals, History, Voice, Settings, About | Open a network listener or run a tool without approval |
+| `preflight.py` | OS/Python/Tk/display/package checks, a sized download plan and consent before `pip` runs | Download anything without an explicit yes |
+| `training.py` | Opt-in daily practice curriculum and one bounded local training run; writes a candidate only | Promote a candidate, log into accounts, or post |
 | `retention.py` | Plans and applies removal of old trash batches and summaries | Delete inside the audit log, or outside the data dir |
 | `summary.py` | Daily report from `tasks` + `task_log`, saved to `summaries` and markdown | Invent an event |
 | `scheduler.py` | APScheduler job that builds the summary each evening | Need a running app |
@@ -69,8 +70,8 @@ constraints rather than cosmetics.
 | `doctor.py` | Read-only environment/schema/model diagnostics | Write anything |
 | `cli.py` | Argument parsing, interactive loop, approval prompt | Contain business logic |
 
-`scripts/` holds entry points that use the package: `doctor.py`, `eval_model.py`,
-`smoke.py`, `presence_preview.py`.
+`scripts/` holds entry points that use the package: `bootstrap.py`, `doctor.py`,
+`eval_model.py`, `smoke.py`.
 
 ## Trust boundaries
 
@@ -148,9 +149,9 @@ disables the one bounded retry (identical input, identical reply).
 
 ## Deliberate non-decisions
 
-- **No FastAPI service.** The dependency is installed; nothing serves HTTP except
-  the read-only presence server. The desktop window will need an API surface, and
-  that shape is not chosen yet.
+- **No HTTP surface.** The browser UI was removed; the desktop window and the
+  terminal call the runtime directly, so there is no listener, host check or
+  cross-origin request to defend. FastAPI and uvicorn are no longer dependencies.
 - **Browser tools are HTTP, not Playwright.** `open_url`, `get_page_text`,
   `search_web` and `download_file` are implemented, approval-gated and tested,
   but they fetch markup instead of running a browser: no JavaScript, so

@@ -5,9 +5,95 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — background curriculum and bounded training
+
+- With **Background learning** on in Settings, a second worker turns the journal
+  plus an authored practice curriculum into a train/validation corpus covering
+  conversation, hospitality, reports, accounting, arithmetic, unit calculations,
+  coding, routines, email/social drafting, research and business/sales examples.
+  At most once a day, when the network check succeeds, it runs one bounded CPU
+  training job from the checkout and writes a **candidate** under
+  `models/candidates/`. Nothing is promoted automatically; the evaluation gate
+  still decides. Training never logs into or posts to email or social accounts.
+- Settings shows the training state, last attempt and candidate name.
+
+### Fixed — voice failed even after installing its pieces
+
+- `paplay`/`pw-play` do not accept WAV on stdin, so the old `player -` pipe
+  exited 1 and reported "local audio player could not play the generated
+  speech". Playback now uses a mode-0600 temporary WAV and tries `pw-play`,
+  `paplay` and `aplay` in turn, reporting the last real player error.
+- `faster-whisper` 1.2.1 calls `av.open(..., metadata_errors=...)`, which av 19
+  removed; the voice extra resolved av 19 and then failed on the first
+  recording. The extras now pin `av>=11,<16`. Transcription was verified end to
+  end on a generated WAV; the tiny model's accuracy on synthetic eSpeak audio is
+  rough, so treat its transcripts as a draft and type when precision matters.
+- The menu icon used an absolute path inside the virtual environment, which
+  some docks do not load. It is now installed as the hicolor icon `claireai`
+  and the entry sets `Icon=claireai`; the window uses the same mark.
+- Setup reports the Tk font backend, so a bitmap-only Tk says to run
+  `./install.sh` instead of letting the window look pixelated.
+- The broken miniconda copy of `claireai` was removed; the applications-menu
+  entry is the launcher and uses the Xft/Tk environment.
+
+### Changed — the app is desktop and terminal only
+
+- The browser surface is gone: its loopback HTTP server, canvas page, read-only
+  `/today` page, `/api/*` routes, `claireai-ui` script and the
+  `--port`/`--no-browser` flags were removed, along with the now-unused FastAPI
+  and uvicorn dependencies. `claireai` opens the native window; `claireai --cli`
+  is the terminal. The old flags exit with a message naming the replacement
+  instead of being silently passed to the CLI.
+
+### Fixed — an installed copy looked pixelated and lost its model
+
+- The pixelated window was not the theme: conda's Tk 9 reports `fontsystem x11`,
+  so every glyph came from a bitmap face. `./install.sh` now probes candidate
+  interpreters and builds its environment with one whose Tk has Xft (on this
+  machine `/usr/bin/python3`, not the conda base). The desktop launcher also
+  refuses a bitmap-font Tk with that explanation, unless
+  `CLAIREAI_ALLOW_BITMAP_FONTS=1` is set.
+- An installed wheel lives in `site-packages`, so model discovery could not see
+  `runtime-data/models` and showed "No checkpoint installed yet" even though the
+  checkout had one. Discovery now follows the remembered/discovered checkout;
+  the checkpoint is still copied, never moved or downloaded.
+- The installer writes an applications-menu entry that runs its own venv Python,
+  so starting ClaireAI from the menu cannot pick up a different `claireai` on
+  PATH (or that interpreter's bitmap Tk). It also records the checkout path.
+
+### Fixed — Update could not find the project after an installed update
+
+- A wheel installed by Update into `/tmp` left pip's `direct_url.json` pointing
+  at a file that no longer existed, so clicking Update again could not find a
+  checkout. Update now tries `CLAIREAI_SOURCE`, the path remembered from the
+  last install/update, pip's direct URL, its own location, the cwd, and a
+  bounded search of the usual project folders. `--update --source PATH` sets and
+  remembers it explicitly, and the Settings button works from any cwd after
+  that.
+- Tests now run against `src/` through pytest's `pythonpath`, so a stale wheel
+  in the virtual environment cannot hide a source change.
+
+### Added — installation says what it will download, then asks
+
+- `./install.sh` (and `install.ps1`) detects the OS, architecture, Python, Tk
+  and display first; refuses Python older than 3.11; prints each component with
+  an approximate download size; and downloads nothing until the answer is yes.
+  `--dry-run` prints the plan, and `--no-speech-model` skips the optional voice
+  model. Streamed pip output shows every real file and size as it arrives.
+- `claireai --setup` reports the same host/package/model/voice facts without
+  downloading; `claireai --setup --install` offers the missing parts, including
+  the local faster-whisper model, with the same consent. A declined prompt
+  leaves the install untouched and says how to resume.
+- The `desktop` extra is now the complete application: customtkinter, torch and
+  faster-whisper. Installing it no longer produces a window whose Voice page
+  cannot import its own runtime.
+- `claireai --update` reconciles the desktop extra after replacing the code, so
+  a dependency added by an update is installed rather than left for the next
+  confusing failure.
+
 ### Fixed — the app page could not send a message
 
-- The composer sent only on Ctrl+Enter, and the answer was written into a
+- (historical, browser surface removed) The composer sent only on Ctrl+Enter, and the answer was written into a
   history box far down the page, so a typed message looked ignored. Enter now
   sends, Shift+Enter adds a line, the message appears immediately in a
   transcript beside the composer, and any failure appears there as a bubble

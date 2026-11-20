@@ -48,6 +48,11 @@ class ScratchBrain:
     def _load(self) -> None:
         if self._model is not None:
             return
+        if not self.checkpoint.is_file():
+            # ``torch.load`` would raise a bare FileNotFoundError, which reached
+            # the window as "BrainUnavailable: [Errno 2] ...". Name the real
+            # problem instead; the caller already knows how to offer an install.
+            raise BrainUnavailable(f"no checkpoint installed at {self.checkpoint}")
         try:
             import torch
             from claire_brain.model import ScratchTransformer

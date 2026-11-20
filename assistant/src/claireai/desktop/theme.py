@@ -9,32 +9,93 @@ a widget itself beyond calling the ``apply`` callback it is handed.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Callable
 
 # -- palette ---------------------------------------------------------------
-# A dark, low-contrast shell with one saturated accent. The accents are used
-# for state only (selected, waiting, refused), never as decoration.
+# The same ramp the browser app uses, so the two surfaces read as one product:
+# a near-black shell, one violet accent, state colours only for state.
 
-BACKGROUND = "#080b12"
-SURFACE = "#0f1520"
-SURFACE_HIGH = "#151d2b"
-SURFACE_HOVER = "#1b2536"
-BORDER = "#1e293a"
-TEXT = "#e9eef7"
-MUTED = "#8592a6"
-ACCENT = "#5ee0ff"
-ACCENT_DEEP = "#0e3a47"
-ACCENT_ALT = "#a78bfa"
-OK = "#6ee7a8"
-WARN = "#ffc46b"
-DANGER = "#ff7b7b"
+BACKGROUND = "#08080b"
+SURFACE = "#121217"
+SURFACE_HIGH = "#191920"
+SURFACE_HOVER = "#212129"
+BORDER = "#26262f"
+TEXT = "#f5f5f8"
+MUTED = "#8b8b99"
+ACCENT = "#8b7cff"
+ACCENT_DEEP = "#241d52"
+ACCENT_ALT = "#a99dff"
+OK = "#3ddc97"
+WARN = "#f5b455"
+DANGER = "#ff6b6b"
 
 # -- metrics ---------------------------------------------------------------
 
+# Tk cannot load a font file, so the window uses the best family the machine
+# already has. Inter/Segoe/Ubuntu/Cantarell are all proportional UI faces;
+# DejaVu Sans is the guaranteed fallback on Linux.
+FONT_CANDIDATES = (
+    "Inter",
+    "SF Pro Display",
+    "Segoe UI Variable Text",
+    "Segoe UI",
+    "Ubuntu",
+    "Cantarell",
+    "Noto Sans",
+    "DejaVu Sans",
+)
 FONT = "DejaVu Sans"
-RADIUS = 14
-RADIUS_SMALL = 9
-GUTTER = 22
+RADIUS = 16
+RADIUS_SMALL = 10
+GUTTER = 24
+
+ASSETS = Path(__file__).resolve().parent / "assets"
+
+
+def pick_family(available) -> str:
+    """The first preferred UI font the system actually has."""
+    names = {str(name).strip().lower() for name in available}
+    for candidate in FONT_CANDIDATES:
+        if candidate.lower() in names:
+            return candidate
+    return FONT
+
+
+def use_family(name: str) -> None:
+    """Set the module-wide family before pages are built."""
+    global FONT
+    FONT = name
+
+
+def window_geometry(screen_width: int, screen_height: int) -> tuple[int, int, int, int]:
+    """A centred window that fits the screen instead of assuming 1220x820.
+
+    Small laptops and 1366x768 panels are common; a fixed window opens partly
+    off-screen there. The height is capped just under the screen so the title
+    bar and panel chrome stay visible, and the minimums shrink with it.
+    """
+    width = min(1240, max(760, int(screen_width * 0.86)))
+    height = min(860, max(560, int(screen_height * 0.84)))
+    width = min(width, max(480, screen_width))
+    height = min(height, max(420, screen_height))
+    x = max(0, (screen_width - width) // 2)
+    y = max(0, (screen_height - height) // 3)
+    return width, height, x, y
+
+
+def minimum_size(screen_width: int, screen_height: int) -> tuple[int, int]:
+    """Never demand more room than the display has."""
+    return min(940, max(480, int(screen_width * 0.7))), min(600, max(420, int(screen_height * 0.7)))
+
+
+def sidebar_width(window_width: int) -> int:
+    """Full rail, then a compact glyph rail, as the window narrows."""
+    if window_width >= 1080:
+        return 236
+    if window_width >= 900:
+        return 200
+    return 84
 
 
 def hex_to_rgb(value: str) -> tuple[int, int, int]:

@@ -15,12 +15,14 @@ from __future__ import annotations
 import tempfile
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING
 
 import customtkinter as ctk
 
+from claireai.brain import BrainUnavailable
 from claireai.desktop import theme
+from claireai.desktop.runtime import ModelMissingError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from claireai.desktop.app import ClaireDesktop
@@ -68,6 +70,7 @@ class Page:
     """Base page: owns one frame in the stack."""
 
     title = "Page"
+    glyph = "•"
     subtitle = ""
 
     def __init__(self, app: "ClaireDesktop", parent: tk.Widget) -> None:
@@ -162,6 +165,7 @@ class Page:
 
 class ChatPage(Page):
     title = "Chat"
+    glyph = "✦"
     subtitle = "Talk to ClaireAI. Tools run through the same approvals as always."
 
     def build(self) -> None:
@@ -169,6 +173,7 @@ class ChatPage(Page):
         self.conversation_id: str | None = None
         self.busy = False
         self._dots = 0
+        self._build_notice()
 
         bar = ctk.CTkFrame(self.frame, fg_color="transparent")
         bar.pack(fill="x", padx=theme.GUTTER, pady=(0, 10))
@@ -186,13 +191,21 @@ class ChatPage(Page):
         self.voice_switch.pack(side="left", padx=18)
         self.button(bar, "Stop speaking", self._stop_speaking).pack(side="right")
         self.button(bar, "New chat", self.new_chat).pack(side="right", padx=8)
+        self.model_chip = ctk.CTkLabel(
+            self.frame, text="", text_color=theme.MUTED, anchor="w",
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        self.model_chip.pack(anchor="w", padx=theme.GUTTER, pady=(0, 8))
 
         body = ctk.CTkFrame(
             self.frame, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
             border_width=1, border_color=theme.BORDER,
         )
-        body.pack(fill="both", expand=True, padx=theme.GUTTER)
-        self.transcript = self.text_area(body, height=18)
+        self.body = body
+        # Height 1: the transcript takes whatever the window leaves after the
+        # composer and controls. A fixed line count is what pushed the composer
+        # off the bottom of a 768px screen.
+        self.transcript = self.text_area(body, height=1)
         scroll = ctk.CTkScrollbar(body, command=self.transcript.yview, fg_color="transparent")
         self.transcript.configure(yscrollcommand=scroll.set)
         self.transcript.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
@@ -202,21 +215,21 @@ class ChatPage(Page):
         self.transcript.tag_configure("meta", foreground=theme.MUTED, spacing3=12)
         self.transcript.tag_configure("error", foreground=theme.DANGER, spacing3=12)
         self.transcript.configure(state="disabled")
+        self._welcome()
 
-        self.activity = ctk.CTkLabel(
-            self.frame,
-            text="",
-            text_color=theme.ACCENT,
-            font=ctk.CTkFont(family=theme.FONT, size=11),
-            anchor="w",
-        )
-        self.activity.pack(anchor="w", padx=theme.GUTTER, pady=(6, 0))
+        # Bottom-up packing: the hint, composer and status line claim their
+        # space before the transcript expands, so a short window shrinks the
+        # transcript instead of hiding the box you type into.
+        ctk.CTkLabel(
+            self.frame, text="Ctrl+Enter sends", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=10), anchor="w",
+        ).pack(side="bottom", anchor="w", padx=theme.GUTTER, pady=(2, 10))
 
         compose = ctk.CTkFrame(self.frame, fg_color="transparent")
-        compose.pack(fill="x", padx=theme.GUTTER, pady=(6, 0))
+        compose.pack(side="bottom", fill="x", padx=theme.GUTTER, pady=(4, 0))
         self.entry = ctk.CTkTextbox(
             compose,
-            height=76,
+            height=64,
             corner_radius=theme.RADIUS_SMALL,
             fg_color=theme.SURFACE_HIGH,
             border_width=1,
@@ -230,10 +243,119 @@ class ChatPage(Page):
         self.send_button = self.button(compose, "Send", self.send, primary=True)
         self.send_button.configure(width=96)
         self.send_button.pack(side="right", padx=(10, 0), fill="y")
-        ctk.CTkLabel(
-            self.frame, text="Ctrl+Enter sends", text_color=theme.MUTED,
-            font=ctk.CTkFont(family=theme.FONT, size=10), anchor="w",
-        ).pack(anchor="w", padx=theme.GUTTER, pady=(4, theme.GUTTER))
+
+        self.activity = ctk.CTkLabel(
+            self.frame,
+            text="",
+            text_color=theme.ACCENT,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+            anchor="w",
+        )
+        self.activity.pack(side="bottom", anchor="w", padx=theme.GUTTER, pady=(4, 0))
+        body.pack(fill="both", expand=True, padx=theme.GUTTER, pady=(0, 8))
+
+    # -- model state -----------------------------------------------------
+
+    def _build_notice(self) -> None:
+        """The space above the transcript that offers to fix a missing model."""
+        self.notice = ctk.CTkFrame(
+            self.frame, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.ACCENT_DEEP,
+        )
+        self.notice_title = ctk.CTkLabel(
+            self.notice, text="", text_color=theme.TEXT, anchor="w", justify="left",
+            font=ctk.CTkFont(family=theme.FONT, size=13, weight="bold"),
+        )
+        self.notice_title.pack(anchor="w", padx=16, pady=(12, 2))
+        self.notice_text = ctk.CTkLabel(
+            self.notice, text="", text_color=theme.MUTED, anchor="w", justify="left",
+            wraplength=760, font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        self.notice_text.pack(anchor="w", padx=16)
+        self.notice_actions = ctk.CTkFrame(self.notice, fg_color="transparent")
+        self.notice_actions.pack(anchor="w", padx=16, pady=(8, 12))
+        self.notice_button = self.button(
+            self.notice_actions, "Install a checkpoint…", self._choose_checkpoint, primary=True
+        )
+        self.notice_button.pack(side="left")
+        self.notice_secondary = self.button(
+            self.notice_actions, "What can you do?", lambda: self._ask_itself()
+        )
+        self.notice_secondary.pack(side="left", padx=8)
+
+    def _show_notice(self, title: str, text: str) -> None:
+        self.notice_title.configure(text=title)
+        self.notice_text.configure(text=text)
+        self.notice.pack(fill="x", padx=theme.GUTTER, pady=(0, 10), before=self.body)
+
+    def _hide_notice(self) -> None:
+        self.notice.pack_forget()
+
+    def refresh_model_state(self) -> None:
+        status = self.runtime.model_status()
+        if status["ready"]:
+            self._hide_notice()
+            if status["provider"] == "scratch":
+                name = status.get("name") or Path(status["checkpoint"]).stem
+                facts = name
+                if status.get("parameters"):
+                    facts += f" · {status['parameters'] / 1_000_000:.1f}M params"
+                if status.get("context"):
+                    facts += f" · {status['context']} context"
+                self.model_chip.configure(text=f"model {facts} · trained from scratch")
+            else:
+                self.model_chip.configure(text=f"{status['provider']} connector")
+            return
+        self.model_chip.configure(text="no model")
+        self._show_notice(
+            "No checkpoint installed yet",
+            "I look for the checkpoint you promoted in brain-lab (runtime-data/models, "
+            "or the models folder in this data directory) and start with it automatically. "
+            f"If none is found, install one here — expecting {status['checkpoint']}. "
+            "Only from-scratch checkpoints are accepted; nothing is downloaded. "
+            "Until then I can still answer questions about myself.",
+        )
+
+    def _choose_checkpoint(self) -> None:
+        chosen = filedialog.askopenfilename(
+            parent=self.frame,
+            title="Choose a brain-lab checkpoint",
+            filetypes=[("PyTorch checkpoint", "*.pt"), ("All files", "*")],
+        )
+        if not chosen:
+            return
+        path = Path(chosen)
+        self.notice_text.configure(text=f"Checking and installing {path.name} …")
+
+        def install():  # noqa: ANN202
+            return self.runtime.install_checkpoint(path)
+
+        self.app.submit("model", install, self._installed, self._install_failed)
+
+    def _installed(self, status: dict) -> None:
+        self.refresh_model_state()
+        name = status.get("name") or Path(status["checkpoint"]).stem
+        self.append("·", f"Installed {name} (trained from scratch on this machine).", "meta")
+        self.append("ClaireAI", "Ready when you are — ask me anything, or try ‘what can you do?’.", "claire")
+
+    def _install_failed(self, error: Exception) -> None:
+        self.notice_text.configure(text=f"Not installed: {error}")
+
+    def _ask_itself(self) -> None:
+        self.entry.configure(state="normal")
+        self.entry.delete("1.0", "end")
+        self.entry.insert("1.0", "What can you do?")
+        self.send()
+
+    def _welcome(self) -> None:
+        owner = self.runtime.preferences().get("owner_name") or "there"
+        self.append(
+            "ClaireAI",
+            f"Hi {owner}. I run here, on this machine. Ask about your files or calendar, "
+            "or ask what I can do — that answer comes from my real settings, not a guess.",
+            "claire",
+        )
+        self.append("", "Ctrl+Enter sends · writes wait in Approvals · nothing is deleted permanently", "meta")
 
     # -- helpers ---------------------------------------------------------
 
@@ -318,14 +440,23 @@ class ChatPage(Page):
 
     def _failed(self, error: Exception) -> None:
         self._set_busy(False)
+        if isinstance(error, ModelMissingError) or (
+            isinstance(error, BrainUnavailable)
+            and ("checkpoint" in str(error) or "No such file" in str(error))
+        ):
+            self.refresh_model_state()
+            self.append("·", "I need a local checkpoint before I can answer that — see the card above.", "meta")
+            return
         self.append("!", f"{type(error).__name__}: {error}", "error")
 
     def on_show(self) -> None:
         self.speak_replies.set(bool(self.runtime.preferences().get("voice_enabled")))
+        self.refresh_model_state()
 
 
 class ActivityPage(Page):
     title = "Activity"
+    glyph = "◷"
     subtitle = "Every task this assistant has run, newest first."
 
     def build(self) -> None:
@@ -340,7 +471,7 @@ class ActivityPage(Page):
         self.summary.pack(side="left", padx=12)
 
         columns = ("when", "status", "request")
-        self.tree = ttk.Treeview(self.frame, columns=columns, show="headings", height=14, style="Claire.Treeview")
+        self.tree = ttk.Treeview(self.frame, columns=columns, show="headings", height=6, style="Claire.Treeview")
         for column, label, width in (("when", "When", 150), ("status", "Status", 110), ("request", "Request", 520)):
             self.tree.heading(column, text=label)
             self.tree.column(column, width=width, anchor="w")
@@ -352,7 +483,7 @@ class ActivityPage(Page):
             border_width=1, border_color=theme.BORDER,
         )
         holder.pack(fill="x", padx=theme.GUTTER, pady=(10, theme.GUTTER))
-        self.detail = self.text_area(holder, height=5)
+        self.detail = self.text_area(holder, height=3)
         self.detail.pack(fill="x", padx=6, pady=6)
         self.detail.configure(state="disabled")
 
@@ -386,6 +517,7 @@ class ActivityPage(Page):
 
 class ApprovalsPage(Page):
     title = "Approvals"
+    glyph = "✓"
     subtitle = "Actions that change your disk wait here. Nothing runs until you decide."
 
     def build(self) -> None:
@@ -403,7 +535,7 @@ class ApprovalsPage(Page):
 
         self.tree = ttk.Treeview(
             self.frame, columns=("tool", "target", "risk", "expires"),
-            show="headings", height=12, style="Claire.Treeview",
+            show="headings", height=6, style="Claire.Treeview",
         )
         for column, label, width in (("tool", "Tool", 160), ("target", "Target", 420),
                                      ("risk", "Risk", 90), ("expires", "Expires in", 100)):
@@ -417,7 +549,7 @@ class ApprovalsPage(Page):
             border_width=1, border_color=theme.BORDER,
         )
         holder.pack(fill="x", padx=theme.GUTTER, pady=(10, theme.GUTTER))
-        self.preview = self.text_area(holder, height=4)
+        self.preview = self.text_area(holder, height=3)
         self.preview.pack(fill="x", padx=6, pady=6)
         self.preview.configure(state="disabled")
         self.frame.after(1000, self._tick)
@@ -465,6 +597,7 @@ class ApprovalsPage(Page):
 
 class ConversationsPage(Page):
     title = "History"
+    glyph = "↺"
     subtitle = "Saved conversations. Deleting one removes its stored messages."
 
     def build(self) -> None:
@@ -550,6 +683,7 @@ class ConversationsPage(Page):
 
 class VoicePage(Page):
     title = "Voice"
+    glyph = "◉"
     subtitle = "Local speech, English and French. No audio leaves this machine."
 
     def build(self) -> None:
@@ -714,6 +848,7 @@ class VoicePage(Page):
 
 class SettingsPage(Page):
     title = "Settings"
+    glyph = "⚙"
     subtitle = "Stored locally. Bounds match the runtime's own validation."
 
     def build(self) -> None:
@@ -736,23 +871,23 @@ class SettingsPage(Page):
         self.max_steps = tk.IntVar(value=int(preferences["agent_max_steps"]))
         self.voice_enabled = tk.BooleanVar(value=bool(preferences["voice_enabled"]))
 
-        self._field(form, "Owner name", ctk.CTkEntry(form, textvariable=self.owner, width=280, height=32,
-                                                    corner_radius=theme.RADIUS_SMALL,
-                                                    fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER))
-        self._field(form, "Response style", ctk.CTkOptionMenu(
-            form, variable=self.style, values=["concise", "balanced", "detailed", "playful"],
+        self._field(form, "Owner name", lambda row: ctk.CTkEntry(
+            row, textvariable=self.owner, width=280, height=32,
+            corner_radius=theme.RADIUS_SMALL, fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER))
+        self._field(form, "Response style", lambda row: ctk.CTkOptionMenu(
+            row, variable=self.style, values=["concise", "balanced", "detailed", "playful"],
             width=180, height=32, corner_radius=theme.RADIUS_SMALL,
             fg_color=theme.SURFACE_HIGH, button_color=theme.SURFACE_HOVER,
             button_hover_color=theme.ACCENT_DEEP, text_color=theme.TEXT,
         ))
-        self._field(form, "Max answer tokens", ctk.CTkEntry(form, textvariable=self.max_tokens, width=110,
-                                                            height=32, corner_radius=theme.RADIUS_SMALL,
-                                                            fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER))
-        self._field(form, "Max tool steps", ctk.CTkEntry(form, textvariable=self.max_steps, width=110,
-                                                         height=32, corner_radius=theme.RADIUS_SMALL,
-                                                         fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER))
-        self._field(form, "Speak answers", ctk.CTkSwitch(form, variable=self.voice_enabled, text="",
-                                                         progress_color=theme.ACCENT))
+        self._field(form, "Max answer tokens", lambda row: ctk.CTkEntry(
+            row, textvariable=self.max_tokens, width=110, height=32,
+            corner_radius=theme.RADIUS_SMALL, fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER))
+        self._field(form, "Max tool steps", lambda row: ctk.CTkEntry(
+            row, textvariable=self.max_steps, width=110, height=32,
+            corner_radius=theme.RADIUS_SMALL, fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER))
+        self._field(form, "Speak answers", lambda row: ctk.CTkSwitch(
+            row, variable=self.voice_enabled, text="", progress_color=theme.ACCENT))
 
         switches = self.card(body)
         ctk.CTkLabel(
@@ -762,14 +897,20 @@ class SettingsPage(Page):
         self.browser = tk.BooleanVar(value=bool(control["browser"]))
         self.improvement = tk.BooleanVar(value=bool(control["self_improvement"]))
         self.shutdown = tk.BooleanVar(value=bool(control["shutdown"]))
-        self._field(switches, "Web tools", ctk.CTkSwitch(
-            switches, text="allow browser and downloads", variable=self.browser, progress_color=theme.ACCENT,
+        self._field(switches, "Web tools", lambda row: ctk.CTkSwitch(
+            row, text="allow browser and downloads", variable=self.browser, progress_color=theme.ACCENT,
             text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=11)))
-        self._field(switches, "Self-improvement", ctk.CTkSwitch(
-            switches, text="allow training candidates", variable=self.improvement, progress_color=theme.ACCENT,
-            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=11)))
-        self._field(switches, "Assistant", ctk.CTkSwitch(
-            switches, text="stopped (emergency switch)", variable=self.shutdown,
+        self._field(switches, "Background learning", lambda row: ctk.CTkSwitch(
+            row, text="journal exchanges and build training material", variable=self.improvement,
+            progress_color=theme.ACCENT, text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=11)))
+        self.learning_note = ctk.CTkLabel(
+            switches, text="", text_color=theme.MUTED, anchor="w", justify="left",
+            wraplength=780, font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        self.learning_note.pack(anchor="w", padx=16, pady=(2, 12))
+        self._field(switches, "Assistant", lambda row: ctk.CTkSwitch(
+            row, text="stopped (emergency switch)", variable=self.shutdown,
             progress_color=theme.DANGER, text_color=theme.TEXT,
             font=ctk.CTkFont(family=theme.FONT, size=11)))
 
@@ -787,19 +928,28 @@ class SettingsPage(Page):
         actions = ctk.CTkFrame(body, fg_color="transparent")
         actions.pack(anchor="w", pady=(14, 0))
         self.button(actions, "Apply", self.apply, primary=True).pack(side="left")
+        self.button(actions, "Update app", self.update_app).pack(side="left", padx=8)
         self.result = ctk.CTkLabel(
             actions, text="", text_color=theme.MUTED, font=ctk.CTkFont(family=theme.FONT, size=11)
         )
         self.result.pack(side="left", padx=12)
+        self.update_result = ctk.CTkLabel(
+            body, text="", text_color=theme.MUTED, anchor="w", justify="left",
+            wraplength=780, font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        self.update_result.pack(anchor="w", padx=16, pady=(8, 14))
 
-    def _field(self, parent: tk.Misc, label: str, widget: tk.Widget) -> None:
+    def _field(self, parent: tk.Misc, label: str, factory) -> None:  # noqa: ANN001
+        """One label + control row. The control must be created in the row:
+        a Tk widget cannot be reparented, and packing it into a row it does not
+        belong to leaves it floating over the card (the old Settings bug)."""
         line = ctk.CTkFrame(parent, fg_color="transparent")
         line.pack(fill="x", padx=16, pady=5)
         ctk.CTkLabel(
             line, text=label, width=140, anchor="w", text_color=theme.MUTED,
             font=ctk.CTkFont(family=theme.FONT, size=11),
         ).pack(side="left")
-        widget.pack(side="left")
+        factory(line).pack(side="left")
 
     def apply(self) -> None:
         try:
@@ -821,16 +971,75 @@ class SettingsPage(Page):
             self.result.configure(text=f"Not saved: {error}", text_color=theme.DANGER)
             return
         self.result.configure(text="Saved.", text_color=theme.OK)
+        self._refresh_learning()
+
+    def update_app(self) -> None:
+        """Rebuild this checkout and install it into the running environment."""
+        from claireai.update import run_update
+
+        self.update_result.configure(
+            text="Building this checkout and installing it … this can take a minute.",
+            text_color=theme.ACCENT,
+        )
+
+        def build():  # noqa: ANN202
+            return run_update()
+
+        self.app.submit("update", build, self._updated, self._update_failed)
+
+    def _updated(self, result: dict) -> None:
+        text = f"Installed {result['wheel']} from {result['source']}. Restart ClaireAI to run it."
+        colour = theme.OK
+        if result.get("warning"):
+            text += f" A dependency is still missing: {result['warning']}"
+            colour = theme.WARN
+        self.update_result.configure(text=text, text_color=colour)
+
+    def _update_failed(self, error: Exception) -> None:
+        self.update_result.configure(text=f"Update failed: {error}", text_color=theme.DANGER)
+
+    def _refresh_learning(self) -> None:
+        status = self.runtime.learning_status()
+        if not status["enabled"]:
+            self.learning_note.configure(
+                text=(
+                    f"Off — {status['total']} exchanges are kept from earlier sessions. "
+                    "While on, new exchanges are journaled here and compiled in the background; "
+                    "a trained checkpoint still has to pass the install gate."
+                )
+            )
+            return
+        note = (
+            f"On — {status['total']} exchanges journaled, {status['compiled']} compiled, "
+            f"{status['pending']} waiting."
+        )
+        if status.get("last_at"):
+            note += f" Last: {str(status['last_at'])[:16].replace('T', ' ')}."
+        if status.get("worker_error"):
+            note += f" Last compile problem: {status['worker_error']}"
+        training = status.get("training") or {}
+        if training:
+            when = str(training.get("last_success") or training.get("last_attempt") or "")[:16]
+            note += f" Training: {training.get('status', 'not started')}"
+            if when:
+                note += f" ({when.replace('T', ' ')})"
+            if training.get("candidate"):
+                note += f"; candidate {Path(str(training['candidate'])).name}"
+            if training.get("worker_error"):
+                note += f"; last training problem: {training['worker_error']}"
+        self.learning_note.configure(text=note)
 
     def on_show(self) -> None:
         control = self.runtime.control()
         self.browser.set(bool(control["browser"]))
         self.improvement.set(bool(control["self_improvement"]))
         self.shutdown.set(bool(control["shutdown"]))
+        self._refresh_learning()
 
 
 class AboutPage(Page):
     title = "About"
+    glyph = "ⓘ"
     subtitle = "Where everything lives and what is actually available."
 
     def build(self) -> None:
@@ -840,7 +1049,7 @@ class AboutPage(Page):
             border_width=1, border_color=theme.BORDER,
         )
         holder.pack(fill="both", expand=True, padx=theme.GUTTER, pady=(0, 10))
-        self.body = self.text_area(holder, height=20)
+        self.body = self.text_area(holder, height=6)
         self.body.pack(fill="both", expand=True, padx=6, pady=6)
         self.body.configure(state="disabled")
         self.button(self.frame, "Refresh", self.refresh).pack(anchor="w", padx=theme.GUTTER,
@@ -859,8 +1068,11 @@ class AboutPage(Page):
             f"Model trained    {'yes' if status['model_ready'] else 'no — train with brain-lab/train.py'}",
             f"Speech voices    {', '.join(status['voices'].values()) or 'none'}",
             f"Web tools        {'on' if status['browser'] else 'off'}",
-            f"Self-improvement {'on' if status['self_improvement'] else 'off'}",
+            f"Learning         {'on' if status['self_improvement'] else 'off'}",
             f"Emergency stop   {'engaged' if status['shutdown'] else 'not engaged'}",
+            "",
+            "Identity and capability questions are answered from this configuration,",
+            "so they stay accurate even before a model is installed.",
             "",
             "The language model is trained from scratch on this machine. It is a",
             "small research prototype, not a general assistant: expect short,",

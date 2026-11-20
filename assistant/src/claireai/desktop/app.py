@@ -14,6 +14,7 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 import traceback
 from pathlib import Path
 from typing import Any, Callable
@@ -42,7 +43,11 @@ class ClaireDesktop:
         self.animator = theme.Animator(root)
         self._closing = False
 
+        self._sidebar_width = 0
+        self._window_icon = None
+        self._brand_logo = None
         self._configure()
+        self.runtime.start_background_learning()
         self.show(PAGES[0])
         self.root.after(60, self._pump)
         self.root.after(400, self._poll_approvals)
@@ -52,45 +57,78 @@ class ClaireDesktop:
 
     def _configure(self) -> None:
         ctk.set_appearance_mode("dark")
+        self.root.configure(background=theme.BACKGROUND)
+        self.root.resizable(True, True)
+
+        # A Tk window on a scaled display is drawn at 1x and then stretched by the
+        # compositor, which is what makes an otherwise fine layout look chunky and
+        # pixelated. Ask the display for its real DPI and let Tk and customtkinter
+        # scale from it before any widget exists.
+        try:
+            dpi = float(self.root.winfo_fpixels("1i"))
+            if dpi > 0:
+                ctk.set_widget_scaling(max(1.0, min(2.0, dpi / 96.0)))
+                self.root.tk.call("tk", "scaling", dpi / 72.0)
+        except (tk.TclError, ValueError):  # pragma: no cover - display dependent
+            pass
+        try:
+            theme.use_family(theme.pick_family(tkfont.families(self.root)))
+        except tk.TclError:  # pragma: no cover - no font list on a broken display
+            pass
+
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        width, height, x, y = theme.window_geometry(screen_width, screen_height)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+        self.root.minsize(*theme.minimum_size(screen_width, screen_height))
+        self._draw_window_icon()
+
         owner = self.runtime.preferences().get("owner_name") or "ClaireAI"
         self.root.title(f"ClaireAI — {owner}")
-        self.root.geometry("1220x820")
-        self.root.minsize(980, 660)
-        self.root.configure(background=theme.BACKGROUND)
 
         self.sidebar = ctk.CTkFrame(
-            self.root, width=236, corner_radius=0, fg_color=theme.SURFACE, border_width=0
+            self.root, width=theme.sidebar_width(width), corner_radius=0,
+            fg_color=theme.SURFACE, border_width=0,
         )
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
 
+        self.brand = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.brand.pack(fill="x", padx=theme.GUTTER, pady=(24, 0))
+        self._brand_logo = self._brand_image(48)
+        if self._brand_logo is not None:
+            self.brand_logo = tk.Label(self.brand, image=self._brand_logo, bd=0,
+                                       highlightthickness=0, background=theme.SURFACE)
+            self.brand_logo.pack(side="left")
+
+        self.brand_text = ctk.CTkFrame(self.brand, fg_color="transparent")
+        self.brand_text.pack(side="left", padx=10)
         ctk.CTkLabel(
-            self.sidebar,
+            self.brand_text,
             text="ClaireAI",
-            font=ctk.CTkFont(family=theme.FONT, size=23, weight="bold"),
+            font=ctk.CTkFont(family=theme.FONT, size=20, weight="bold"),
             text_color=theme.TEXT,
             anchor="w",
-        ).pack(anchor="w", padx=theme.GUTTER, pady=(26, 0))
-
+        ).pack(anchor="w")
         ctk.CTkLabel(
-            self.sidebar,
-            text="local · offline · yours",
+            self.brand_text,
+            text="private assistant",
             font=ctk.CTkFont(family=theme.FONT, size=11),
             text_color=theme.MUTED,
             anchor="w",
-        ).pack(anchor="w", padx=theme.GUTTER, pady=(0, 20))
+        ).pack(anchor="w")
 
-        # The selected pill slides: each button owns a rail frame whose colour is
-        # tweened, and the accent bar is packed into whichever page is current.
+        # The selected pill slides: the button colour is tweened rather than
+        # swapped, and the accent marks exactly one row.
         self.nav = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.nav.pack(fill="x", padx=12)
+        self.nav.pack(fill="x", padx=12, pady=(22, 0))
         for page_class in PAGES:
             button = ctk.CTkButton(
                 self.nav,
-                text=f"  {page_class.title}",
+                text=f"  {page_class.glyph}   {page_class.title}",
                 command=lambda cls=page_class: self.show(cls),
                 anchor="w",
-                height=40,
+                height=38,
                 corner_radius=theme.RADIUS_SMALL,
                 fg_color="transparent",
                 hover_color=theme.SURFACE_HOVER,
@@ -134,7 +172,59 @@ class ClaireDesktop:
         self.content = ctk.CTkFrame(self.root, corner_radius=0, fg_color=theme.BACKGROUND)
         self.content.pack(side="left", fill="both", expand=True)
 
+        self.root.bind("<Configure>", self._on_resize)
+        self._apply_layout(width)
         self._breathe_status()
+
+    def _draw_window_icon(self) -> None:
+        """The taskbar/dock icon, from the same mark as the sidebar and favicon."""
+        path = theme.ASSETS / "logo-256.png"
+        try:
+            self._window_icon = tk.PhotoImage(file=str(path), master=self.root)
+            self.root.iconphoto(True, self._window_icon)
+        except (tk.TclError, OSError):  # pragma: no cover - assets missing on an odd install
+            self._window_icon = None
+
+    def _brand_image(self, size: int):  # noqa: ANN201 - a tk image or None
+        path = theme.ASSETS / f"logo-{size}.png"
+        try:
+            return tk.PhotoImage(file=str(path), master=self.root)
+        except (tk.TclError, OSError):  # pragma: no cover - assets missing
+            return None
+
+    def _on_resize(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+        if event.widget is not self.root:
+            return
+        self._apply_layout(event.width)
+
+    def _apply_layout(self, width: int) -> None:
+        """Follow the window: full rail, tight rail, glyph-only rail."""
+        target = theme.sidebar_width(width)
+        if target == self._sidebar_width:
+            return
+        self._sidebar_width = target
+        compact = target < 120
+        self.sidebar.configure(width=target)
+        self.badge.configure(wraplength=max(60, target - 2 * theme.GUTTER))
+        for page_class, button in self.buttons.items():
+            if compact:
+                button.configure(text=page_class.glyph, anchor="center", border_spacing=0)
+            else:
+                button.configure(
+                    text=f"  {page_class.glyph}   {page_class.title}", anchor="w", border_spacing=6
+                )
+        if compact:
+            self.brand_text.pack_forget()
+            self.brand.pack_configure(padx=10)
+            if self._brand_logo is not None:
+                self.brand_logo.pack_configure(side="top", anchor="center")
+            self.status_text.pack_forget()
+        else:
+            if self._brand_logo is not None:
+                self.brand_logo.pack_configure(side="left", anchor="w")
+            self.brand_text.pack(side="left", padx=10)
+            self.brand.pack_configure(padx=theme.GUTTER)
+            self.status_text.pack(side="left", padx=(6, 0))
 
     # -- animation -------------------------------------------------------
 
@@ -276,6 +366,7 @@ class ClaireDesktop:
     def close(self) -> None:
         self._closing = True
         self.animator.stop_all()
+        self.runtime.stop_background_learning()
         self.runtime.stop_speaking()
         self.root.destroy()
 
@@ -291,12 +382,25 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        # A distinct WM class keeps window-manager maximise state from being
+        # inherited by other Tk apps, and lets the menu entry match the window.
+        root = ctk.CTk(className="ClaireAI")
+    except TypeError:  # pragma: no cover - older customtkinter
         root = ctk.CTk()
     except tk.TclError as error:
         print(f"ERROR: no graphical display available ({error})", file=sys.stderr)
         return 2
 
     settings = Settings(data_dir=Path(args.data_dir).expanduser()) if args.data_dir else Settings()
+    # A fresh data directory has no checkpoint while a checkout may already
+    # hold the promoted one. Adopt it before the window opens, so the first
+    # message is answered instead of pointing at a file dialog.
+    try:
+        from claireai.models import ensure_installed_checkpoint
+
+        ensure_installed_checkpoint(settings)
+    except Exception:  # noqa: BLE001 - the install card remains the fallback
+        pass
     runtime = DesktopRuntime(settings)
     ClaireDesktop(root, runtime)
     root.mainloop()

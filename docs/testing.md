@@ -51,30 +51,19 @@ assistant/.venv/bin/python scripts/smoke.py --skip-model # no model needed
 Fourteen checks over the assembled system: settings, migrations, model
 reachability, a real chat turn, the tool loop, tool routing narrowing the schema
 set, a write refused without an approval channel, the presence stream, the daily
-summary being built and saved, the read-only `/today` page rendering with no
-script or form, retention removing only a stale trash batch, and an UPDATE on
+summary being built and saved, retention removing only a stale trash batch, and an UPDATE on
 `task_log` being rejected by the append-only triggers. It uses `pathlib` and a
 temporary directory only, so it should run unchanged on Windows — that has not
 been done yet, so treat Windows as unproven.
 
-## Presence server
+## Desktop and terminal
 
-```bash
-assistant/.venv/bin/python scripts/presence_preview.py --demo
-curl -s http://127.0.0.1:8765/state
-curl -s --max-time 2 -N http://127.0.0.1:8765/events
-```
-
-The HTTP tests in `tests/unit/test_presence_server.py` start the server on port 0
-and assert `/`, `/state`, `/events`, `/healthz`, `/today`, a 404 for unknown
-paths and the loopback-only refusal. If they ever look flaky, remember the stream
-sends `retry:` before the first event — read until a data frame arrives.
-
-The `/today` tests assert the page writes nothing (the database file's mtime is
-unchanged after repeated requests) and that the CSP header is present. The local
-control POST requires a loopback Host, same-origin header, and JSON body.
-`tests/unit/test_today.py` adds that a request containing `<script>` comes back
-escaped, and that `open_read_only` raises on a write attempt.
+There is one runtime behind two surfaces and no HTTP UI. The window is checked
+with the display-dependent tests in `tests/unit/test_desktop.py` (skipped without
+a display); the terminal is `claireai --cli`. `claireai --setup` must report the
+OS, Python, Tk/display and packages without downloading, and
+`tests/unit/test_preflight.py` pins that a non-terminal or a declined prompt
+downloads nothing.
 
 ## Retention
 

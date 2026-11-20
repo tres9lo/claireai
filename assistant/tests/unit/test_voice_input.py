@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -92,5 +93,8 @@ def test_empty_speech_does_not_return_a_fabricated_transcript(tmp_path: Path) ->
 def test_missing_optional_runtime_has_actionable_error(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
     transcriber = LocalTranscriber(tmp_path / "cache")
     monkeypatch.setattr("claireai.voice_input.importlib.util.find_spec", lambda _name: None)
+    # faster-whisper is installed in a complete app; make it unavailable for
+    # this test so the missing-runtime path is exercised, not skipped.
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)
     with pytest.raises(SpeechRecognitionUnavailable, match="voice extra"):
         transcriber.install()

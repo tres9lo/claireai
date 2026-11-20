@@ -150,6 +150,23 @@ class FakeRuntime:
     def stop_speaking(self):
         return None
 
+    def start_background_learning(self):
+        return None
+
+    def stop_background_learning(self):
+        return None
+
+    def learning_status(self):
+        return {"enabled": False, "total": 0, "compiled": 0, "pending": 0,
+                "last_at": None, "corpus": None, "worker_error": None}
+
+    def model_status(self):
+        return {"provider": "scratch", "checkpoint": str(self.data_dir / "model.pt"),
+                "ready": True, "hint": "", "can_install": True}
+
+    def install_checkpoint(self, source):
+        return self.model_status()
+
 
 @pytest.fixture
 def tk_root():

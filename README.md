@@ -4,7 +4,6 @@
 
 No cloud provider. No API keys. Nothing leaves the laptop unless you allow it.
 
-![ClaireAI presence HUD](docs/screenshots/presence-hud.png)
 
 <p align="center">
   <a href="https://github.com/tres9lo/claireai/actions/workflows/python-tests.yml"><img src="https://github.com/tres9lo/claireai/actions/workflows/python-tests.yml/badge.svg" alt="Tests"></a>
@@ -53,19 +52,18 @@ I am not a model-training expert. I am learning this in public: every training r
 | Daily summary (Done / Failed / Pending) from the task log | ✅ |
 | Dates and times answered from the clock; `yesterday`/`last friday` accepted by the summary | ✅ deterministic, no model call |
 | Workspace calendar: appointments in SQLite, `what's on tomorrow` answered from them | ✅ listing is read-only, adding needs approval |
-| Read-only `/today` page served over loopback | ✅ |
 | Retention/pruning for trash and summaries | ✅ |
-| Presence HUD (canvas 2D, loopback preview) | ✅ |
-| Browser tools, disabled until enabled in the local control panel | ✅ |
-| Runtime stop switch and browser access control panel | ✅ first version |
-| Local web chat, stored conversation history, owner directives and UI preferences | ✅ first version |
-| Offline speech output with UI pitch/rate controls | ✅ Piper neural voice, else eSpeak NG |
-| Push-to-talk local speech transcription in the HUD | ✅ first version; optional Whisper weights installed from the UI |
+| Browser tools, disabled until enabled in Settings | ✅ |
+| Runtime stop switch and browser access control | ✅ first version |
+| Native desktop window and terminal chat, no browser surface | ✅ |
+| Stored conversation history, owner directives and preferences | ✅ first version |
+| Offline speech output with pitch/rate controls | ✅ Piper neural voice, else eSpeak NG |
+| Push-to-talk local speech transcription in the desktop Voice page | ✅ optional faster-whisper + local model |
 | OS family detection (Linux/Windows first targets) | ✅ detection only |
 | Reproducible MIT synthetic task corpus + split-aware text training | ✅ starter data |
 | Random-init visual-grounding prototype using attributed online synthetic images | 🧪 research only; not integrated |
 | Capable scratch-trained assistant; speech recognition and custom trained voice | 🚧 not included yet |
-| FastAPI service · Playwright engine · Tauri desktop shell | 🚧 planned |
+| Playwright engine · Tauri desktop shell | 🚧 planned |
 | Camera, screen, cursor and keyboard control | 🚧 specified, not built |
 
 The project is at **Month 1 of its roadmap** and has not had a public release. See [ROADMAP.md](ROADMAP.md) for the plan and [PROGRESS.md](PROGRESS.md) for verified results and open blockers.
@@ -109,23 +107,39 @@ This is the part worth reviewing before you run it.
 - **Nothing is deleted permanently.** `move_to_trash` relocates into ClaireAI's own recoverable bin.
 - **Task and audit logs redact secrets.** Full user and assistant messages are retained verbatim in the local conversation database so ClaireAI can show history and continue chats. The owner can review or delete conversations from the UI; the database is owner-readable only on POSIX systems.
 - **Inference is local by default.** ClaireAI loads its own checkpoint and, out of the box, calls no hosted model API. A connector is an explicit setting the owner writes (`CLAIREAI_BRAIN_PROVIDER`), it is opt-in per provider, and the audit row for the turn records which one answered. A remote model can only *propose* a tool call — approvals and the sandbox still decide what runs.
-- **Capabilities are opt-in.** Browser access starts disabled. The local HUD can enable it; browser actions still use the existing approval path. Stop ends model generation between tokens, lets a current bounded tool action finish, prevents subsequent model/tool calls, and exits the interactive CLI even while it is waiting for input. The HUD remains available; after allowing the runtime again, start ClaireAI from the CLI.
+- **Capabilities are opt-in.** Browser access starts disabled. The desktop Settings page can enable it; browser actions still use the existing approval path. Stop ends model generation between tokens, lets a current bounded tool action finish, prevents subsequent model/tool calls, and exits the interactive CLI even while it is waiting for input. The window remains open; after allowing the runtime again, start a new turn.
 
 Read [docs/architecture/threat-model.md](docs/architecture/threat-model.md) for the full boundary analysis.
 
 ## Quick start (Linux)
 
-Requires **Python 3.11+** and PyTorch. The scratch model starts with random weights; it is a research prototype and will not behave like a capable assistant until trained and evaluated on substantial task-specific data.
+Requires **Python 3.11+**. The scratch model starts with random weights; it is a research prototype and will not behave like a capable assistant until trained and evaluated on substantial task-specific data.
 
 ```bash
 git clone https://github.com/tres9lo/claireai.git
 cd claireai
 
-# 1. Python environment
-uv venv --seed --python 3.12 assistant/.venv
-uv pip install --python assistant/.venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch
-uv pip install --python assistant/.venv/bin/python -e "assistant[dev,model]"
-uv pip install --python assistant/.venv/bin/python -e ./brain-lab
+# 1. Install. This detects the OS, architecture, Python, Tk and display, prints
+#    every download with an approximate size, and downloads nothing until you
+#    answer yes. --dry-run shows the plan; --no-speech-model skips the voice
+#    model. Re-running later only fills what is missing.
+./install.sh
+
+#    Manual equivalent, if you prefer to run each step:
+#    python3 -m venv assistant/.venv
+#    assistant/.venv/bin/python -m pip install -e "assistant[dev,desktop]"
+#    assistant/.venv/bin/claireai --setup --install
+```
+
+The installer picks a Python whose Tk can draw antialiased fonts. Do not
+`pip install` the app into a conda base on Linux: conda's Tk may be built for
+the old X11 bitmap font system (`fontsystem x11`), which makes the whole window
+look pixelated. `./install.sh` checks this and can use the system Python
+instead; the applications-menu entry it writes runs that environment explicitly,
+so it does not depend on which `claireai` is first on `PATH`.
+
+```bash
+# continue here for training; the app itself is already installed
 
 # Speech output. Piper is a neural voice and sounds like a person; eSpeak NG is
 # the fallback and always works. Neither one sends audio anywhere.
@@ -172,16 +186,27 @@ The native window is built on Tk with customtkinter for its surfaces: no
 browser, no loopback web server, no JavaScript. It opens on **Chat** and has
 seven separate screens in the sidebar — Chat, Activity, Approvals, History,
 Voice, Settings and About — each with its own job rather than one long page.
+The terminal chat is the same runtime and database, without the window.
 
-Design tokens live in `desktop/theme.py`: one accent colour, rounded surfaces,
+Design tokens live in `assistant/src/claireai/desktop/theme.py`: one accent colour, rounded surfaces,
 and motion timed from the wall clock rather than a frame count, so a slow
 machine drops frames instead of playing every animation in slow motion. The
 selected sidebar pill eases between pages, the status dot breathes, the chat
 shows a live thinking indicator, and each page fades its surface in.
 
 ```bash
-assistant/.venv/bin/claireai-desktop      # or: ./scripts/start.sh --desktop
+assistant/.venv/bin/claireai              # the window
+assistant/.venv/bin/claireai --cli        # the terminal, same data
 ```
+
+`./install.sh` also adds **ClaireAI** to the applications menu on Linux, using
+the venv Python it installed. `claireai --update` (or **Update app** in Settings)
+rebuilds this checkout and reinstalls it into that environment; the checkout path
+is remembered, so the button works even when the window was started from the
+menu. The first update from a copy with no remembered path can be pointed at the
+source once with `claireai --update --source /path/to/claireai/assistant`.
+`claireai --setup --install` is the same consent flow for missing pieces,
+including the local speech model.
 
 If the window does not open, the command names the missing piece instead of
 printing a traceback: the `desktop` extra (`pip install "claireai[desktop]"`)
@@ -193,12 +218,31 @@ or Python's Tk bindings (`python3-tk` on Debian/Ubuntu). It exits 2.
 - **Voice** speaks in English or French (the language is detected from the text,
   or chosen by hand), and records from the microphone when a speech model is
   installed.
-- **Settings** holds the same preferences as the web UI, including the emergency
-  stop switch; it shares the same database, so the CLI sees them immediately.
+- **Settings** holds the same preferences as the terminal, including the
+  emergency stop switch; both share one database, so changes apply immediately.
+- **Setup and updates** are explicit: `claireai --setup` reports the host and
+  what is missing, `--setup --install` lists each download (including the local
+  speech model) and asks first, and `--update` rebuilds and reinstalls this
+  checkout without touching your data.
 
 The window can start with your session: `claireai --install-autostart` writes
 `~/.config/autostart/claireai.desktop`, which is the only file it ever adds
 there, and `--uninstall-autostart` removes exactly that file.
+
+### Background learning and training
+
+**Background learning** in Settings is opt-in and does two separate jobs. It
+journals exchanges locally and compiles them into training material, and at most
+once a day — only when the network check succeeds — one bounded CPU training run
+turns that material plus an authored practice curriculum into a **candidate** in
+`models/candidates/`. The curriculum covers conversation, guest service,
+reports, accounting, arithmetic and unit calculations, small coding tasks,
+routines, email and social-media drafting, research, and business margins andsales. A candidate never replaces the installed checkpoint on its own; review it
+(for example with `scripts/eval_model.py`) and install it deliberately. The
+worker runs while the ClaireAI window is open and the switch stays on, not as a
+system service. Training is local, it does not scrape, and it does not log into
+or post to any email or social account: those need separate connectors,
+credentials and explicit approvals.
 
 ### Granting a folder
 
@@ -226,25 +270,24 @@ assistant/.venv/bin/python -m claireai.cli --summary
 # Daily summary at 18:00 local time
 assistant/.venv/bin/python -m claireai.cli --summary-at 18:00
 
-# The whole app in one command (creates the venv on first run, then opens it)
+# The whole app in one command (installs the venv on first run, then opens it)
 ./scripts/start.sh
 
-# The native desktop window: no browser, no local web server
-./scripts/start.sh --desktop
+# What this machine is missing, without downloading anything
+assistant/.venv/bin/claireai --setup
+
+# List missing parts and download them only after a yes
+assistant/.venv/bin/claireai --setup --install
 
 # Start ClaireAI with your desktop session (XDG autostart), and undo it
 assistant/.venv/bin/claireai --install-autostart
 assistant/.venv/bin/claireai --autostart-status
 assistant/.venv/bin/claireai --uninstall-autostart
 
-# Same thing without opening a browser, or on another port
-./scripts/start.sh --no-browser
-./scripts/start.sh --port 9000
+# Terminal chat instead of the window
+assistant/.venv/bin/claireai --cli
 
-# Terminal chat instead of the app
-./scripts/start.sh --cli
-
-# Self-improvement: enable it in the HUD, then train an isolated candidate
+# Self-improvement: enable it in Settings, then train an isolated candidate
 assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text --steps 200 --improvement
 
 # Diagnostics
@@ -258,10 +301,9 @@ assistant/.venv/bin/python brain-lab/vision_train.py --epochs 20
 ## Architecture
 
 ```
-assistant/      Python runtime: config, storage, audit, brain, tools, CLI
-desktop/        Presence HUD (canvas 2D) and the future Tauri shell
+assistant/      Python runtime: config, storage, audit, brain, tools, desktop, CLI
 docs/           Setup, architecture, platform support, licenses
-scripts/        doctor.py, eval_model.py, conversation_eval.py, smoke.py, presence_preview.py
+scripts/        bootstrap.py, doctor.py, eval_model.py, conversation_eval.py, smoke.py
 runtime-data/   Local only, git-ignored: databases, logs, downloads, trash
 ```
 

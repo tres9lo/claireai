@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -269,47 +271,76 @@ def speak_text(
             raise VoiceUnavailable("Windows could not play the generated speech") from playback_errors[0]
         return engine_name
 
-    players = ("paplay", "pw-play", "aplay")
-    player = next((path for name in players if (path := shutil.which(name))), None)
-    if player is None:
-        raise VoiceUnavailable("no local audio player found (paplay, pw-play, or aplay)")
-    player_args = [player, "-"] if player.endswith(("paplay", "pw-play")) else [player, "-q", "-"]
-    try:
-        player_process = subprocess.Popen(
-            player_args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        raise VoiceUnavailable(f"local audio playback failed: {type(exc).__name__}") from exc
-
-    def feed_audio() -> None:
-        try:
-            assert player_process.stdin is not None
-            player_process.stdin.write(audio)
-            player_process.stdin.close()
-        except (BrokenPipeError, OSError):
-            return
-
-    writer = threading.Thread(target=feed_audio, name="claireai-voice-audio", daemon=True)
-    writer.start()
-    deadline = time.monotonic() + PLAYBACK_TIMEOUT_SECONDS
-    while player_process.poll() is None:
-        if should_stop is not None and should_stop():
-            player_process.terminate()
-            try:
-                player_process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                player_process.kill()
-                player_process.wait()
-            raise VoiceStopped("ClaireAI was stopped while speaking")
-        if time.monotonic() >= deadline:
-            player_process.kill()
-            player_process.wait()
-            raise VoiceUnavailable("local audio playback exceeded its time limit")
-        time.sleep(0.05)
-    writer.join(timeout=1)
-    if player_process.returncode != 0:
-        raise VoiceUnavailable("local audio player could not play the generated speech")
+    _play_wav(audio, should_stop=should_stop)
     return engine_name
+
+
+def _play_wav(audio: bytes, *, should_stop: Callable[[], bool] | None = None) -> str:
+    """Play WAV bytes through the first working local player.
+
+    ``paplay`` and ``pw-play`` do not accept WAV on stdin (``paplay -`` treats
+    the dash as a file name and exits 1), which produced the unhelpful "local
+    audio player could not play..." error even on a machine where audio worked.
+    A mode-0600 temporary file lasts for one playback and is always removed.
+    Players are tried in turn so a host with only PipeWire, PulseAudio or ALSA
+    still speaks, and the last player's real error is reported.
+    """
+    candidates = [
+        ("pw-play", ["-q"]),
+        ("paplay", []),
+        ("aplay", ["-q"]),
+    ]
+    available = [(name, flags, shutil.which(name)) for name, flags in candidates]
+    available = [(name, flags, path) for name, flags, path in available if path]
+    if not available:
+        raise VoiceUnavailable("no local audio player found (install pw-play, paplay, or aplay)")
+
+    descriptor, path_string = tempfile.mkstemp(prefix="claireai-voice-", suffix=".wav")
+    path = Path(path_string)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(audio)
+
+        errors: list[str] = []
+        for name, flags, player in available:
+            try:
+                process = subprocess.Popen(
+                    [str(player), *flags, str(path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                )
+            except OSError as exc:
+                errors.append(f"{name}: {type(exc).__name__}")
+                continue
+
+            deadline = time.monotonic() + PLAYBACK_TIMEOUT_SECONDS
+            while process.poll() is None:
+                if should_stop is not None and should_stop():
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                    raise VoiceStopped("ClaireAI was stopped while speaking")
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    process.wait()
+                    errors.append(f"{name}: playback exceeded {PLAYBACK_TIMEOUT_SECONDS}s")
+                    break
+                time.sleep(0.05)
+            if process.returncode == 0:
+                return name
+            detail = ""
+            if process.stderr is not None:
+                detail = process.stderr.read().decode("utf-8", "replace").strip().splitlines()
+                detail = detail[-1][:200] if detail else ""
+            errors.append(f"{name}: {detail or f'exit {process.returncode}'}")
+
+        raise VoiceUnavailable(
+            "local audio playback failed (" + "; ".join(errors) + ")"
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            path.unlink()

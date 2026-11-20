@@ -7,7 +7,7 @@
 The unit tests prove behaviour with mocked edges; this proves the assembled
 thing: settings, database, migrations, a real model turn (unless skipped), the
 tool loop, tool routing, the approval refusal, the presence stream, the daily
-summary, the read-only today page, retention and the append-only audit log. It
+summary, retention and the append-only audit log. It
 uses only the standard library and `pathlib` so it can be run on either OS
 without a shell.
 
@@ -281,17 +281,6 @@ async def _run(args: argparse.Namespace) -> int:
         )
 
         from claireai.retention import apply as prune_apply, plan as prune_plan
-        from claireai.today import render_today
-
-        page = render_today(conn)
-        results.check(
-            "the read-only today page renders",
-            "Daily summary" in page
-            and "list_folder" in page
-            and "<script" not in page.lower()
-            and "<form" not in page.lower(),
-            f"{len(page)} bytes, no script or form",
-        )
 
         stale = data_dir / "trash" / "20200101T000000Z"
         stale.mkdir(parents=True, exist_ok=True)
