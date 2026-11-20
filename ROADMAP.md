@@ -20,6 +20,26 @@ a wake word or matching a voice must never silently grant a computer capability.
 >
 > **Naming decision required at project start:** the uploaded filename says TresorAI, while the original document calls the assistant ClaireAI. This edition provisionally treats **TresorAI** as the repository/project name and **ClaireAI** as the assistant's in-product name. Ask Tresor to confirm before renaming directories, package IDs, application IDs, or visible branding.
 
+## Immediate next session (2026-11-21)
+
+These are checks to run next, not completed work. Stop at the first failure.
+
+1. **Train a gated 512-token candidate** from the existing bilingual corpus:
+   `assistant/.venv/bin/python brain-lab/train_claireai.py --profile quick --no-fetch --no-build --no-merge`.
+   Inspect `runtime-data/models/candidates/*.pipeline.json` and leave the active
+   model untouched.
+2. **Compare the candidate with the installed checkpoint** at the same run
+   count using `scripts/conversation_eval.py` and `scripts/eval_model.py`.
+   Install only if the existing gate passes and conversation does not regress.
+3. **Smoke-test the trained-context path** with English and French greetings in
+   the CLI. Confirm the prompt is fitted to the trained range; do not treat a
+   single greeting as evidence of general quality.
+4. **Owner-only blocker:** live inbox verification needs a Gmail App Password
+   from the owner. Do not store a password in a file or attempt to work around
+   the keyring.
+5. **Do not start 10K/30K training.** The recall probe failed and CPU latency is
+   too high; use retrieval or smaller, measured experiments instead.
+
 ## 0. Agent Operating Rules
 
 1. Read this whole file before writing any code.

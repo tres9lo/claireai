@@ -8,8 +8,8 @@ are deterministic from the corpus).  This script rebuilds the tokenizer and
 writes a normal checkpoint that ``claireai.brain.ScratchBrain`` can load.
 
     assistant/.venv/bin/python brain-lab/promote_partial.py \
-        --partial runtime-data/models/claire-chat-v2.pt.partial \
-        --output runtime-data/models/claire-chat-v2.pt
+        --partial runtime-data/models/candidates/claire-chat-v15-full.pt.partial \
+        --output runtime-data/models/candidates/claire-chat-v15-full.pt
 
 It never overwrites the partial, and it refuses to write a checkpoint whose
 tokenizer or architecture does not match the saved weights.
@@ -34,13 +34,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--partial", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--corpus", type=Path, default=ROOT / "data" / "chat-v2")
-    parser.add_argument("--vocab-size", type=int, default=1024)
-    parser.add_argument("--context", type=int, default=256)
-    parser.add_argument("--width", type=int, default=192)
-    parser.add_argument("--layers", type=int, default=4)
-    parser.add_argument("--heads", type=int, default=6)
-    parser.add_argument("--name", default="claire-chat-v2")
+    # Match train_claireai.py's 512-token quick/full profiles and the merged
+    # bilingual corpus.  The architecture flags must describe the partial's
+    # weights; the corpus is needed to rebuild the same deterministic tokenizer.
+    parser.add_argument("--corpus", type=Path, default=ROOT / "data" / "chat-v15")
+    parser.add_argument("--vocab-size", type=int, default=2048)
+    parser.add_argument("--context", type=int, default=512)
+    parser.add_argument("--width", type=int, default=224)
+    parser.add_argument("--layers", type=int, default=5)
+    parser.add_argument("--heads", type=int, default=7)
+    parser.add_argument("--name", default="claire-chat-v15")
     parser.add_argument("--use-current", action="store_true", help="use the latest weights, not the best")
     args = parser.parse_args()
 

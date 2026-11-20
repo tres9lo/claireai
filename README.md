@@ -298,11 +298,12 @@ claireai --once "latest headlines from Kenya and France"
 
 Transient DNS, timeout and 5xx failures are retried three times, and a final
 resolver failure is reported as a DNS problem with the affected country instead
-of being folded into an opaque `[Errno -3]` line. Google News editions are used
-as a personal feed reader; headlines are not verified facts and the publisher
-link is the source to check. The daily worker
-trains on `brain-lab/data/chat-v15` when present, then falls back to the older
-`chat-v13-small` licensed mix. The one-command
+of being folded into an opaque `[Errno -3]` line. Headlines and publisher
+summaries are not verified facts; the publisher link is the source to check.
+Google News is a last-resort fallback for a non-DNS Bing failure when no local
+story was found.
+The daily worker trains on `brain-lab/data/chat-v15` when present, then falls
+back to the older `chat-v13-small` licensed mix. The one-command
 `brain-lab/train_claireai.py --profile full` builds the larger bilingual
 `chat-v15` corpus instead, with English/French OASST1 and French FineWeb-2.
 `fetch_corpora.py` and `merge_corpora.py` still rebuild the small corpus; the
