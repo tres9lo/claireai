@@ -63,6 +63,56 @@
       "notes": "Human-written and human-ranked conversation trees. Filter for quality and remove personal data before use."
     },
     {
+      "id": "glaive-function-calling-v2",
+      "name": "Glaive Function Calling v2",
+      "url": "https://huggingface.co/datasets/glaiveai/glaive-function-calling-v2",
+      "license": "Apache-2.0",
+      "access": "public",
+      "domains": ["tool calls", "structured output", "conversation"],
+      "size": "~113k conversations; use a bounded subset",
+      "notes": "Synthetic tool-use conversations. Candidate for short single- or two-call SFT after filtering, deduplication and 512-token truncation; do not merge the full set."
+    },
+    {
+      "id": "hermes-function-calling-v1",
+      "name": "Hermes Function Calling v1",
+      "url": "https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1",
+      "license": "Apache-2.0",
+      "access": "public",
+      "domains": ["tool calls", "structured output", "json mode"],
+      "size": "~11.6k rows",
+      "notes": "Compact structured-output and function-calling mixture. Good first tool-use candidate because examples are short; map its schemas to the runtime's real tools and discard unsupported ones."
+    },
+    {
+      "id": "toolace",
+      "name": "ToolACE",
+      "url": "https://huggingface.co/datasets/Team-ACE/ToolACE",
+      "license": "Apache-2.0",
+      "access": "public",
+      "domains": ["tool calls", "API selection", "argument generation"],
+      "size": "~11.3k rows",
+      "notes": "Verified synthetic tool-learning dialogs. Candidate for tool selection and argument generation; strip provider-specific schemas and keep only calls the local runtime can validate."
+    },
+    {
+      "id": "xlam-function-calling-60k",
+      "name": "xLAM Function Calling 60k",
+      "url": "https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k",
+      "license": "CC BY 4.0",
+      "access": "public",
+      "domains": ["tool calls", "API selection", "argument generation"],
+      "size": "~60k rows",
+      "notes": "Verified synthetic function-calling data. Candidate after format and argument checks; preserve attribution. Its generated APIs are examples, not automatically available runtime tools."
+    },
+    {
+      "id": "smol-smoltalk",
+      "name": "Smol-SmolTalk",
+      "url": "https://huggingface.co/datasets/HuggingFaceTB/smol-smoltalk",
+      "license": "Apache-2.0",
+      "access": "public",
+      "domains": ["conversation", "instruction following", "small models"],
+      "size": "~485k rows; bounded sample only",
+      "notes": "SFT subset designed for sub-1B models. Candidate for short everyday conversation after deduplication and evaluation decontamination; it intentionally contains no function-calling examples."
+    },
+    {
       "id": "dolly-15k",
       "name": "Databricks Dolly 15k",
       "url": "https://huggingface.co/datasets/databricks/databricks-dolly-15k",

@@ -22,23 +22,70 @@ a wake word or matching a voice must never silently grant a computer capability.
 
 ## Immediate next session (2026-11-21)
 
-These are checks to run next, not completed work. Stop at the first failure.
+The goal is to make the assistant trustworthy when it does not know something,
+start the confirmed-learning loop, ingest one compact tool-use set, and make
+full-day task assignment usable. These are tasks, not completed work. Treat
+"ChatGPT-like" as short coherent conversation plus reliable tools and cited
+retrieval, not general parity on this CPU model.
 
-1. **Train a gated 512-token candidate** from the existing bilingual corpus:
-   `assistant/.venv/bin/python brain-lab/train_claireai.py --profile quick --no-fetch --no-build --no-merge`.
-   Inspect `runtime-data/models/candidates/*.pipeline.json` and leave the active
-   model untouched.
-2. **Compare the candidate with the installed checkpoint** at the same run
-   count using `scripts/conversation_eval.py` and `scripts/eval_model.py`.
-   Install only if the existing gate passes and conversation does not regress.
-3. **Smoke-test the trained-context path** with English and French greetings in
-   the CLI. Confirm the prompt is fitted to the trained range; do not treat a
-   single greeting as evidence of general quality.
-4. **Owner-only blocker:** live inbox verification needs a Gmail App Password
-   from the owner. Do not store a password in a file or attempt to work around
-   the keyring.
-5. **Do not start 10K/30K training.** The recall probe failed and CPU latency is
-   too high; use retrieval or smaller, measured experiments instead.
+### 1. Internet fallback and confirmed learning
+
+- [ ] Exercise `agent.py`'s unknown-answer path with browser access off and on.
+  Confirm the approval is shown, the query and source are displayed, and a
+  private/first-person request never leaves the machine.
+- [ ] Add regression tests for `query_for` privacy and for
+  `LearningJournal.compile()` accepting only verified, source-bearing lessons.
+- [ ] Add an immediate retrieval answer with a source, then keep weight updates
+  in the nightly batch. Do not update gradients during a conversation.
+- [ ] Add a replay slice of older conversations when compiling new lessons, so
+  the next candidate does not forget greetings, refusals or tool calls.
+- [ ] Document the exact difference between "remembered today" (journal) and
+  "learned into weights" (gated candidate).
+
+### 2. Datasets and training correctness
+
+- [ ] Add bounded fetchers for ToolACE and Hermes Function Calling v1 first;
+  add Glaive, xLAM and Smol-SmolTalk only after those pass format checks.
+- [ ] Keep 300–500 filtered examples per source, 512 tokens or less, one or two
+  tool calls, direct-answer negatives, deduplication and held-out
+  decontamination. Record a manifest for each source.
+- [ ] Apply the checks in `docs/training-playbook.md`: exact inference template,
+  response-only loss, unmasked tool-call tokens, masked tool results, EOS, and
+  no padding labels.
+- [ ] Add a decoded-batch inspection test before the next long training run.
+- [ ] Run the quick candidate from the existing `chat-v15` corpus, then compare
+  it with the installed checkpoint at the same run count. Install only if the
+  existing gate passes and conversation does not regress.
+
+### 3. Conversation and tool use
+
+- [ ] Keep the deterministic router, but add fixed probes for "answer directly",
+  "call one tool", "ask for a missing argument" and "refuse".
+- [ ] Score tool name, argument validity, no-call correctness and final answer
+  separately. A plausible call to a non-existent tool is a failure.
+- [ ] Smoke-test English and French greetings and confirm prompts fit the
+  trained context. Do not treat one good greeting as general quality.
+
+### 4. Full-day task assignment
+
+- [ ] Add `day_plan_items` with local day, start time, request, status and an
+  optional linked task id, using a new migration rather than overloading
+  appointments.
+- [ ] Add `plan_day`, `list_day_plan` and a due-item runner. Show the resolved
+  plan before saving it.
+- [ ] Run safe actions automatically; move writes and dangerous actions to
+  `awaiting_approval` and never inherit approval from the plan.
+- [ ] Add CLI/UI access, restart reconciliation and daily-summary coverage.
+- [ ] Acceptance: one safe task runs, one file write pauses for approval, one
+  appointment reminder is listed, and the evening summary reports what actually
+  happened.
+
+### 5. Owner blockers and guardrails
+
+- [ ] Live inbox verification still needs a Gmail App Password from the owner.
+  Do not store it in a file or work around the keyring.
+- [ ] Do not start 10K/30K training. The recall probe failed and CPU latency is
+  too high; use retrieval or a smaller measured experiment instead.
 
 ## 0. Agent Operating Rules
 

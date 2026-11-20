@@ -103,7 +103,9 @@ assistant/.venv/bin/python scripts/conversation_eval.py \
 
 `eval_model.py` checks one-shot formatting and safety. `conversation_eval.py`
 runs multi-turn conversations and injects tool results; both score with plain
-code, never with another model.
+code, never with another model. The rules behind this recipe — response-only
+loss, masked tool results, held-out contamination checks and the install gate —
+are in [`docs/training-playbook.md`](../docs/training-playbook.md).
 
 ## Train the visual-grounding prototype
 

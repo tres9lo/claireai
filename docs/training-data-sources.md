@@ -20,7 +20,7 @@ small vocabulary; dumping terabytes into it will not fix that.
 | 35–40% | General educational prose | [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu), [Wikipedia dumps](https://dumps.wikimedia.org/), [OpenStax](https://openstax.org/) |
 | 15–20% | Human conversation and helpfulness | [OASST1](https://huggingface.co/datasets/OpenAssistant/oasst1), [Dolly 15k](https://huggingface.co/datasets/databricks/databricks-dolly-15k), [HelpSteer2](https://huggingface.co/datasets/nvidia/HelpSteer2) |
 | 15% | Mathematics and worked reasoning | [GSM8K](https://huggingface.co/datasets/openai/gsm8k), [OpenMathInstruct-2](https://huggingface.co/datasets/nvidia/OpenMathInstruct-2) |
-| 10% | Code and tool use | [The Stack v2](https://huggingface.co/datasets/bigcode/the-stack-v2), [BFCL](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) |
+| 10% | Code and tool use | [ToolACE](https://huggingface.co/datasets/Team-ACE/ToolACE), [Hermes Function Calling v1](https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1), [Glaive Function Calling v2](https://huggingface.co/datasets/glaiveai/glaive-function-calling-v2), [xLAM](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k); [BFCL](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) for evaluation only |
 | 10% | Reference, business and analysis | [World Bank](https://data.worldbank.org/), [SEC EDGAR](https://www.sec.gov/edgar/sec-api-documentation), [OpenAlex](https://openalex.org/) |
 | 5% | Your own vetted notes and drafts | Author-owned material only |
 
@@ -47,6 +47,26 @@ held-out split separate.
   legitimate public corpus of private hotel conversations.
 - **Email and social:** use owned or synthetic drafts. Do not train on another
   person's inbox or private messages.
+
+## Compact tool-use and small-model candidates
+
+These are catalogued, not downloaded. Start with the smallest set that tests the
+behaviour we need; a 224-wide, 5-layer model does not benefit from swallowing a
+113k-row corpus.
+
+| Dataset | Size | Licence | Best use | Guardrail |
+| --- | ---: | --- | --- | --- |
+| [Hermes Function Calling v1](https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1) | ~11.6k | Apache-2.0 | Short structured-output and tool-call examples | Map schemas to real local tools; discard unsupported APIs |
+| [ToolACE](https://huggingface.co/datasets/Team-ACE/ToolACE) | ~11.3k | Apache-2.0 | Tool selection and argument generation | Strip provider schemas; keep only validated local calls |
+| [Glaive Function Calling v2](https://huggingface.co/datasets/glaiveai/glaive-function-calling-v2) | ~113k | Apache-2.0 | Multi-turn tool-use patterns | Sample and truncate; deduplicate against validation |
+| [xLAM Function Calling 60k](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k) | ~60k | CC BY 4.0 | Verified synthetic function calls | Attribution; format checks; never treat example APIs as installed tools |
+| [Smol-SmolTalk](https://huggingface.co/datasets/HuggingFaceTB/smol-smoltalk) | ~485k | Apache-2.0 | Everyday conversation for small models | Bounded sample; no tool-call examples; decontaminate evaluation cases |
+
+For this model, use 300–500 filtered examples per source first. Keep sequences
+within the 512-token training context, prefer one or two tool calls per example,
+and retain direct-answer examples so the model learns when **not** to call a
+tool. A dataset being verified does not make its generated APIs available in the
+runtime; the registry remains the only source of executable tools.
 
 ## Access you must request
 
@@ -80,6 +100,9 @@ scrape a logged-in page.
 5. Measure with `scripts/eval_model.py`, `conversation_eval.py` and
    `tool_call_eval.py`; a lower training loss is not proof of a better assistant.
 6. Update [`docs/model-and-data-licenses.md`](model-and-data-licenses.md).
+7. Follow the implementation rules in
+   [`docs/training-playbook.md`](training-playbook.md): response-only loss,
+   held-out evaluation, and no training on unverified web output.
 
 ## Sources deliberately excluded
 

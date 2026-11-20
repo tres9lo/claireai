@@ -111,6 +111,13 @@ third-party text is redistributed with this repository. The full source list,
 including the gated/forbidden cases, is in `brain-lab/data-sources.json`. Do not
 raise a sample limit without re-reading the dataset card and this file.
 
+Candidate tool-use datasets are catalogued but not downloaded: Glaive Function
+Calling v2 and ToolACE (Apache-2.0), Hermes Function Calling v1 (Apache-2.0),
+xLAM Function Calling 60k (CC BY 4.0, attribution required), and Smol-SmolTalk
+(Apache-2.0). They are listed in `brain-lab/data-sources.json`; each needs a
+bounded sample, a format/filter pass, a manifest and an evaluation before it can
+enter a training corpus.
+
 Any later external dataset must have its source, licence, retrieval date, size,
 and processing steps recorded in `brain-lab/data/manifests/` before use. Raw
 downloads and user data remain git-ignored.
