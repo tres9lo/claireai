@@ -48,6 +48,9 @@ I am not a model-training expert. I am learning this in public: every training r
 | 9 approval-gated writes (create, write, rename, move, trash, download, add appointment, plan day) | ✅ |
 | Interactive approval flow with per-decision audit references | ✅ |
 | Agent loop with schema validation, risk policy and step cap | ✅ |
+| Strict ToolACE/Hermes name mapping to real registry schemas | ✅ code path; full mapped sample pending |
+| Tokenizer-backed corpus audit (budgets, calls, duplicates, held-out overlap) | ✅ |
+| One-command post-training gate (model, conversation, standard + extended tools) | ✅ |
 | Deterministic tool routing (roughly halves prompt tokens per step) | ✅ |
 | Daily summary (Done / Failed / Pending) from the task log | ✅ |
 | Dates and times answered from the clock; `yesterday`/`last friday` accepted by the summary | ✅ deterministic, no model call |
@@ -66,6 +69,16 @@ I am not a model-training expert. I am learning this in public: every training r
 | Capable scratch-trained assistant; speech recognition and custom trained voice | 🚧 not included yet |
 | Playwright engine · Tauri desktop shell | 🚧 planned |
 | Camera, screen, cursor and keyboard control | 🚧 specified, not built |
+
+The tool-data path is guarded now. `brain-lab/tool_mapping.py` maps a source
+name only when it normalises to a real registry tool or matches a documented
+semantic alias, and validates the transformed arguments against that tool's
+schema. A record with any unmapped offered tool, unmapped call or invalid
+argument is dropped rather than teaching a capability the runtime cannot
+execute. `brain-lab/audit_corpus.py` audits a corpus without loading the model,
+and `scripts/run_gate.py` runs the complete post-training gate and writes one
+`gate.json`; it never installs a checkpoint. The gate and install rule are in
+[docs/gate-runbook.md](docs/gate-runbook.md).
 
 The project is at **Month 1 of its roadmap** and has not had a public release. See [ROADMAP.md](ROADMAP.md) for the plan and [PROGRESS.md](PROGRESS.md) for verified results and open blockers.
 
@@ -424,11 +437,22 @@ assistant/.venv/bin/python scripts/smoke.py                # full run, needs a t
 
 CI runs the portable unit suite on Ubuntu and Windows across Python 3.11 and 3.12. The 14-check smoke script verifies the real loop: migrations, a chat turn, tool execution, a refused write, the presence stream, the daily summary, the read-only page, retention, and that the audit log rejects mutation.
 
-Model behaviour is measured, not assumed: `scripts/eval_model.py` scores the local model against fixed cases before features depend on it, `conversation_eval.py` scores multi-turn answers, and `tool_call_eval.py` scores whether the configured brain proposes tool calls the runtime can actually read:
+Model behaviour is measured, not assumed: `scripts/eval_model.py` scores the local model against fixed cases before features depend on it, `conversation_eval.py` scores multi-turn answers, and `tool_call_eval.py` scores whether the configured brain proposes tool calls the runtime can actually read. The gate wrapper runs all four suites against one checkpoint:
 
 ```bash
-assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
+assistant/.venv/bin/python scripts/run_gate.py \
+  --checkpoint runtime-data/models/candidates/claire-chat-v15-full.pt
 ```
+
+A corpus can be checked without loading the model:
+
+```bash
+assistant/.venv/bin/python brain-lab/audit_corpus.py \
+  --corpus brain-lab/data/chat-v16 --strict
+```
+
+Every gate stage must pass before a checkpoint is eligible for installation; a
+rejected candidate remains a candidate.
 
 ## Documentation
 
@@ -443,6 +467,7 @@ assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
 | [docs/architecture/machine-access.md](docs/architecture/machine-access.md) | Camera, screen and input policy |
 | [docs/connectors.md](docs/connectors.md) | Opt-in Claude, ChatGPT and Ollama brains |
 | [docs/platform-support.md](docs/platform-support.md) | What is verified on which OS |
+| [docs/gate-runbook.md](docs/gate-runbook.md) | Post-training gate and install rule |
 | [ROADMAP.md](ROADMAP.md) | Phased plan |
 | [PROGRESS.md](PROGRESS.md) | Current state, measurements, blockers |
 | [CHANGELOG.md](CHANGELOG.md) | Notable changes |
