@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
@@ -300,6 +302,9 @@ NON_PUBLIC = (
     "fe80::1",
     "[::ffff:127.0.0.1]",
     "100.64.0.7",
+    "64:ff9b::7f00:1",
+    "64:ff9b:1::1",
+    "2002:7f00:1::",
 )
 
 
@@ -521,6 +526,42 @@ def test_the_pinned_backend_skips_an_unavailable_address_family(
     backend.connect_tcp("rebind.example", 80)
 
     assert attempts == [(str(PUBLIC), 80)]
+
+
+def test_the_pinned_transport_uses_the_checked_address_over_a_real_socket() -> None:
+    """Exercise the real httpcore socket path, not a mocked transport."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = b"pinned"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args) -> None:  # noqa: ANN001, ANN002
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    client = httpx.Client(
+        transport=browser_module._PinnedTransport(
+            {("pinned.example", port): ("127.0.0.1",)}
+        ),
+        trust_env=False,
+    )
+    try:
+        response = client.get(f"http://pinned.example:{port}/")
+    finally:
+        client.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert response.status_code == 200
+    assert response.text == "pinned"
 
 
 def test_the_default_session_always_builds_the_pinned_transport() -> None:

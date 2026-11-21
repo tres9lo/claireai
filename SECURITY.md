@@ -44,6 +44,7 @@ Anything that breaks one of the guarantees the project claims:
 - `task_log` is append-only enforced by triggers.
 - Secrets are redacted and long strings truncated before storage.
 - Servers bind to loopback and serve read-only state; there is no POST route.
+- Browser egress resolves once, rejects non-global addresses and pins the approved IPs. See [docs/security/egress.md](docs/security/egress.md) for NAT64 limits, proxy policy and the optional nftables helper.
 
 ## Supported versions
 

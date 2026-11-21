@@ -49,6 +49,11 @@ MAX_DOWNLOAD_BYTES = 20_000_000
 MAX_REDIRECTS = 5
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 USER_AGENT = "ClaireAI/0.1 (local assistant; +https://github.com/tres9lo/claireai)"
+# NAT64 prefixes that embed an IPv4 destination.  The well-known prefix can
+# carry either a public or private IPv4 address, so it needs the embedded check;
+# the local-use prefix is never a public Internet destination.
+NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
+NAT64_LOCAL_USE = ipaddress.ip_network("64:ff9b:1::/48")
 
 
 class _ReadableText(HTMLParser):
@@ -198,13 +203,20 @@ def _is_non_public(address: ipaddress._BaseAddress) -> bool:
     """
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
         address = address.ipv4_mapped
+    if isinstance(address, ipaddress.IPv6Address):
+        if address in NAT64_LOCAL_USE:
+            return True
+        if address in NAT64_WELL_KNOWN:
+            embedded = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+            if not embedded.is_global:
+                return True
     if not address.is_global:
         return True
     if isinstance(address, ipaddress.IPv6Address):
         if address.sixtofour is not None and not address.sixtofour.is_global:
             return True
         teredo = address.teredo
-        if teredo is not None and not teredo[1].is_global:
+        if teredo is not None and not (teredo[0].is_global and teredo[1].is_global):
             return True
     return False
 
