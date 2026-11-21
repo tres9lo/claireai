@@ -115,11 +115,13 @@ raise a sample limit without re-reading the dataset card and this file.
 ToolACE (Apache-2.0) and Hermes Function Calling v1 (Apache-2.0) now have bounded
 fetchers in `brain-lab/fetch_corpora.py`. They are capped at 500 records per
 source, require one or two validated calls, convert ToolACE's bracket syntax to
-the runtime's `<tool_call>` JSON format, retain the source tool names as
-metadata, drop malformed calls, and remove held-out evaluation prompts. Their
-sidecars record licence, URL, retrieval time and SHA-256. The tool names still
-have to be mapped to actual registry tools and evaluated before training; a
-fetched schema is not an executable capability.
+the runtime's `<tool_call>` JSON format, render the offered tool names in the
+same compact block used at inference, retain those names as metadata, drop
+malformed calls, and remove held-out evaluation prompts from all four fixed
+suites. The installed checkpoint tokenizer enforces the 512-token prompt-plus-
+reply budget. Their sidecars record licence, URL, retrieval time and SHA-256.
+The tool names still have to be mapped to actual registry tools and evaluated
+before training; a fetched schema is not an executable capability.
 
 Glaive Function Calling v2 (Apache-2.0), xLAM Function Calling 60k (CC BY 4.0,
 attribution required), and Smol-SmolTalk (Apache-2.0) remain catalogued but are

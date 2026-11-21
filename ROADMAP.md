@@ -59,9 +59,9 @@ retrieval, not general parity on this CPU model.
 
 ### 3. Conversation and tool use
 
-- [ ] Keep the deterministic router, but add fixed probes for "answer directly",
+- [x] Keep the deterministic router, but add fixed probes for "answer directly",
   "call one tool", "ask for a missing argument" and "refuse".
-- [ ] Score tool name, argument validity, no-call correctness and final answer
+- [x] Score tool name, argument validity, no-call correctness and final answer
   separately. A plausible call to a non-existent tool is a failure.
 - [ ] Smoke-test English and French greetings and confirm prompts fit the
   trained context. Do not treat one good greeting as general quality.

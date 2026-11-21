@@ -7,16 +7,22 @@ runtime can actually read, with the right tool and the right arguments?
 
 It goes through :class:`claireai.brain.ScratchBrain`, so it scores the same
 parser the runtime uses — a call that this script counts as readable is one the
-agent would act on. Three checks per case:
+agent would act on. Checks are scored separately:
 
-``format``      exactly one call and no leftover prose
-``name``        the tool the request needs
-``arguments``   every required argument the request names
+``format``        exactly one readable call
+``name``          the tool the request needs
+``arguments``     every required argument the request names
+``no_call``       the request must not invoke a tool
+``final_answer``  the refusal or direct answer contains/avoids required text
 
 Results are per-run and a case only counts as passing when every run passes, so
-a model that lands a call one time in three does not look correct.
+a model that lands a call one time in three does not look correct. The default
+file is ``tool_call_cases.json``; run ``tool_call_cases_extended.json`` with
+``--cases`` for the direct-answer, missing-argument and refusal probes.
 
     assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
+    assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3 \
+        --cases scripts/tool_call_cases_extended.json
 
 Exit codes: 0 all cases stable, 1 some case failed, 2 bad configuration,
 3 model runtime unavailable.
@@ -27,6 +33,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,8 +59,14 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
     if not isinstance(cases, list) or not cases:
         raise ValueError("case file must contain a non-empty 'cases' list")
     for case in cases:
-        if not case.get("user") or "expect" not in case:
-            raise ValueError(f"case {case.get('id')!r} needs 'user' and 'expect'")
+        if not isinstance(case, dict):
+            raise ValueError("every case must be an object")
+        if not isinstance(case.get("expect"), dict):
+            raise ValueError(f"case {case.get('id')!r} needs an 'expect' object")
+        if not case.get("user"):
+            raise ValueError(f"case {case.get('id')!r} needs 'user'")
+        if case.get("tools") is not None and not isinstance(case["tools"], list):
+            raise ValueError(f"case {case.get('id')!r} tools must be a list")
     return cases
 
 
@@ -86,6 +99,23 @@ def prompt_clause(mode: str) -> str:
     return system_prompt(mode).content.split(" Allowed folders:", 1)[-1]
 
 
+def _phrase_in(text: str, phrase: str) -> bool:
+    """Whole-phrase match, so ``hi`` does not match inside ``this``."""
+    return bool(re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", text))
+
+
+def _reply_check(expect: dict[str, Any], content: str) -> tuple[bool, str]:
+    lowered = content.lower()
+    wanted = [str(value).lower() for value in expect.get("reply_contains_any") or []]
+    forbidden = [str(value).lower() for value in expect.get("reply_not_contains") or []]
+    if wanted and not any(_phrase_in(lowered, value) for value in wanted):
+        return False, f"final answer missing any of {wanted[:4]}"
+    found = [value for value in forbidden if _phrase_in(lowered, value)]
+    if found:
+        return False, f"final answer contained forbidden {found[:4]}"
+    return True, "final answer matched"
+
+
 async def score_case(
     brain: ScratchBrain, registry, case: dict[str, Any], runs: int, *, sandbox: str = "home"
 ) -> dict[str, Any]:
@@ -97,12 +127,23 @@ async def score_case(
     expect = case["expect"]
     expected_name = expect.get("name")
     expected_arguments = expect.get("arguments") or {}
+    reply_checks = bool(expect.get("reply_contains_any") or expect.get("reply_not_contains"))
 
     passed_runs = 0
     checks = 0
     checks_passed = 0
     failures: list[str] = []
     sample = ""
+    breakdown: dict[str, dict[str, int]] = {
+        name: {"passed": 0, "total": 0}
+        for name in ("format", "name", "arguments", "no_call", "final_answer")
+    }
+
+    def record(group: str, passed: bool) -> None:
+        breakdown[group]["total"] += 1
+        if passed:
+            breakdown[group]["passed"] += 1
+
     for _ in range(runs):
         response = await brain.generate(messages, tools=schemas, temperature=0.2)
         calls = response.tool_calls
@@ -114,6 +155,8 @@ async def score_case(
         run_ok = True
         if expected_name is None:
             checks += 1
+            no_call = not calls
+            record("no_call", no_call)
             if calls:
                 failures.append(f"called {calls[0].name} for small talk")
                 run_ok = False
@@ -122,11 +165,18 @@ async def score_case(
         else:
             checks += 3
             if len(calls) != 1:
+                record("format", False)
+                record("name", False)
+                record("arguments", False)
                 failures.append(f"format: {len(calls)} readable calls")
                 run_ok = False
             else:
+                format_ok = True
+                record("format", format_ok)
                 checks_passed += 1
-                if calls[0].name == expected_name:
+                name_ok = calls[0].name == expected_name
+                record("name", name_ok)
+                if name_ok:
                     checks_passed += 1
                 else:
                     failures.append(f"name: {calls[0].name} != {expected_name}")
@@ -136,11 +186,25 @@ async def score_case(
                     for key, value in expected_arguments.items()
                     if not _match(value, calls[0].arguments.get(key))
                 ]
-                if argument_failures and calls[0].name == expected_name:
-                    failures.append("arguments: " + ", ".join(sorted(argument_failures)))
+                # Arguments on the wrong tool are not valid evidence that the
+                # request was understood, even when no arguments were required.
+                arguments_ok = name_ok and not argument_failures
+                record("arguments", arguments_ok)
+                if not arguments_ok:
+                    if name_ok:
+                        failures.append("arguments: " + ", ".join(sorted(argument_failures)))
                     run_ok = False
-                elif not argument_failures:
+                else:
                     checks_passed += 1
+        if reply_checks:
+            checks += 1
+            reply_ok, reply_reason = _reply_check(expect, response.content)
+            record("final_answer", reply_ok)
+            if reply_ok:
+                checks_passed += 1
+            else:
+                failures.append(reply_reason)
+                run_ok = False
         if run_ok:
             passed_runs += 1
     return {
@@ -150,6 +214,7 @@ async def score_case(
         "runs_passed": passed_runs,
         "checks": checks,
         "checks_passed": checks_passed,
+        "breakdown": breakdown,
         "failures": list(dict.fromkeys(failures)),
         "sample": sample,
     }
@@ -160,11 +225,18 @@ def summarise(results: list[dict[str, Any]], runs: int) -> dict[str, Any]:
     checks_passed = sum(result["checks_passed"] for result in results)
     stable = sum(1 for result in results if result["passed"])
     total_runs_passed = sum(result["runs_passed"] for result in results)
+    breakdown: dict[str, dict[str, int]] = {}
+    for result in results:
+        for group, counts in (result.get("breakdown") or {}).items():
+            aggregate = breakdown.setdefault(group, {"passed": 0, "total": 0})
+            aggregate["passed"] += int(counts.get("passed", 0))
+            aggregate["total"] += int(counts.get("total", 0))
     return {
         "cases": len(results),
         "cases_stable": stable,
         "checks": checks,
         "checks_passed": checks_passed,
+        "breakdown": breakdown,
         "runs": runs,
         "runs_passed": total_runs_passed,
         "all_stable": stable == len(results),
@@ -184,8 +256,17 @@ def render_report(results: list[dict[str, Any]], summary: dict[str, Any], label:
             f"  {result['id']:<18} {marker} {result['runs_passed']}/{result['runs']}"
             f"  checks {result['checks_passed']}/{result['checks']}{detail}"
         )
+    lines.append("")
+    breakdown = summary.get("breakdown") or {}
+    if breakdown:
+        parts = [
+            f"{name} {counts['passed']}/{counts['total']}"
+            for name, counts in breakdown.items()
+            if counts.get("total")
+        ]
+        if parts:
+            lines.append("breakdown: " + " · ".join(parts))
     lines += [
-        "",
         f"cases: {summary['cases_stable']}/{summary['cases']} stable",
         f"checks: {summary['checks_passed']}/{summary['checks']}",
         f"runs: {summary['runs_passed']} of {summary['runs'] * summary['cases']} runs passed every check",

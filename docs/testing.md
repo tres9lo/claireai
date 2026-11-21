@@ -108,19 +108,25 @@ configuration or case file, `3` runtime unavailable / model not installed.
 
 ```bash
 assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
+assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3 \
+  --cases scripts/tool_call_cases_extended.json
 ```
 
 A separate suite, because tool calls fail in a way answer quality does not
 predict: a model can write a good sentence and still emit a call the runtime
-cannot read. Cases live in `scripts/tool_call_cases.json` and carry the tool
-names offered for that request. Each run is scored on three checks — `format`
-(exactly one call, no leftover prose), `name` (the tool the request needs) and
-`arguments` (the values the request names) — and a case only passes when every
-run passes, so a model that lands a call one time in three does not look correct. Cases cover
-the file tools, the browser tools and the calendar (`list_appointments`,
-`add_appointment`). Adding a case changes the check total, so compare check
-counts only between checkpoints measured on the same case file — the calendar
-cases took it from 138 to 165.
+cannot read. Cases live in `scripts/tool_call_cases.json` and
+`scripts/tool_call_cases_extended.json` and carry the tool names offered for
+that request. Each run is scored on separate checks — `format` (exactly one
+readable call), `name` (the tool the request needs), `arguments` (the values the
+request names), `no_call` (when the request must not invoke a tool) and
+`final_answer` (when a refusal or direct answer must contain or avoid a
+phrase). The report prints a breakdown so a model cannot hide weak argument
+handling behind a correct name, or a bad refusal behind a correct no-call. A
+case only passes when every run passes, so a model that lands a call one time in
+three does not look correct. Cases cover the file tools, the browser tools, the
+calendar (`list_appointments`, `add_appointment`), direct answers, missing
+arguments and refusals. Adding a case changes the check total, so compare check
+counts only between checkpoints measured on the same case files.
 
 It goes through `ScratchBrain` with the runtime's own system message, which is
 what makes it a measurement of the assistant rather than of the model in

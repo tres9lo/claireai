@@ -62,8 +62,9 @@ and the install gate. No gradient step happens during a conversation.
   examples the model cannot fit in its context.
 - Remove exact duplicates and near-duplicates across train and validation.
 - Remove every prompt used by `scripts/conversation_cases.json`,
-  `scripts/tool_call_cases.json` and `scripts/model_eval_cases.json` from
-  training. Contamination makes the gate meaningless.
+  `scripts/tool_call_cases.json`, `scripts/tool_call_cases_extended.json` and
+  `scripts/model_eval_cases.json` from training. Contamination makes the gate
+  meaningless.
 - Keep direct-answer and no-tool examples beside tool-call examples. Otherwise
   the model learns to call a tool for every question.
 - Record source, licence, revision, retrieval date, filters and SHA-256 before a

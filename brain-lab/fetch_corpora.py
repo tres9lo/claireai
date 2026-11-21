@@ -24,6 +24,7 @@ import ast
 import gzip
 import hashlib
 import json
+import os
 import re
 import time
 import urllib.parse
@@ -54,6 +55,7 @@ HERMES_URL = "https://huggingface.co/datasets/NousResearch/hermes-function-calli
 TOOLACE_DATASET = "Team-ACE/ToolACE"
 TOOLACE_URL = "https://huggingface.co/datasets/Team-ACE/ToolACE"
 TOOL_SOURCE_LIMIT = 500
+CONTEXT_TOKENS = 512
 
 
 class FetchError(Exception):
@@ -116,6 +118,87 @@ def _record(user: str, assistant: str, *, source: str, license_name: str, url: s
     }
 
 
+def _find_tokenizer_manifest(explicit: Path | None = None) -> Path | None:
+    if explicit is not None:
+        return explicit.expanduser()
+    candidates: list[Path] = []
+    data_dir = os.environ.get("CLAIREAI_DATA_DIR")
+    if data_dir:
+        candidates.append(Path(data_dir).expanduser() / "models" / "claire-scratch.json")
+    candidates.extend(
+        [
+            # Prefer the checkpoint the app actually runs; a stale development
+            # copy can carry different tokenizer merges and a misleading budget.
+            Path.home() / ".local" / "share" / "ClaireAI" / "models" / "claire-scratch.json",
+            ROOT.parent / "runtime-data" / "models" / "claire-scratch.json",
+        ]
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _load_tokenizer(manifest: Path):
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise FetchError(f"could not read tokenizer manifest {manifest}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise FetchError(f"tokenizer manifest {manifest} is not an object")
+    merges = payload.get("tokenizer_merges")
+    if not merges:
+        raise FetchError(f"tokenizer manifest {manifest} carries no tokenizer_merges")
+    try:
+        pairs = [tuple(int(value) for value in pair) for pair in merges]
+    except (TypeError, ValueError) as exc:
+        raise FetchError(f"tokenizer manifest {manifest} has malformed merges") from exc
+    if any(len(pair) != 2 for pair in pairs):
+        raise FetchError(f"tokenizer manifest {manifest} has malformed merges")
+    try:
+        from claire_brain.tokenizer import BytePairTokenizer
+    except ImportError as exc:
+        raise FetchError("claire_brain is not importable; install the brain-lab package") from exc
+    return BytePairTokenizer(pairs)
+
+
+def _tool_system(available_tools: list[str] | None) -> str:
+    """Put the offered tool names in the prompt the trainer actually renders.
+
+    Training records otherwise carry ``available_tools`` as metadata that the
+    trainer never reads, so the model would learn a call format without ever
+    seeing the tool list it receives at inference.
+    """
+    names = [str(name).strip() for name in available_tools or [] if str(name).strip()]
+    if not names:
+        return SYSTEM
+    try:
+        from claire_brain.prompt import tool_block
+    except ImportError:
+        return SYSTEM
+    schemas = [
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "Available tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        for name in names
+    ]
+    block = tool_block(schemas)
+    return f"{SYSTEM}\n{block}" if block else SYSTEM
+
+
+def _fits_token_budget(
+    tokenizer: Any, system: str, user: str, assistant: str, max_tokens: int
+) -> bool:
+    from claire_brain.prompt import render_prompt
+
+    prompt = render_prompt(system, [{"role": "user", "content": user}])
+    prompt_tokens = len(tokenizer.encode(prompt, append_eos=False))
+    target_tokens = len(tokenizer.encode(assistant, append_eos=True))
+    return prompt_tokens + target_tokens <= max_tokens
+
+
 def _tool_record(
     user: str,
     assistant: str,
@@ -124,20 +207,27 @@ def _tool_record(
     license_name: str,
     url: str,
     available_tools: list[str],
+    tokenizer: Any | None = None,
+    max_tokens: int = CONTEXT_TOKENS,
 ) -> dict[str, Any] | None:
     """A tool-use record in the runtime's own wire format, bounded for 512 tokens."""
     user, assistant = _clean(user), _clean(assistant)
     if len(user) < 8 or len(assistant) < 8:
         return None
-    # A conservative character bound. The trainer still tokenises and truncates,
-    # but this keeps obviously oversized schemas out of the bounded sample.
-    if len(user) + len(assistant) + len(SYSTEM) > 2048:
+    system = _tool_system(available_tools)
+    assistant = _clip(assistant, 900)
+    if tokenizer is not None:
+        if not _fits_token_budget(tokenizer, system, user, assistant, max_tokens):
+            return None
+    elif len(user) + len(assistant) + len(system) > 2048:
+        # No tokenizer was available. Keep the conservative character bound so
+        # a standalone fetch still cannot emit obviously oversized records.
         return None
     return {
-        "system": SYSTEM,
+        "system": system,
         "messages": [
             {"role": "user", "content": user[:1200]},
-            {"role": "assistant", "content": _clip(assistant, 900)},
+            {"role": "assistant", "content": assistant},
         ],
         "source": source,
         "license": license_name,
@@ -284,7 +374,12 @@ def _call_text(call: dict[str, Any]) -> str:
 def _held_out_prompts() -> set[str]:
     """Evaluation prompts that must never enter a training sample."""
     prompts: set[str] = set()
-    for name in ("model_eval_cases.json", "conversation_cases.json"):
+    for name in (
+        "model_eval_cases.json",
+        "conversation_cases.json",
+        "tool_call_cases.json",
+        "tool_call_cases_extended.json",
+    ):
         path = ROOT.parent / "scripts" / name
         if not path.is_file():
             continue
@@ -292,11 +387,19 @@ def _held_out_prompts() -> set[str]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except ValueError:
             continue
-        for case in payload.get("cases", []):
-            if case.get("prompt"):
-                prompts.add(str(case["prompt"]).strip())
-            for turn in case.get("turns", []):
-                if turn.get("user"):
+        if not isinstance(payload, dict) or not isinstance(payload.get("cases"), list):
+            continue
+        for case in payload["cases"]:
+            if not isinstance(case, dict):
+                continue
+            for key in ("prompt", "user"):
+                if case.get(key):
+                    prompts.add(str(case[key]).strip())
+            turns = case.get("turns")
+            if not isinstance(turns, list):
+                continue
+            for turn in turns:
+                if isinstance(turn, dict) and turn.get("user"):
                     prompts.add(str(turn["user"]).strip())
     return prompts
 
@@ -310,7 +413,12 @@ def _rows(dataset: str, config: str, *, offset: int, length: int = 100) -> list[
     return [item.get("row") or {} for item in rows if isinstance(item, dict)]
 
 
-def fetch_toolace(limit: int) -> list[dict[str, Any]]:
+def fetch_toolace(
+    limit: int,
+    *,
+    tokenizer: Any | None = None,
+    max_tokens: int = CONTEXT_TOKENS,
+) -> list[dict[str, Any]]:
     """Bounded ToolACE sample, normalised into the runtime call format."""
     limit = max(1, min(int(limit), TOOL_SOURCE_LIMIT))
     records: list[dict[str, Any]] = []
@@ -356,6 +464,8 @@ def fetch_toolace(limit: int) -> list[dict[str, Any]]:
                 license_name="Apache-2.0",
                 url=TOOLACE_URL,
                 available_tools=available,
+                tokenizer=tokenizer,
+                max_tokens=max_tokens,
             )
             if record is None:
                 continue
@@ -374,7 +484,12 @@ def fetch_toolace(limit: int) -> list[dict[str, Any]]:
     return records
 
 
-def fetch_hermes(limit: int) -> list[dict[str, Any]]:
+def fetch_hermes(
+    limit: int,
+    *,
+    tokenizer: Any | None = None,
+    max_tokens: int = CONTEXT_TOKENS,
+) -> list[dict[str, Any]]:
     """Bounded Hermes Function Calling v1 sample (single-turn config)."""
     limit = max(1, min(int(limit), TOOL_SOURCE_LIMIT))
     records: list[dict[str, Any]] = []
@@ -433,6 +548,8 @@ def fetch_hermes(limit: int) -> list[dict[str, Any]]:
                 license_name="Apache-2.0",
                 url=HERMES_URL,
                 available_tools=available,
+                tokenizer=tokenizer,
+                max_tokens=max_tokens,
             )
             if record is None:
                 continue
@@ -690,9 +807,30 @@ def main() -> int:
     )
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument(
+        "--tokenizer-manifest",
+        type=Path,
+        default=None,
+        help=(
+            "checkpoint sidecar whose tokenizer_merges enforce the 512-token tool-record "
+            "budget (default: discover the installed claire-scratch.json)"
+        ),
+    )
     args = parser.parse_args()
     if args.limit < 1:
         parser.error("--limit must be positive")
+
+    tokenizer = None
+    tokenizer_manifest = _find_tokenizer_manifest(args.tokenizer_manifest)
+    if tokenizer_manifest is not None:
+        try:
+            tokenizer = _load_tokenizer(tokenizer_manifest)
+        except FetchError as exc:
+            if args.tokenizer_manifest is not None:
+                parser.error(str(exc))
+            print(f"WARNING: {exc}; tool records will use the character bound")
+    else:
+        print("WARNING: no tokenizer manifest found; tool records will use the character bound")
 
     sources = (
         ("oasst1", "gsm8k", "fineweb", "fineweb-fr", "toolace", "hermes")
@@ -740,7 +878,7 @@ def main() -> int:
                     f"{args.output / 'fineweb-2-fr.jsonl'}"
                 )
             elif source == "toolace":
-                records = fetch_toolace(args.limit)
+                records = fetch_toolace(args.limit, tokenizer=tokenizer)
                 manifest = _write(
                     records,
                     args.output / "toolace.jsonl",
@@ -757,7 +895,7 @@ def main() -> int:
                     f"{args.output / 'toolace.jsonl'}"
                 )
             elif source == "hermes":
-                records = fetch_hermes(args.limit)
+                records = fetch_hermes(args.limit, tokenizer=tokenizer)
                 manifest = _write(
                     records,
                     args.output / "hermes-function-calling.jsonl",

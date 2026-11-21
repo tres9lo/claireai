@@ -25,8 +25,8 @@ small vocabulary; dumping terabytes into it will not fix that.
 | 5% | Your own vetted notes and drafts | Author-owned material only |
 
 Do not train on the evaluation cases in `scripts/conversation_cases.json`,
-`scripts/tool_call_cases.json` or `scripts/model_eval_cases.json`. Keep the
-held-out split separate.
+`scripts/tool_call_cases.json`, `scripts/tool_call_cases_extended.json` or
+`scripts/model_eval_cases.json`. Keep the held-out split separate.
 
 ## What each source is good for
 
@@ -63,10 +63,12 @@ assistant/.venv/bin/python brain-lab/fetch_corpora.py --source hermes --limit 50
 
 The fetcher normalises ToolACE's bracket calls to the runtime's `<tool_call>`
 JSON format, keeps only one or two calls whose names appear in that row's source
-schema, removes evaluation prompts and exact duplicates, and writes a licence /
-SHA-256 sidecar. Source tool names remain metadata: map them to the actual
-registry before training, and evaluate the result. Fetching a schema never makes
-that API executable.
+schema, renders the offered tool names in the same compact block used at
+inference, and enforces the 512-token context with the installed checkpoint
+tokenizer before writing a licence / SHA-256 sidecar. It removes prompts from
+all four fixed evaluation suites and exact duplicates. Source tool names still
+have to be mapped to the actual registry and evaluated; fetching a schema never
+makes that API executable.
 
 | Dataset | Size | Licence | Best use | Guardrail |
 | --- | ---: | --- | --- | --- |

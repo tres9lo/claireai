@@ -45,7 +45,12 @@ def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
 
 def held_out_prompts() -> set[str]:
     prompts: set[str] = set()
-    for name in ("model_eval_cases.json", "conversation_cases.json"):
+    for name in (
+        "model_eval_cases.json",
+        "conversation_cases.json",
+        "tool_call_cases.json",
+        "tool_call_cases_extended.json",
+    ):
         path = ROOT.parent / "scripts" / name
         if not path.is_file():
             continue
@@ -53,11 +58,19 @@ def held_out_prompts() -> set[str]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except ValueError:
             continue
-        for case in payload.get("cases", []):
-            if case.get("prompt"):
-                prompts.add(str(case["prompt"]).strip())
-            for turn in case.get("turns", []):
-                if turn.get("user"):
+        if not isinstance(payload, dict) or not isinstance(payload.get("cases"), list):
+            continue
+        for case in payload["cases"]:
+            if not isinstance(case, dict):
+                continue
+            for key in ("prompt", "user"):
+                if case.get(key):
+                    prompts.add(str(case[key]).strip())
+            turns = case.get("turns")
+            if not isinstance(turns, list):
+                continue
+            for turn in turns:
+                if isinstance(turn, dict) and turn.get("user"):
                     prompts.add(str(turn["user"]).strip())
     return prompts
 

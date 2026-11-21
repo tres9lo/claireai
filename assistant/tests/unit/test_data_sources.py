@@ -6,17 +6,28 @@ import importlib.util
 import json
 from pathlib import Path
 
+from claire_brain.tokenizer import BytePairTokenizer
+
 ROOT = Path(__file__).resolve().parents[3]
 ALLOWED_ACCESS = {"public", "request", "credentials", "do-not-use"}
 FETCHER = ROOT / "brain-lab" / "fetch_corpora.py"
+MERGER = ROOT / "brain-lab" / "merge_corpora.py"
 
 
-def _fetcher_module():
-    spec = importlib.util.spec_from_file_location("fetch_corpora_under_test", FETCHER)
+def _module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _fetcher_module():
+    return _module(FETCHER, "fetch_corpora_under_test")
+
+
+def _merger_module():
+    return _module(MERGER, "merge_corpora_under_test")
 
 
 def test_every_source_has_a_licence_link_and_access_state() -> None:
@@ -65,6 +76,60 @@ def test_hermes_call_blocks_are_parsed() -> None:
     )
     assert nested == [{"name": "save", "arguments": {"payload": {"a": 1, "b": 2}}}]
     assert fetcher._parse_hermes_calls("<tool_call>{not json}</tool_call>") is None
+
+
+class _BudgetTokenizer:
+    def encode(self, text: str, *, append_eos: bool = True) -> list[int]:
+        return [1] * (200 if "over budget" in text else 10)
+
+
+def test_tool_records_use_the_real_tokenizer_budget() -> None:
+    fetcher = _fetcher_module()
+    values = dict(
+        source="toolace",
+        license_name="Apache-2.0",
+        url="https://example.test/source",
+        available_tools=["list_folder"],
+        tokenizer=_BudgetTokenizer(),
+        max_tokens=64,
+    )
+    record = fetcher._tool_record("hello there", "short answer", **values)
+    assert record is not None
+    assert "list_folder" in record["system"]
+    assert "TOOLS:" in record["system"]
+    assert fetcher._tool_record("hello there", "over budget answer", **values) is None
+
+
+def test_a_non_object_tokenizer_manifest_is_rejected(tmp_path: Path) -> None:
+    fetcher = _fetcher_module()
+    manifest = tmp_path / "model.json"
+    manifest.write_text("[]", encoding="utf-8")
+
+    try:
+        fetcher._load_tokenizer(manifest)
+    except fetcher.FetchError as exc:
+        assert "not an object" in str(exc)
+    else:
+        raise AssertionError("a list manifest must be rejected")
+
+
+def test_a_tokenizer_manifest_is_loaded_from_its_merges(tmp_path: Path) -> None:
+    fetcher = _fetcher_module()
+    tokenizer = BytePairTokenizer.train(["hello hello hello"], vocab_size=260)
+    manifest = tmp_path / "model.json"
+    manifest.write_text(
+        json.dumps({"tokenizer_merges": [list(pair) for pair in tokenizer.merges]}),
+        encoding="utf-8",
+    )
+
+    loaded = fetcher._load_tokenizer(manifest)
+    assert loaded.merges == tokenizer.merges
+
+
+def test_tool_eval_prompts_are_held_out_everywhere() -> None:
+    prompt = "what is inside my Downloads folder"
+    assert prompt in _fetcher_module()._held_out_prompts()
+    assert prompt in _merger_module().held_out_prompts()
 
 
 def test_toolace_fetch_keeps_only_known_one_or_two_call_rows(monkeypatch) -> None:

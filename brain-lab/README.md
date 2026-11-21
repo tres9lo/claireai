@@ -85,8 +85,17 @@ The builder mixes original synthetic templates (small talk, refusals, intent
 routing, slot extraction, tool-call transcripts, summaries, in-context recall
 and an authored English/French language curriculum), Dolly 15k, TinyStories and
 the repository's bootstrap examples. It removes any user turn that exactly
-matches a prompt in either fixed suite (`scripts/model_eval_cases.json` or
-`scripts/conversation_cases.json`), so both evaluations stay held out.
+matches a prompt in the fixed model, conversation and tool-call suites
+(`scripts/model_eval_cases.json`, `scripts/conversation_cases.json`,
+`scripts/tool_call_cases.json` and `scripts/tool_call_cases_extended.json`), so
+every evaluation stays held out.
+
+ToolACE and Hermes records are filtered with the installed checkpoint's own
+byte-pair merges, not a character estimate. The filter counts the rendered
+prompt plus the reply, including the compact tool block, against the 512-token
+training context. Records that do not fit are dropped and counted in the
+sidecar; the fetcher falls back to a conservative character bound only when no
+tokenizer manifest is available.
 
 `train_chat.py` stores token ids as compact arrays rather than boxed Python
 integers. That keeps a 50k-record corpus within this host's RAM budget; the old
