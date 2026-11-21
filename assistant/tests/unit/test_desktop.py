@@ -92,6 +92,17 @@ def test_activity_lists_what_the_runtime_ran(tmp_path) -> None:
     assert isinstance(runtime.recent_tasks(), list)
 
 
+def test_day_plan_round_trip(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+    saved = runtime.add_day_plan_item(
+        when="today", starts_at="09:30", request="read the note"
+    )
+
+    assert saved[0]["starts_at"] == "09:30"
+    assert saved[0]["status"] == "planned"
+    assert runtime.day_plan("today")[0]["request"] == "read the note"
+
+
 def test_speaking_can_be_cancelled(tmp_path) -> None:
     runtime = _runtime(tmp_path)
     runtime.stop_speaking()
@@ -108,6 +119,7 @@ class FakeRuntime:
         self.data_dir = data_dir
         self._stopped = False
         self.preference_updates: list[dict[str, object]] = []
+        self.plan_items: list[dict[str, object]] = []
         self.speech_stops = 0
 
     def preferences(self):
@@ -140,6 +152,20 @@ class FakeRuntime:
 
     def recent_tasks(self):
         return []
+
+    def day_plan(self, when="today"):
+        return list(self.plan_items)
+
+    def add_day_plan_item(self, *, when, starts_at, request):
+        item = {
+            "id": f"plan-{len(self.plan_items) + 1}",
+            "day": when,
+            "starts_at": starts_at,
+            "request": request,
+            "status": "planned",
+        }
+        self.plan_items.append(item)
+        return list(self.plan_items)
 
     def conversations(self):
         return []
@@ -286,6 +312,27 @@ def test_approvals_page_shows_pending_actions_immediately(tmp_path, tk_root) -> 
     assert "1 waiting" in page.note.cget("text")
 
 
+def test_day_plan_page_adds_and_lists_a_task(tmp_path, tk_root) -> None:
+    pytest.importorskip("customtkinter")
+    from claireai.desktop.app import ClaireDesktop
+    from claireai.desktop.pages import DayPlanPage
+
+    runtime = FakeRuntime(tmp_path)
+    app = ClaireDesktop(tk_root, runtime)  # type: ignore[arg-type]
+    app.show(DayPlanPage)
+    page = app.pages[DayPlanPage]
+    assert page.tree.get_children() == ()
+
+    page.time_entry.insert(0, "09:30")
+    page.request_entry.insert(0, "read the note")
+    page._add()
+
+    rows = page.tree.get_children()
+    assert len(rows) == 1
+    assert page.tree.item(rows[0], "values") == ("09:30", "planned", "read the note")
+    assert page.request_entry.get() == ""
+
+
 def test_settings_page_adds_and_saves_a_folder(tmp_path, tk_root, monkeypatch) -> None:
     pytest.importorskip("customtkinter")
     from claireai.desktop import pages as pages_module
@@ -306,3 +353,27 @@ def test_settings_page_adds_and_saves_a_folder(tmp_path, tk_root, monkeypatch) -
     assert page.allowed_folders == [expected]
     assert runtime.preference_updates[-1] == {"allowed_folders": [expected]}
     assert page.folder_list.get(0, "end") == (expected,)
+
+
+def test_a_failed_folder_save_does_not_show_unstored_access(tmp_path, tk_root, monkeypatch) -> None:
+    pytest.importorskip("customtkinter")
+    from claireai.desktop import pages as pages_module
+    from claireai.desktop.app import ClaireDesktop
+    from claireai.desktop.pages import SettingsPage
+
+    class RefusingRuntime(FakeRuntime):
+        def update_preferences(self, values):
+            raise OSError("database is read-only")
+
+    app = ClaireDesktop(tk_root, RefusingRuntime(tmp_path))  # type: ignore[arg-type]
+    app.show(SettingsPage)
+    page = app.pages[SettingsPage]
+    folder = tmp_path / "work"
+    folder.mkdir()
+    monkeypatch.setattr(pages_module.filedialog, "askdirectory", lambda **_kwargs: str(folder))
+
+    page._add_folder()
+
+    assert page.allowed_folders == []
+    assert page.folder_list.get(0, "end") == ()
+    assert "not added" in page.folder_note.cget("text")

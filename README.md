@@ -364,6 +364,11 @@ assistant/.venv/bin/python -m claireai.cli --day-plan-run
 that item `awaiting_approval` instead of granting itself a write. Add
 `--day-plan-date tomorrow` when assigning or running tomorrow's plan.
 
+In the native window, **Day plan** lists a local day, adds timed requests, and
+runs due work in the background. It uses the same approval boundary as the CLI:
+a write is paused and shown as `awaiting_approval`, never inherited from the
+plan.
+
 # The whole app in one command (installs the venv on first run, then opens it)
 ./scripts/start.sh
 

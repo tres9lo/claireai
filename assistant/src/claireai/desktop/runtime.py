@@ -14,14 +14,17 @@ import shutil
 import sqlite3
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
 from claireai.agent import AgentError, run_task
 from claireai.brain import BrainError, BrainStopped, build_brain
 from claireai.config import Settings
+from claireai.dates import parse_when
 from claireai.identity import answer_self_question
+from claireai.permissions import Sandbox
+from claireai.planner import DayPlanRun, run_due_items
 from claireai.learning import BackgroundLearner, LearningError, LearningJournal
 from claireai.training import TrainingWorker
 from claireai.presence import PresenceStream
@@ -29,8 +32,10 @@ from claireai.runtime_control import RuntimeControl
 from claireai.storage import (
     ConversationRepository,
     Database,
+    DayPlanRepository,
     DirectiveRepository,
     PreferenceRepository,
+    transaction,
 )
 from claireai.tools import default_registry
 from claireai.ui_approval import LocalUIApprovalBroker
@@ -280,6 +285,46 @@ class DesktopRuntime:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # -- day plan ---------------------------------------------------------
+
+    def day_plan(self, when: str = "today") -> list[dict[str, Any]]:
+        """Return the local day's assigned tasks, with stable item IDs."""
+        day = parse_when(when)
+        with self._conn() as conn:
+            return [asdict(item) for item in DayPlanRepository(conn).for_day(day)]
+
+    def add_day_plan_item(
+        self, *, when: str, starts_at: str, request: str
+    ) -> list[dict[str, Any]]:
+        """Add one timed task; validation and storage belong to the repository."""
+        day = parse_when(when)
+        with self._conn() as conn:
+            with transaction(conn):
+                DayPlanRepository(conn).add(day=day, starts_at=starts_at, request=request)
+            return [asdict(item) for item in DayPlanRepository(conn).for_day(day)]
+
+    def run_day_plan(self, when: str = "today") -> DayPlanRun:
+        """Run due items through the normal agent; this is called off the UI thread."""
+        if self.stopped():
+            raise BrainStopped("ClaireAI is stopped. Turn it back on in Settings.")
+        return asyncio.run(self._run_day_plan(parse_when(when)))
+
+    async def _run_day_plan(self, day) -> DayPlanRun:
+        brain = build_brain(self.settings)
+        try:
+            with self._conn() as conn:
+                return await run_due_items(
+                    settings=self.settings,
+                    conn=conn,
+                    brain=brain,
+                    day=day,
+                    registry=default_registry(browser_enabled=bool(self.control()["browser"])),
+                    sandbox=Sandbox.from_settings(self.settings),
+                    device="desktop-native",
+                )
+        finally:
+            await brain.aclose()
 
     # -- approvals --------------------------------------------------------
 

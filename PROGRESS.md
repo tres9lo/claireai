@@ -1,5 +1,19 @@
 # Progress log
 
+## 2026-11-21 (desktop) — Day Plan page and folder-access rollback
+
+- **The day plan is now usable from the native window.** The new **Day plan**
+  page lists one local day, adds timed requests, and runs due items through the
+  existing headless runtime on a worker thread. The model and tool loop never
+  run on the Tk thread; writes still pause as `awaiting_approval` and are not
+  replayed.
+- **File access was already in the native app; the picker is `Settings → File
+  access`.** Adding, removing and the explicitly confirmed whole-PC choice all
+  persist through `allowed_folders`. A failed save now rolls the visible list
+  back, so the UI cannot show a folder as allowed when the database rejected it.
+- **Verified:** the focused desktop and day-plan tests pass, including the new
+  page round-trip, failed-save rollback, and the existing folder picker test.
+
 ## 2026-11-21 — Training limits checked; runtime token cap aligned
 
 - **No day-plan work was due.** Both the app database and `runtime-data` were

@@ -554,6 +554,139 @@ class ActivityPage(Page):
         self.refresh()
 
 
+class DayPlanPage(Page):
+    title = "Day plan"
+    glyph = "▤"
+    subtitle = "Assign tasks to local times. Safe actions can run; writes wait for approval."
+
+    def build(self) -> None:
+        self.heading(self.title, self.subtitle)
+        _style_tables(self.frame)
+        self.busy = False
+
+        bar = ctk.CTkFrame(self.frame, fg_color="transparent")
+        bar.pack(fill="x", padx=theme.GUTTER, pady=(0, 8))
+        ctk.CTkLabel(
+            bar, text="Day", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        ).pack(side="left", padx=(0, 6))
+        self.day_entry = ctk.CTkEntry(
+            bar, width=150, height=34, corner_radius=theme.RADIUS_SMALL,
+            fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER,
+            placeholder_text="today",
+        )
+        self.day_entry.insert(0, "today")
+        self.day_entry.pack(side="left")
+        self.button(bar, "Show", self.refresh).pack(side="left", padx=8)
+        self.run_button = self.button(bar, "Run due now", self._run, primary=True)
+        self.run_button.pack(side="left")
+        self.note = ctk.CTkLabel(
+            bar, text="", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        self.note.pack(side="left", padx=12)
+
+        add = ctk.CTkFrame(
+            self.frame, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        add.pack(fill="x", padx=theme.GUTTER, pady=(0, 10))
+        self.time_entry = ctk.CTkEntry(
+            add, width=82, height=34, corner_radius=theme.RADIUS_SMALL,
+            fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER,
+            placeholder_text="09:30",
+        )
+        self.time_entry.pack(side="left", padx=(10, 8), pady=10)
+        self.request_entry = ctk.CTkEntry(
+            add, height=34, corner_radius=theme.RADIUS_SMALL,
+            fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER,
+            placeholder_text="What should ClaireAI do?",
+        )
+        self.request_entry.pack(side="left", fill="x", expand=True, pady=10)
+        self.request_entry.bind("<Return>", lambda _event: self._add())
+        self.button(add, "Add task", self._add, primary=True).pack(side="left", padx=8, pady=10)
+
+        self.tree = ttk.Treeview(
+            self.frame, columns=("time", "status", "request"), show="headings",
+            height=6, style="Claire.Treeview",
+        )
+        for column, label, width in (
+            ("time", "Time", 80), ("status", "Status", 130), ("request", "Request", 540)
+        ):
+            self.tree.heading(column, text=label)
+            self.tree.column(column, width=width, anchor="w")
+        self.tree.pack(fill="both", expand=True, padx=theme.GUTTER)
+        self.refresh()
+
+    def refresh(self) -> None:
+        when = self.day_entry.get().strip() or "today"
+        try:
+            items = self.runtime.day_plan(when)
+        except Exception as error:  # noqa: BLE001 - the page must remain usable
+            self.tree.delete(*self.tree.get_children())
+            self.note.configure(text=f"could not read the plan: {error}", text_color=theme.DANGER)
+            return
+        self.tree.delete(*self.tree.get_children())
+        for item in items:
+            self.tree.insert(
+                "", "end", iid=str(item["id"]),
+                values=(item.get("starts_at", ""), item.get("status", ""), item.get("request", "")),
+            )
+        self.note.configure(
+            text="nothing planned" if not items else f"{len(items)} task(s)",
+            text_color=theme.MUTED if not items else theme.TEXT,
+        )
+
+    def _add(self) -> None:
+        when = self.day_entry.get().strip() or "today"
+        starts_at = self.time_entry.get().strip()
+        request = self.request_entry.get().strip()
+        try:
+            self.runtime.add_day_plan_item(when=when, starts_at=starts_at, request=request)
+        except Exception as error:  # noqa: BLE001 - show the owner the actual validation error
+            messagebox.showwarning("ClaireAI", str(error), parent=self.frame)
+            return
+        self.time_entry.delete(0, "end")
+        self.request_entry.delete(0, "end")
+        self.refresh()
+
+    def _run(self) -> None:
+        if self.busy:
+            return
+        self.busy = True
+        self.run_button.configure(state="disabled", text="Running…")
+        self.note.configure(text="running due tasks…", text_color=theme.ACCENT)
+        when = self.day_entry.get().strip() or "today"
+        self.app.submit(
+            "day-plan",
+            lambda: self.runtime.run_day_plan(when),
+            self._ran,
+            self._run_failed,
+        )
+
+    def _ran(self, report) -> None:  # noqa: ANN001
+        self.busy = False
+        self.run_button.configure(state="normal", text="Run due now")
+        self.refresh()
+        items = tuple(getattr(report, "items", ()))
+        if not items:
+            self.note.configure(text="nothing was due", text_color=theme.MUTED)
+            return
+        paused = sum(1 for item in items if getattr(item, "status", "") == "awaiting_approval")
+        self.note.configure(
+            text=f"{len(items)} due · {paused} waiting for approval",
+            text_color=theme.WARN if paused else theme.TEXT,
+        )
+
+    def _run_failed(self, error: Exception) -> None:
+        self.busy = False
+        self.run_button.configure(state="normal", text="Run due now")
+        self.note.configure(text=f"run failed: {error}", text_color=theme.DANGER)
+
+    def on_show(self) -> None:
+        self.refresh()
+
+
 class ApprovalsPage(Page):
     title = "Approvals"
     glyph = "✓"
@@ -1071,6 +1204,7 @@ class SettingsPage(Page):
         return True
 
     def _add_folders(self, candidates: list[Path]) -> None:
+        previous = list(self.allowed_folders)
         known = {Path(folder).expanduser().resolve(strict=False) for folder in self.allowed_folders}
         added = False
         for candidate in candidates:
@@ -1083,7 +1217,13 @@ class SettingsPage(Page):
         if not added:
             self.folder_note.configure(text="Already allowed.", text_color=theme.MUTED)
             return
-        self._save_folders()
+        if not self._save_folders():
+            # A permission list must not show a folder that was not persisted.
+            self.allowed_folders = previous
+            self._render_folders()
+            self.folder_note.configure(
+                text="Not saved; the folder was not added.", text_color=theme.DANGER
+            )
 
     def _add_folder(self) -> None:
         chosen = filedialog.askdirectory(
@@ -1117,9 +1257,15 @@ class SettingsPage(Page):
         if not selected:
             self.folder_note.configure(text="Select a folder first.", text_color=theme.WARN)
             return
+        previous = list(self.allowed_folders)
         for index in reversed(selected):
             del self.allowed_folders[index]
-        self._save_folders()
+        if not self._save_folders():
+            self.allowed_folders = previous
+            self._render_folders()
+            self.folder_note.configure(
+                text="Not saved; the folder was not removed.", text_color=theme.DANGER
+            )
 
     def apply(self) -> None:
         try:
@@ -1275,6 +1421,7 @@ class AboutPage(Page):
 PAGES: list[type[Page]] = [
     ChatPage,
     ActivityPage,
+    DayPlanPage,
     ApprovalsPage,
     ConversationsPage,
     VoicePage,
