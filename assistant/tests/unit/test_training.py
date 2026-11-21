@@ -2,11 +2,102 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import torch
+
+from claire_brain.prompt import render_prompt
+from claire_brain.tokenizer import EOS, PAD, BytePairTokenizer
 from claireai import training
+
+TRAIN_CHAT = Path(__file__).resolve().parents[3] / "brain-lab" / "train_chat.py"
+
+
+def _train_chat_module():
+    spec = importlib.util.spec_from_file_location("train_chat_under_test", TRAIN_CHAT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_decoded_batch_keeps_the_prompt_masked_and_the_reply_learned() -> None:
+    """Inspect the exact tensors the trainer feeds the model.
+
+    This catches the boundary bugs that loss curves hide: a shifted target, a
+    tool result leaking into the loss, a missing EOS, or padded labels counted as
+    real targets.
+    """
+    module = _train_chat_module()
+    tokenizer = BytePairTokenizer.train(
+        [
+            "You are ClaireAI. USER: list my downloads. "
+            "ASSISTANT: <tool_call>{\"name\":\"list_folder\",\"arguments\":{}}"
+            "</tool_call> TOOL list_folder: secret-tool-result-123 ASSISTANT: Two files."
+        ],
+        vocab_size=300,
+    )
+    tool_result = "secret-tool-result-123"
+    messages = [
+        {"role": "user", "content": "list my downloads"},
+        {
+            "role": "assistant",
+            "content": (
+                '<tool_call>{"name":"list_folder","arguments":{"path":"~/Downloads"}}'
+                "</tool_call>"
+            ),
+        },
+        {"role": "tool", "tool_name": "list_folder", "content": tool_result},
+        {"role": "assistant", "content": "Two files."},
+    ]
+    record = {"system": "You are ClaireAI.", "messages": messages}
+    examples = module.build_examples([record], tokenizer, context=512, max_target_tokens=160)
+    assert len(examples) == 2
+    assistant_indexes = [
+        index for index, message in enumerate(messages) if message["role"] == "assistant"
+    ]
+
+    for (ids, prompt_len), assistant_index in zip(examples, assistant_indexes):
+        ids_list = ids.tolist()
+        prompt = tokenizer.decode(ids_list[:prompt_len])
+        target = ids_list[prompt_len:]
+        target_text = tokenizer.decode(target)
+
+        # The prompt is byte-for-byte the renderer inference uses.
+        assert prompt == render_prompt(record["system"], messages[:assistant_index])
+        assert target_text == messages[assistant_index]["content"]
+        assert target[-1] == EOS
+        assert PAD not in target
+
+        x, y, mask = module.collate([(ids, prompt_len)], pad=PAD)
+        assert mask.shape == (1, len(ids_list) - 1)
+        assert not mask[0, : prompt_len - 1].any()
+        assert mask[0, prompt_len - 1 :].all()
+        assert torch.equal(
+            y[0, prompt_len - 1 :],
+            torch.tensor(target, dtype=torch.long),
+        )
+        # The tool result is context, never a target token.
+        if assistant_index == 3:
+            assert tool_result in prompt
+            assert tool_result not in target_text
+
+    first_ids, first_prompt_len = examples[0]
+    first_target = first_ids[first_prompt_len:].tolist()
+    assert "<tool_call>" in tokenizer.decode(first_target)
+
+    # Padding must not teach the model to predict pad ids.
+    x, y, mask = module.collate(examples, pad=PAD)
+    first_length = len(examples[0][0]) - 1
+    assert first_length < x.shape[1]
+    assert (x[0, first_length:] == PAD).all()
+    assert (y[0, first_length:] == 0).all()
+    assert (mask[0, first_length:] == 0).all()
+    assert mask[0].sum().item() == len(examples[0][0]) - examples[0][1]
+    assert mask[1].sum().item() == len(examples[1][0]) - examples[1][1]
 
 
 def test_the_curriculum_covers_every_domain_with_correct_numbers() -> None:

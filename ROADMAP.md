@@ -49,10 +49,10 @@ retrieval, not general parity on this CPU model.
 - [ ] Keep 300–500 filtered examples per source, 512 tokens or less, one or two
   tool calls, direct-answer negatives, deduplication and held-out
   decontamination. Record a manifest for each source.
-- [ ] Apply the checks in `docs/training-playbook.md`: exact inference template,
+- [x] Apply the checks in `docs/training-playbook.md`: exact inference template,
   response-only loss, unmasked tool-call tokens, masked tool results, EOS, and
   no padding labels.
-- [ ] Add a decoded-batch inspection test before the next long training run.
+- [x] Add a decoded-batch inspection test before the next long training run.
 - [ ] Run the quick candidate from the existing `chat-v15` corpus, then compare
   it with the installed checkpoint at the same run count. Install only if the
   existing gate passes and conversation does not regress.

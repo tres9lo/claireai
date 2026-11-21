@@ -1,5 +1,16 @@
 # Progress log
 
+## 2026-11-21 (training correctness) — Decoded-batch inspection
+
+- **The trainer's actual tensors are now inspected in a test.** It builds a
+  two-turn tool example, decodes the prompt and target, and checks that the
+  prompt is byte-for-byte `render_prompt()`, the target starts after the prompt,
+  every target position is unmasked, the tool call is learned, the tool result
+  stays in the masked prompt, EOS is present, and padding has zero labels and
+  zero mask.
+- **Verified:** `tests/unit/test_training.py` passes. The active training run
+  was not interrupted.
+
 ## 2026-11-21 (learning loop) — Replay, cited retrieval closeout, and tool-use fetchers
 
 - **Replay protects older confirmed lessons.** `LearningJournal.compile()` now
