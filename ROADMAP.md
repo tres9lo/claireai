@@ -48,7 +48,9 @@ retrieval, not general parity on this CPU model.
   add Glaive, xLAM and Smol-SmolTalk only after those pass format checks.
 - [ ] Keep 300–500 filtered examples per source, 512 tokens or less, one or two
   tool calls, direct-answer negatives, deduplication and held-out
-  decontamination. Record a manifest for each source.
+  decontamination. Record a manifest for each source. The deterministic mapper,
+  tokenizer audit and held-out checks are in place; remaining work is a full
+  mapped source sample before the next corpus build.
 - [x] Apply the checks in `docs/training-playbook.md`: exact inference template,
   response-only loss, unmasked tool-call tokens, masked tool results, EOS, and
   no padding labels.

@@ -97,24 +97,43 @@ training context. Records that do not fit are dropped and counted in the
 sidecar; the fetcher falls back to a conservative character bound only when no
 tokenizer manifest is available.
 
+`brain-lab/tool_mapping.py` is the only path from a source tool to a runtime
+tool. It normalises exact local names, applies a short explicit alias list, and
+validates the transformed arguments against the registry schema. If any call or
+any offered tool cannot be resolved that way, the whole record is dropped. Add
+an alias only when the source tool has the same semantics; a close name with
+different arguments is not enough.
+
 `train_chat.py` stores token ids as compact arrays rather than boxed Python
 integers. That keeps a 50k-record corpus within this host's RAM budget; the old
 representation is what forced the earlier memory-bounded corpus.
 
-Measure it with both suites:
+Measure it with the post-training gate:
 
 ```bash
-assistant/.venv/bin/python scripts/eval_model.py \
-  --model-checkpoint runtime-data/models/claire-chat-v15.pt --runs 1
-assistant/.venv/bin/python scripts/conversation_eval.py \
-  --model-checkpoint runtime-data/models/claire-chat-v15.pt
+assistant/.venv/bin/python scripts/run_gate.py \
+  --checkpoint runtime-data/models/claire-chat-v15.pt
 ```
 
-`eval_model.py` checks one-shot formatting and safety. `conversation_eval.py`
-runs multi-turn conversations and injects tool results; both score with plain
-code, never with another model. The rules behind this recipe — response-only
-loss, masked tool results, held-out contamination checks and the install gate —
-are in [`docs/training-playbook.md`](../docs/training-playbook.md).
+`run_gate.py` runs the model, conversation, standard tool and extended tool
+suites and writes one `gate.json`. `eval_model.py` checks one-shot formatting and
+safety. `conversation_eval.py` runs multi-turn conversations and injects tool
+results; all suites score with plain code, never with another model. The rules
+behind this recipe — response-only loss, masked tool results, held-out
+contamination checks and the install gate — are in
+[`docs/training-playbook.md`](../docs/training-playbook.md) and
+[`docs/gate-runbook.md`](../docs/gate-runbook.md).
+
+Audit a corpus without loading the model:
+
+```bash
+assistant/.venv/bin/python brain-lab/audit_corpus.py \
+  --corpus brain-lab/data/chat-v15 --strict
+```
+
+The audit reports prompt/target token distributions, call counts, unknown tool
+names, malformed cells, exact duplicates, held-out overlap and train/validation
+overlap. `--strict` exits non-zero on a violation.
 
 ## Train the visual-grounding prototype
 

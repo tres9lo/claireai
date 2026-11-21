@@ -1,5 +1,30 @@
 # Progress log
 
+## 2026-11-21 (tool corpus + CI) — Strict mapping, audit and gate
+
+- **Source tools are now mapped or dropped.** `brain-lab/tool_mapping.py`
+  normalises exact registry names, allows only explicit semantic aliases, and
+  validates transformed arguments against the real tool schema. A row with an
+  unmapped call, an unmapped offered tool or invalid arguments is discarded
+  rather than teaching an API the runtime cannot execute.
+- **The corpus can be audited without loading the model.** `brain-lab/audit_corpus.py`
+  reports prompt/target token distributions, 512/192-token violations, calls per
+  row, malformed and unknown tool calls, duplicate records, held-out overlap and
+  train/validation overlap. `--strict` fails on violations.
+- **The post-training gate is one command.** `scripts/run_gate.py` runs model,
+  conversation, standard tool and extended tool suites, writes each report and a
+  `gate.json`, and never installs a checkpoint. The runbook is
+  `docs/gate-runbook.md`.
+- **CI failure fixed at the cause.** GitHub Actions installs the assistant
+  without torch, but `test_training.py` imported torch at module scope, so test
+  collection failed on all four runners. The import now lives in the one
+  torch-dependent test and uses `pytest.importorskip`; the rest of the suite
+  runs in CI.
+- **Verified:** the full assistant suite passes locally with torch and in a
+  simulated no-torch environment (one skip); focused mapping, audit and gate
+  tests pass; the live corpus audit returned the expected strict failure for an
+  unknown tool. The active v15 training process was not interrupted.
+
 ## 2026-11-21 (training correctness) — Decoded-batch inspection
 
 - **The trainer's actual tensors are now inspected in a test.** It builds a

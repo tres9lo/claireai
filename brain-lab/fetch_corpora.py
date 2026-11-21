@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from tool_mapping import map_available, map_call, map_tool_name
+
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "data" / "external"
 USER_AGENT = "ClaireAI-corpus-fetcher/0.1 (personal research; contact local owner)"
@@ -209,14 +211,20 @@ def _tool_record(
     available_tools: list[str],
     tokenizer: Any | None = None,
     max_tokens: int = CONTEXT_TOKENS,
+    max_target_tokens: int = 192,
 ) -> dict[str, Any] | None:
-    """A tool-use record in the runtime's own wire format, bounded for 512 tokens."""
+    """A tool-use record in the runtime's wire format, bounded for 512 tokens."""
     user, assistant = _clean(user), _clean(assistant)
     if len(user) < 8 or len(assistant) < 8:
         return None
     system = _tool_system(available_tools)
-    assistant = _clip(assistant, 900)
+    # Never clip a serialised call: half a call is worse than no row. Long
+    # direct answers are still clipped to keep the sample compact.
+    if "<tool_call>" not in assistant:
+        assistant = _clip(assistant, 900)
     if tokenizer is not None:
+        if len(tokenizer.encode(assistant, append_eos=True)) > max_target_tokens:
+            return None
         if not _fits_token_budget(tokenizer, system, user, assistant, max_tokens):
             return None
     elif len(user) + len(assistant) + len(system) > 2048:
@@ -371,6 +379,34 @@ def _call_text(call: dict[str, Any]) -> str:
     )
 
 
+def _mapped_tool_plan(
+    available: list[str], calls: list[dict[str, Any]] | None
+) -> tuple[list[str], list[dict[str, Any]] | None] | None:
+    """Resolve the offered tools and all calls, or reject the whole record.
+
+    A partially mapped row would teach a call to a tool that was not offered or
+    would silently keep provider arguments the runtime cannot accept.
+    """
+    # An offered tool that has no local equivalent would make the row ambiguous:
+    # the model could learn to choose a tool that is not actually available.
+    if not available or any(map_tool_name(name) is None for name in available):
+        return None
+    mapped_available = map_available(available)
+    if not mapped_available:
+        return None
+    if calls is None:
+        return mapped_available, None
+    if not 1 <= len(calls) <= 2:
+        return None
+    mapped_calls: list[dict[str, Any]] = []
+    for call in calls:
+        mapped = map_call(call)
+        if mapped is None or mapped["name"] not in mapped_available:
+            return None
+        mapped_calls.append(mapped)
+    return mapped_available, mapped_calls
+
+
 def _held_out_prompts() -> set[str]:
     """Evaluation prompts that must never enter a training sample."""
     prompts: set[str] = set()
@@ -447,12 +483,12 @@ def fetch_toolace(
                 continue
             available = _source_tool_names(str(row.get("system") or ""))
             calls = _parse_toolace_calls(assistant)
-            if calls is not None:
-                if not 1 <= len(calls) <= 2:
-                    continue
-                if not available or any(call["name"] not in available for call in calls):
-                    continue
-                target = "".join(_call_text(call) for call in calls)
+            plan = _mapped_tool_plan(available, calls)
+            if plan is None:
+                continue
+            available, mapped_calls = plan
+            if mapped_calls is not None:
+                target = "".join(_call_text(call) for call in mapped_calls)
             else:
                 if assistant.lstrip().startswith("[") or "<tool_call>" in assistant:
                     continue
@@ -531,12 +567,12 @@ def fetch_hermes(
                 if isinstance(name, str) and name.strip()
             ]
             calls = _parse_hermes_calls(assistant)
-            if calls is not None:
-                if not 1 <= len(calls) <= 2:
-                    continue
-                if not available or any(call["name"] not in available for call in calls):
-                    continue
-                target = "".join(_call_text(call) for call in calls)
+            plan = _mapped_tool_plan(available, calls)
+            if plan is None:
+                continue
+            available, mapped_calls = plan
+            if mapped_calls is not None:
+                target = "".join(_call_text(call) for call in mapped_calls)
             else:
                 if "<tool_call>" in assistant:
                     continue
@@ -887,7 +923,7 @@ def main() -> int:
                     url=TOOLACE_URL,
                     notes=(
                         "Bounded one/two-call ToolACE sample in runtime-tool-call-v1 format; "
-                        "tool names are source metadata and must be mapped to registry tools before training."
+                        "only calls mapped to registry tools with valid arguments are kept."
                     ),
                 )
                 print(
@@ -904,7 +940,7 @@ def main() -> int:
                     url=HERMES_URL,
                     notes=(
                         "Bounded one/two-call Hermes sample in runtime-tool-call-v1 format; "
-                        "tool names are source metadata and must be mapped to registry tools before training."
+                        "only calls mapped to registry tools with valid arguments are kept."
                     ),
                 )
                 print(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 from claire_brain.tokenizer import BytePairTokenizer
@@ -12,6 +13,10 @@ ROOT = Path(__file__).resolve().parents[3]
 ALLOWED_ACCESS = {"public", "request", "credentials", "do-not-use"}
 FETCHER = ROOT / "brain-lab" / "fetch_corpora.py"
 MERGER = ROOT / "brain-lab" / "merge_corpora.py"
+# fetch_corpora is a script, not an installed module. Its local sibling imports
+# must work both here and when the script is executed directly.
+if str(FETCHER.parent) not in sys.path:
+    sys.path.insert(0, str(FETCHER.parent))
 
 
 def _module(path: Path, name: str):
@@ -83,6 +88,17 @@ class _BudgetTokenizer:
         return [1] * (200 if "over budget" in text else 10)
 
 
+class _BoundaryTokenizer:
+    def __init__(self, prompt_tokens: int, target_tokens: int) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.target_tokens = target_tokens
+
+    def encode(self, text: str, *, append_eos: bool = True) -> list[int]:
+        if text.startswith("SYSTEM:"):
+            return [1] * self.prompt_tokens
+        return [1] * self.target_tokens
+
+
 def test_tool_records_use_the_real_tokenizer_budget() -> None:
     fetcher = _fetcher_module()
     values = dict(
@@ -98,6 +114,63 @@ def test_tool_records_use_the_real_tokenizer_budget() -> None:
     assert "list_folder" in record["system"]
     assert "TOOLS:" in record["system"]
     assert fetcher._tool_record("hello there", "over budget answer", **values) is None
+
+
+def test_tool_records_reject_an_overlong_target() -> None:
+    fetcher = _fetcher_module()
+    tokenizer = _BoundaryTokenizer(prompt_tokens=10, target_tokens=193)
+    assert fetcher._tool_record(
+        "hello there",
+        "answer",
+        source="toolace",
+        license_name="Apache-2.0",
+        url="https://example.test/source",
+        available_tools=["list_folder"],
+        tokenizer=tokenizer,
+    ) is None
+
+
+def test_tool_records_do_not_clip_a_serialised_call() -> None:
+    fetcher = _fetcher_module()
+    call = '<tool_call>{"name":"list_folder","arguments":{"path":"' + "a" * 900 + '"}}</tool_call>'
+    record = fetcher._tool_record(
+        "hello there",
+        call,
+        source="toolace",
+        license_name="Apache-2.0",
+        url="https://example.test/source",
+        available_tools=["list_folder"],
+    )
+    assert record is not None
+    assert record["messages"][1]["content"] == call
+    assert record["messages"][1]["content"].endswith("</tool_call>")
+
+
+def test_the_512_token_boundary_is_inclusive() -> None:
+    fetcher = _fetcher_module()
+    at_limit = _BoundaryTokenizer(prompt_tokens=500, target_tokens=12)
+    over_limit = _BoundaryTokenizer(prompt_tokens=500, target_tokens=13)
+
+    assert fetcher._fits_token_budget(at_limit, "system", "hello", "reply", 512) is True
+    assert fetcher._fits_token_budget(over_limit, "system", "hello", "reply", 512) is False
+
+
+def test_partially_mapped_tool_rows_are_rejected() -> None:
+    fetcher = _fetcher_module()
+    assert fetcher._mapped_tool_plan(
+        ["list_folder"], [{"name": "execute_trades", "arguments": {}}]
+    ) is None
+    assert fetcher._mapped_tool_plan(
+        ["list_folder", "list_cameras"],
+        [{"name": "list_folder", "arguments": {"path": "~/Downloads"}}],
+    ) is None
+    assert fetcher._mapped_tool_plan(
+        ["create_directory"],
+        [{"name": "create_directory", "arguments": {"path": "~/Documents/new"}}],
+    ) == (
+        ["create_folder"],
+        [{"name": "create_folder", "arguments": {"path": "~/Documents/new"}}],
+    )
 
 
 def test_a_non_object_tokenizer_manifest_is_rejected(tmp_path: Path) -> None:
@@ -137,13 +210,13 @@ def test_toolace_fetch_keeps_only_known_one_or_two_call_rows(monkeypatch) -> Non
     system = (
         "You are an expert in composing functions.\n"
         "Here is a list of functions in JSON format that you can invoke:\n"
-        '[{"name": "GetCompetitions"}, {"name": "Get Manager Placeholder Image"}]'
+        '[{"name": "list_folder"}, {"name": "move_file"}]'
     )
     good = {
         "system": system,
         "conversations": [
-            {"from": "user", "value": "Show me the televised football competitions."},
-            {"from": "assistant", "value": "[GetCompetitions()]"},
+            {"from": "user", "value": "List the files in my Downloads folder."},
+            {"from": "assistant", "value": '[list_folder(path="~/Downloads")]'},
         ],
     }
     unknown = {
@@ -158,9 +231,9 @@ def test_toolace_fetch_keeps_only_known_one_or_two_call_rows(monkeypatch) -> Non
     records = fetcher.fetch_toolace(10)
     assert len(records) == 1
     assert records[0]["source"] == "toolace"
-    assert records[0]["available_tools"] == ["GetCompetitions", "Get Manager Placeholder Image"]
+    assert records[0]["available_tools"] == ["list_folder", "move_file"]
     assert records[0]["messages"][1]["content"] == (
-        '<tool_call>{"name":"GetCompetitions","arguments":{}}</tool_call>'
+        '<tool_call>{"name":"list_folder","arguments":{"path":"~/Downloads"}}</tool_call>'
     )
 
 
@@ -170,7 +243,7 @@ def test_hermes_fetch_keeps_a_cited_tool_schema(monkeypatch) -> None:
         {
             "type": "function",
             "function": {
-                "name": "list_cameras",
+                "name": "list_folder",
                 "parameters": {"type": "object", "properties": {}},
             },
         }
@@ -179,10 +252,10 @@ def test_hermes_fetch_keeps_a_cited_tool_schema(monkeypatch) -> None:
         "tools": json.dumps(tools),
         "conversations": [
             {"from": "system", "value": "Use the supplied functions."},
-            {"from": "human", "value": "List every camera on my home network."},
+            {"from": "human", "value": "List the files in my Downloads folder."},
             {
                 "from": "gpt",
-                "value": '<tool_call>{"name":"list_cameras","arguments":{"include_offline":false}}</tool_call>',
+                "value": '<tool_call>{"name":"list_folder","arguments":{"path":"~/Downloads"}}</tool_call>',
             },
         ],
     }
@@ -191,5 +264,7 @@ def test_hermes_fetch_keeps_a_cited_tool_schema(monkeypatch) -> None:
     records = fetcher.fetch_hermes(10)
     assert len(records) == 1
     assert records[0]["source"] == "hermes-function-calling-v1"
-    assert records[0]["available_tools"] == ["list_cameras"]
-    assert "<tool_call>" in records[0]["messages"][1]["content"]
+    assert records[0]["available_tools"] == ["list_folder"]
+    assert records[0]["messages"][1]["content"] == (
+        '<tool_call>{"name":"list_folder","arguments":{"path":"~/Downloads"}}</tool_call>'
+    )

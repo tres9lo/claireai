@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import torch
+import pytest
 
 from claire_brain.prompt import render_prompt
 from claire_brain.tokenizer import EOS, PAD, BytePairTokenizer
@@ -29,8 +29,10 @@ def test_a_decoded_batch_keeps_the_prompt_masked_and_the_reply_learned() -> None
 
     This catches the boundary bugs that loss curves hide: a shifted target, a
     tool result leaking into the loss, a missing EOS, or padded labels counted as
-    real targets.
+    real targets. CI intentionally omits torch, so skip this one test there
+    instead of failing module collection for the whole suite.
     """
+    torch = pytest.importorskip("torch")
     module = _train_chat_module()
     tokenizer = BytePairTokenizer.train(
         [

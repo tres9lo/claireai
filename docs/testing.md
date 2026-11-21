@@ -20,7 +20,9 @@ Run it from `assistant/`, not the repository root: the pytest configuration
 (including `asyncio_mode = "auto"`) lives in `assistant/pyproject.toml`, so from
 the root the async tests fail with "async def functions are not natively
 supported" and the run reports 23 failed / 52 passed. CI uses
-`working-directory: assistant` for the same reason.
+`working-directory: assistant` for the same reason. CI intentionally installs
+without torch, so the one decoded-batch training test is skipped there; the
+rest of the suite, including the corpus audit and tool mapping, still runs.
 
 Covered today: settings validation and loopback enforcement, migration runner
 (idempotency, checksum tampering, statement splitting with trigger bodies),
@@ -111,6 +113,9 @@ assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
 assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3 \
   --cases scripts/tool_call_cases_extended.json
 ```
+
+The post-training gate wrapper and install rule are in
+[`gate-runbook.md`](gate-runbook.md).
 
 A separate suite, because tool calls fail in a way answer quality does not
 predict: a model can write a good sentence and still emit a call the runtime

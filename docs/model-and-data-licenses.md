@@ -119,9 +119,11 @@ the runtime's `<tool_call>` JSON format, render the offered tool names in the
 same compact block used at inference, retain those names as metadata, drop
 malformed calls, and remove held-out evaluation prompts from all four fixed
 suites. The installed checkpoint tokenizer enforces the 512-token prompt-plus-
-reply budget. Their sidecars record licence, URL, retrieval time and SHA-256.
-The tool names still have to be mapped to actual registry tools and evaluated
-before training; a fetched schema is not an executable capability.
+reply budget. `brain-lab/tool_mapping.py` maps source names only when they match
+a registry name or a documented alias, validates the arguments against the
+real tool schema, and drops the row otherwise. Their sidecars record licence,
+URL, retrieval time and SHA-256. A fetched schema is not an executable
+capability even when its name maps.
 
 Glaive Function Calling v2 (Apache-2.0), xLAM Function Calling 60k (CC BY 4.0,
 attribution required), and Smol-SmolTalk (Apache-2.0) remain catalogued but are

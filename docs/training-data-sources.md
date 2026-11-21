@@ -66,9 +66,10 @@ JSON format, keeps only one or two calls whose names appear in that row's source
 schema, renders the offered tool names in the same compact block used at
 inference, and enforces the 512-token context with the installed checkpoint
 tokenizer before writing a licence / SHA-256 sidecar. It removes prompts from
-all four fixed evaluation suites and exact duplicates. Source tool names still
-have to be mapped to the actual registry and evaluated; fetching a schema never
-makes that API executable.
+all four fixed evaluation suites and exact duplicates. `brain-lab/tool_mapping.py`
+maps only exact local names or documented aliases, validates every argument
+against the registry schema, and drops the whole row when any call or offered
+tool cannot be resolved. Fetching a schema never makes that API executable.
 
 | Dataset | Size | Licence | Best use | Guardrail |
 | --- | ---: | --- | --- | --- |
