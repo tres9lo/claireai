@@ -258,6 +258,74 @@ def test_move_to_trash_needs_a_data_directory(root: Path) -> None:
         move_to_trash(context, MoveToTrashArgs(path=str(root / "note.txt")))
 
 
+@pytest.mark.parametrize("operation", ["rename", "move", "trash"])
+@pytest.mark.parametrize("points_inside", [True, False])
+def test_mutations_refuse_symlinks_inside_and_outside_the_allow_list(
+    operation: str,
+    points_inside: bool,
+    context: ToolContext,
+    root: Path,
+    tmp_path: Path,
+    make_symlink,
+) -> None:
+    target = (root / "target.txt") if points_inside else (tmp_path / "outside.txt")
+    target.write_text("target", encoding="utf-8")
+    link = root / "link.txt"
+    make_symlink(link, target)
+
+    with pytest.raises(ToolError, match="symbolic link"):
+        if operation == "rename":
+            rename_file(context, RenameFileArgs(path=str(link), new_name="renamed.txt"))
+        elif operation == "move":
+            move_file(context, MoveFileArgs(source=str(link), destination=str(root / "sub")))
+        else:
+            move_to_trash(context, MoveToTrashArgs(path=str(link)))
+
+    assert link.is_symlink()
+    assert target.exists()
+    assert not (root / "renamed.txt").exists()
+    assert not (root / "sub" / "link.txt").exists()
+
+
+@pytest.mark.parametrize("operation", ["rename", "move"])
+def test_mutations_refuse_a_broken_symlink_at_the_destination(
+    operation: str,
+    context: ToolContext,
+    root: Path,
+    make_symlink,
+) -> None:
+    make_symlink(root / "broken.txt", root / "missing.txt")
+
+    with pytest.raises(ToolError, match="symbolic link"):
+        if operation == "rename":
+            rename_file(context, RenameFileArgs(path=str(root / "note.txt"), new_name="broken.txt"))
+        else:
+            move_file(
+                context,
+                MoveFileArgs(source=str(root / "note.txt"), destination=str(root / "broken.txt")),
+            )
+
+    assert (root / "note.txt").read_text(encoding="utf-8") == "original"
+    assert (root / "broken.txt").is_symlink()
+
+
+def test_move_to_trash_does_not_reuse_a_broken_symlink_name(
+    context: ToolContext, root: Path, tmp_path: Path, monkeypatch, make_symlink
+) -> None:
+    import claireai.tools.files_write as files_write
+
+    monkeypatch.setattr(files_write, "_utc_stamp", lambda: "fixed")
+    trash = tmp_path / "data" / "trash" / "fixed"
+    trash.mkdir(parents=True)
+    make_symlink(trash / "note.txt", tmp_path / "missing.txt")
+
+    result = move_to_trash(context, MoveToTrashArgs(path=str(root / "note.txt")))
+
+    assert Path(result.detail["trash"]).name == "note.txt.1"
+    assert Path(result.detail["trash"]).read_text(encoding="utf-8") == "original"
+    assert (trash / "note.txt").is_symlink()
+
+
 def test_move_to_trash_cannot_reach_outside_the_allow_list(context: ToolContext, tmp_path: Path) -> None:
     outside = tmp_path / "secret.txt"
     outside.write_text("private", encoding="utf-8")

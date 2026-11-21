@@ -103,7 +103,9 @@ class Sandbox:
             return "(no folders are allow-listed)"
         return ", ".join(_display_path(root) for root in self.roots)
 
-    def resolve(self, raw: str | os.PathLike[str]) -> Path:
+    def resolve(
+        self, raw: str | os.PathLike[str], *, follow_final_symlink: bool = True
+    ) -> Path:
         """Return the absolute path if it is inside an allow-listed folder.
 
         Symlinks are followed *before* the containment check, so a link inside a
@@ -112,6 +114,10 @@ class Sandbox:
         its children, because a bare ``Downloads`` from a model is common and
         resolving it against the process working directory would surprise the
         owner.
+
+        ``follow_final_symlink=False`` resolves a symlinked parent but leaves the
+        final component alone. Mutation tools use this to detect and refuse a
+        link itself; following it would rename or trash the link's target.
         """
         if not self.roots:
             raise PermissionDenied(
@@ -126,7 +132,10 @@ class Sandbox:
         if not candidate.is_absolute():
             candidate = self._relative_to_root(candidate)
 
-        resolved = candidate.resolve(strict=False)
+        if follow_final_symlink:
+            resolved = candidate.resolve(strict=False)
+        else:
+            resolved = candidate.parent.resolve(strict=False) / candidate.name
         for root in self.roots:
             if resolved == root or root in resolved.parents:
                 return resolved

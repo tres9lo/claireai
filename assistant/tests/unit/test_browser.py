@@ -8,6 +8,7 @@ limits and refusals, not that a live site renders.
 from __future__ import annotations
 
 import ipaddress
+import socket
 from pathlib import Path
 
 import httpx
@@ -93,7 +94,7 @@ def _session(*, body: str = PAGE, status: int = 200, content_type: str = "text/h
             headers={"content-type": content_type},
         )
 
-    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    session = BrowserSession(transport=httpx.MockTransport(handler))
     _CREATED.append(session)
     return session
 
@@ -101,7 +102,7 @@ def _session(*, body: str = PAGE, status: int = 200, content_type: str = "text/h
 def _context(root: Path, session: BrowserSession | None) -> ToolContext:
     return ToolContext(
         sandbox=Sandbox(roots=(root.resolve(),)),
-        browser=session if session is not None else BrowserSession(client=None),
+        browser=session if session is not None else BrowserSession(),
     )
 
 
@@ -298,6 +299,7 @@ NON_PUBLIC = (
     "fd12:3456::1",
     "fe80::1",
     "[::ffff:127.0.0.1]",
+    "100.64.0.7",
 )
 
 
@@ -306,7 +308,7 @@ def _recording_session(requests: list[str]) -> BrowserSession:
         requests.append(str(request.url))
         return httpx.Response(200, text=PAGE, headers={"content-type": "text/html"})
 
-    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    session = BrowserSession(transport=httpx.MockTransport(handler))
     _CREATED.append(session)
     return session
 
@@ -339,7 +341,7 @@ def test_a_public_page_may_redirect_to_another_public_page(root: Path) -> None:
             return httpx.Response(302, headers={"location": "https://example.com/new"})
         return httpx.Response(200, text=PAGE, headers={"content-type": "text/html"})
 
-    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    session = BrowserSession(transport=httpx.MockTransport(handler))
     _CREATED.append(session)
     result = open_url(_context(root, session), OpenUrlArgs(url="https://example.com/old"))
     assert "March invoices" in result.text
@@ -354,7 +356,7 @@ def test_a_redirect_to_a_private_address_is_refused(root: Path) -> None:
         seen.append(str(request.url))
         return httpx.Response(302, headers={"location": "http://127.0.0.1:8765/api/state"})
 
-    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    session = BrowserSession(transport=httpx.MockTransport(handler))
     _CREATED.append(session)
     with pytest.raises(ToolError, match="not a public address"):
         open_url(_context(root, session), OpenUrlArgs(url="https://example.com/goto"))
@@ -367,7 +369,7 @@ def test_a_redirect_chain_that_never_settles_is_refused(root: Path) -> None:
         target = "https://example.com/b" if request.url.path == "/a" else "https://example.com/a"
         return httpx.Response(302, headers={"location": target})
 
-    session = BrowserSession(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    session = BrowserSession(transport=httpx.MockTransport(handler))
     _CREATED.append(session)
     with pytest.raises(ToolError, match="too many redirects"):
         open_url(_context(root, session), OpenUrlArgs(url="https://example.com/a"))
@@ -386,6 +388,150 @@ def test_a_hostname_that_resolves_to_loopback_is_refused(
             OpenUrlArgs(url="http://internal.example.test/"),
         )
     assert requests == []
+
+
+def test_dns_rebinding_is_pinned_to_the_first_public_answer(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second DNS answer must not turn a checked request into a private one."""
+    answers = [
+        (PUBLIC,),
+        (ipaddress.ip_address("10.0.0.7"),),
+    ]
+
+    def rebinding(host: str, port: int) -> tuple[ipaddress._BaseAddress, ...]:
+        del host, port
+        return answers.pop(0)
+
+    monkeypatch.setattr(browser_module, "_resolved_addresses", rebinding)
+    requests: list[str] = []
+    session = _recording_session(requests)
+
+    open_url(_context(root, session), OpenUrlArgs(url="https://rebind.example/page"))
+
+    # The request may only be sent to the address that passed the check. There
+    # must be no second lookup that could return the private address.
+    assert requests == ["https://rebind.example/page"]
+    assert session.pins[("rebind.example", 443)] == (str(PUBLIC),)
+    assert answers == [(ipaddress.ip_address("10.0.0.7"),)]
+
+
+def test_every_public_answer_is_pinned_for_failover(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    second = ipaddress.ip_address("93.184.216.35")
+    monkeypatch.setattr(
+        browser_module,
+        "_resolved_addresses",
+        lambda host, port: (PUBLIC, second),
+    )
+    session = _recording_session([])
+
+    open_url(_context(root, session), OpenUrlArgs(url="https://example.com/"))
+
+    assert session.pins[("example.com", 443)] == (str(PUBLIC), str(second))
+
+
+def test_the_pinned_backend_connects_to_the_checked_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connected: list[tuple[str, int]] = []
+
+    class FakeSocket:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            pass
+
+        def settimeout(self, timeout) -> None:  # noqa: ANN001
+            pass
+
+        def connect(self, address) -> None:  # noqa: ANN001
+            connected.append(address)
+
+        def setsockopt(self, *args) -> None:  # noqa: ANN002
+            pass
+
+    monkeypatch.setattr(browser_module.socket, "socket", FakeSocket)
+    backend = browser_module._PinnedBackend({("rebind.example", 80): (str(PUBLIC),)})
+    backend.connect_tcp("rebind.example", 80)
+
+    assert connected == [(str(PUBLIC), 80)]
+
+
+def test_the_pinned_backend_fails_over_to_the_next_checked_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public = str(PUBLIC)
+    second = "93.184.216.35"
+    attempts: list[tuple[str, int]] = []
+
+    class FakeSocket:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            self.rejected = False
+
+        def settimeout(self, timeout) -> None:  # noqa: ANN001
+            pass
+
+        def connect(self, address) -> None:  # noqa: ANN001
+            attempts.append(address)
+            if address[0] == public:
+                self.rejected = True
+                raise OSError("first address is down")
+
+        def setsockopt(self, *args) -> None:  # noqa: ANN002
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(browser_module.socket, "socket", FakeSocket)
+    backend = browser_module._PinnedBackend({("rebind.example", 80): (public, second)})
+    backend.connect_tcp("rebind.example", 80)
+
+    assert attempts == [(public, 80), (second, 80)]
+
+
+def test_the_pinned_backend_skips_an_unavailable_address_family(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[tuple[str, int]] = []
+
+    class FakeSocket:
+        def __init__(self, family, *args, **kwargs) -> None:  # noqa: ANN001, ANN002, ANN003
+            if family == socket.AF_INET6:
+                raise OSError("IPv6 is unavailable")
+
+        def settimeout(self, timeout) -> None:  # noqa: ANN001
+            pass
+
+        def connect(self, address) -> None:  # noqa: ANN001
+            attempts.append(address)
+
+        def setsockopt(self, *args) -> None:  # noqa: ANN002
+            pass
+
+    monkeypatch.setattr(browser_module.socket, "socket", FakeSocket)
+    backend = browser_module._PinnedBackend(
+        {
+            ("rebind.example", 80): (
+                "2606:4700:4700::1111",
+                str(PUBLIC),
+            )
+        }
+    )
+    backend.connect_tcp("rebind.example", 80)
+
+    assert attempts == [(str(PUBLIC), 80)]
+
+
+def test_the_default_session_always_builds_the_pinned_transport() -> None:
+    session = BrowserSession()
+    _CREATED.append(session)
+
+    client = session.http()
+
+    assert isinstance(client._transport, browser_module._PinnedTransport)
+    assert client.follow_redirects is False
+    assert client.trust_env is False
 
 
 def test_an_unresolvable_host_is_refused_without_fetching(root: Path) -> None:

@@ -2,7 +2,7 @@
 
 **A personal assistant that runs entirely on your own machine.** Local model inference, an append-only audit trail of every action, and file and browser tools that cannot act without your explicit approval.
 
-No cloud provider. No API keys. Nothing leaves the laptop unless you allow it.
+No cloud provider or API key is required by default. Network features and connectors are opt-in; nothing leaves the laptop unless you enable and approve it.
 
 
 <p align="center">
@@ -45,14 +45,14 @@ I am not a model-training expert. I am learning this in public: every training r
 | Opt-in Claude, ChatGPT and Ollama connectors (local model stays the default) | ✅ scratch remains default |
 | CLI chat that records every turn as a task plus audit entries | ✅ |
 | Read-only tools (files, calendar, day plan, image identification; browser tools when enabled) | ✅ |
-| 9 approval-gated writes (create, write, rename, move, trash, download, add appointment, plan day) | ✅ |
+| 9 approval-gated writes (folder, file, overwrite/append, rename, move, trash, download, appointment, day plan) | ✅ |
 | Interactive approval flow with per-decision audit references | ✅ |
 | Agent loop with schema validation, risk policy and step cap | ✅ |
 | Strict ToolACE/Hermes name mapping to real registry schemas | ✅ code path; full mapped sample pending |
 | Tokenizer-backed corpus audit (budgets, calls, duplicates, held-out overlap) | ✅ |
 | One-command post-training gate (model, conversation, standard + extended tools) | ✅ |
 | Deterministic tool routing (roughly halves prompt tokens per step) | ✅ |
-| Daily summary (Done / Failed / Pending) from the task log | ✅ |
+| Daily summary (Done / Failed or skipped / Still pending) from the task log | ✅ |
 | Dates and times answered from the clock; `yesterday`/`last friday` accepted by the summary | ✅ deterministic, no model call |
 | Workspace calendar: appointments in SQLite, `what's on tomorrow` answered from them | ✅ listing is read-only, adding needs approval |
 | Retention/pruning for trash and summaries | ✅ |
@@ -66,7 +66,7 @@ I am not a model-training expert. I am learning this in public: every training r
 | OS family detection (Linux/Windows first targets) | ✅ detection only |
 | Reproducible MIT synthetic task corpus + split-aware text training | ✅ starter data |
 | Random-init visual-grounding prototype using attributed online synthetic images | 🧪 research only; not integrated |
-| Capable scratch-trained assistant; speech recognition and custom trained voice | 🚧 not included yet |
+| Capable scratch-trained assistant and custom trained voice | 🚧 not included yet |
 | Playwright engine · Tauri desktop shell | 🚧 planned |
 | Camera, screen, cursor and keyboard control | 🚧 specified, not built |
 
@@ -127,7 +127,7 @@ Read [docs/architecture/threat-model.md](docs/architecture/threat-model.md) for 
 
 ## Quick start (Linux)
 
-Requires **Python 3.11+**. The scratch model starts with random weights; it is a research prototype and will not behave like a capable assistant until trained and evaluated on substantial task-specific data.
+Requires **Python 3.11+**. A fresh install has no trained chat model. The included scratch checkpoint is a research prototype and will not behave like a capable assistant until a candidate is trained, gated and explicitly promoted.
 
 ```bash
 git clone https://github.com/tres9lo/claireai.git
@@ -139,10 +139,11 @@ cd claireai
 #    model. Re-running later only fills what is missing.
 ./install.sh
 
-#    Manual equivalent, if you prefer to run each step:
+#    Manual alternative, only when this Python has venv and pip. The installer
+#    is the supported path and also offers the optional speech-to-text model.
 #    python3 -m venv assistant/.venv
 #    assistant/.venv/bin/python -m pip install -e "assistant[dev,desktop]"
-#    assistant/.venv/bin/claireai --setup --install
+#    assistant/.venv/bin/claireai --setup
 ```
 
 The installer picks a Python whose Tk can draw antialiased fonts. Do not
@@ -157,8 +158,8 @@ so it does not depend on which `claireai` is first on `PATH`.
 
 # Speech output. Piper is a neural voice and sounds like a person; eSpeak NG is
 # the fallback and always works. Neither one sends audio anywhere.
-uv pip install --python assistant/.venv/bin/python piper-tts
-sudo apt install pulseaudio-utils            # for paplay; espeak-ng as fallback
+assistant/.venv/bin/python -m pip install piper-tts
+sudo apt install espeak-ng pulseaudio-utils  # eSpeak fallback + paplay
 
 # Voice models (~61 MB each). Download the ones you want into:
 #   ./runtime-data/models/voice/piper/  (or set CLAIREAI_PIPER_DIR)
@@ -166,10 +167,11 @@ sudo apt install pulseaudio-utils            # for paplay; espeak-ng as fallback
 #   fr/fr_FR/siwis/medium. Each voice needs its .onnx and .onnx.json side by side.
 
 # 2. Prepare the licensed bilingual corpus, train a candidate and evaluate it.
-#    This one command fetches bounded Dolly/OASST1/GSM8K/FineWeb plus ToolACE and
-#    Hermes tool-call samples, builds the authored English/French curriculum,
-#    merges and trains. It never installs the candidate; promotion stays an
-#    explicit owner decision after the gate.
+#    This fetches bounded OASST1, GSM8K, FineWeb-Edu, French FineWeb-2, ToolACE
+#    and Hermes samples, builds the authored English/French curriculum, merges
+#    and trains. Dolly/TinyStories are used only if already present under
+#    brain-lab/data/external/chat-sources. It never installs the candidate;
+#    promotion stays an explicit owner decision after the gate.
 export CLAIREAI_DATA_DIR=./runtime-data
 assistant/.venv/bin/python brain-lab/train_claireai.py --profile full
 # Smaller smoke run on this laptop:
@@ -187,7 +189,7 @@ CLAIREAI_ALLOWED_FOLDERS='["~/Downloads"]' \
   assistant/.venv/bin/python -m claireai.cli --once "List the biggest files in my Downloads folder"
 ```
 
-Windows setup uses the same Python and CPU training path; see [docs/setup/windows.md](docs/setup/windows.md).
+Windows has the same Python and CPU training path documented in [docs/setup/windows.md](docs/setup/windows.md), but no manual Windows install has been verified; CI runs the unit suite only.
 
 ### The desktop app
 
@@ -218,8 +220,9 @@ source once with `claireai --update --source /path/to/claireai/assistant`.
 including the local speech model.
 
 If the window does not open, the command names the missing piece instead of
-printing a traceback: the `desktop` extra (`pip install "claireai[desktop]"`)
-or Python's Tk bindings (`python3-tk` on Debian/Ubuntu). It exits 2.
+printing a traceback: the `desktop` extra
+(`assistant/.venv/bin/python -m pip install -e "assistant[desktop]"`) or Python's
+Tk bindings (`python3-tk` on Debian/Ubuntu). It exits 2.
 
 - **Chat** runs real agent turns; write actions wait in **Approvals** until you
   press Approve, and the sidebar shows how many are waiting.
@@ -253,13 +256,13 @@ conversation regression is installed; the previous checkpoint pair is archived
 under `models/archive/`, and a rejected candidate is kept under
 `models/candidates/`. The capability suite is recorded as a diagnostic.
 
-The installed scratch checkpoint has a **512-token architecture** expanded from
-the proven 288-token weights. Only the first 288 position rows were trained;
-inference now fits prompts to that learned range instead of feeding untrained
-position rows, which was producing word salad on ordinary greetings. A future
-candidate trained on the full 512 positions can raise the limit. The nightly
-worker continues from the installed checkpoint instead of creating an unrelated
-small model.
+The checkpoint in this checkout is a **288-token** scratch model. The v15
+candidate uses a 512-token architecture; it is still being trained and is not
+installed. Inference fits prompts to the positions the installed checkpoint
+actually learned instead of feeding untrained rows, which produced word salad on
+ordinary greetings. Only the gate and an explicit owner promotion can replace
+the installed checkpoint; the nightly worker continues from it rather than
+creating an unrelated small model.
 
 The model code now also supports a **10,240-token RoPE architecture** with
 memory-efficient causal attention. A converted candidate was measured at
@@ -320,10 +323,10 @@ story was found.
 The daily worker trains on `brain-lab/data/chat-v15` when present, then falls
 back to the older `chat-v13-small` licensed mix. The one-command
 `brain-lab/train_claireai.py --profile full` builds the larger bilingual
-`chat-v15` corpus instead, with English/French OASST1 and French FineWeb-2.
-`fetch_corpora.py` and `merge_corpora.py` still rebuild the small corpus; the
-merge removes exact duplicates and train/validation overlap and records the
-counts.
+`chat-v15` corpus instead. `fetch_corpora.py` downloads bounded external
+samples; `merge_corpora.py` combines them with the authored base, removes exact
+duplicates and train/validation overlap, and records the counts. Neither script
+trains or installs a checkpoint.
 
 ### Granting a folder
 
@@ -374,6 +377,7 @@ assistant/.venv/bin/python -m claireai.cli --day-plan
 
 # Run tasks whose local time has arrived. Safe actions run; writes pause.
 assistant/.venv/bin/python -m claireai.cli --day-plan-run
+```
 
 `--day-plan-run` is safe by default: it pauses at the first approval and leaves
 that item `awaiting_approval` instead of granting itself a write. Add
@@ -384,6 +388,7 @@ runs due work in the background. It uses the same approval boundary as the CLI:
 a write is paused and shown as `awaiting_approval`, never inherited from the
 plan.
 
+```bash
 # The whole app in one command (installs the venv on first run, then opens it)
 ./scripts/start.sh
 
@@ -408,7 +413,7 @@ assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text -
 assistant/.venv/bin/python scripts/doctor.py
 
 # Optional visual prototype (downloaded image data; kept separate from chat)
-uv pip install --python assistant/.venv/bin/python -e "brain-lab[vision]"
+assistant/.venv/bin/python -m pip install -e "brain-lab[vision]"
 assistant/.venv/bin/python brain-lab/vision_train.py --epochs 20
 ```
 
@@ -430,12 +435,15 @@ Re-sending every tool schema on every loop step is the dominant cost on a CPU-on
 ## Testing
 
 ```bash
-cd assistant && python -m pytest        # unit + security tests
+# The desktop installer does not install test-only packages. Add them once.
+assistant/.venv/bin/python -m pip install -e "assistant[dev]"
+
+cd assistant && .venv/bin/python -m pytest   # unit + security tests
 assistant/.venv/bin/python scripts/smoke.py --skip-model   # end-to-end, no model
 assistant/.venv/bin/python scripts/smoke.py                # full run, needs a trained checkpoint
 ```
 
-CI runs the portable unit suite on Ubuntu and Windows across Python 3.11 and 3.12. The 14-check smoke script verifies the real loop: migrations, a chat turn, tool execution, a refused write, the presence stream, the daily summary, the read-only page, retention, and that the audit log rejects mutation.
+CI runs the portable unit suite on Ubuntu and Windows across Python 3.11 and 3.12. The smoke script verifies the assembled runtime: migrations, a chat turn, tool execution, tool routing, a refused write, the presence stream, the daily summary, retention, and that the audit log rejects mutation.
 
 Model behaviour is measured, not assumed: `scripts/eval_model.py` scores the local model against fixed cases before features depend on it, `conversation_eval.py` scores multi-turn answers, and `tool_call_eval.py` scores whether the configured brain proposes tool calls the runtime can actually read. The gate wrapper runs all four suites against one checkpoint:
 

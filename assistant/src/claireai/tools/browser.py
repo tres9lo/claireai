@@ -31,11 +31,13 @@ import html as html_module
 import ipaddress
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
+import httpcore
 import httpx
+from httpcore._backends.sync import SyncBackend, SyncStream
 from pydantic import Field
 
 from claireai.tools.base import ToolContext, ToolError, ToolResult
@@ -106,28 +108,43 @@ class BrowserSession:
     """
 
     timeout: float = 15.0
-    client: httpx.Client | None = None
+    # Test seam only: production leaves this unset so http() always builds a
+    # client around the pinned transport.  Supplying a transport directly is
+    # reserved for tests; production code must not bypass the egress policy.
+    transport: httpx.BaseTransport | None = None
+    _client: httpx.Client | None = field(default=None, init=False, repr=False)
     url: str = ""
     title: str = ""
     text: str = ""
     fetched: int = 0
+    # host/port -> every address that passed the egress check, in DNS order.
+    # The connection backend may only connect to one of these addresses; it
+    # never performs a second lookup, and it may fail over between them.
+    pins: dict[tuple[str, int], tuple[str, ...]] = field(default_factory=dict)
 
     def http(self) -> httpx.Client:
-        if self.client is None:
+        if self._client is None:
             # Redirects are followed by _get, one hop at a time, so each new
             # destination passes the egress check.  Letting httpx follow them
             # here would fetch the first hidden-until-followed target.
-            self.client = httpx.Client(
+            transport = (
+                self.transport
+                if self.transport is not None
+                else _PinnedTransport(self.pins)
+            )
+            self._client = httpx.Client(
                 timeout=self.timeout,
                 follow_redirects=False,
+                trust_env=False,
+                transport=transport,
                 headers={"User-Agent": USER_AGENT},
             )
-        return self.client
+        return self._client
 
     def close(self) -> None:
-        if self.client is not None:
-            self.client.close()
-            self.client = None
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
 
 def _session(context: ToolContext) -> BrowserSession:
@@ -160,24 +177,36 @@ def _resolved_addresses(host: str, port: int) -> tuple[ipaddress._BaseAddress, .
     for info in infos:
         raw = str(info[4][0]).split("%", 1)[0]
         try:
-            addresses.append(ipaddress.ip_address(raw))
+            address = ipaddress.ip_address(raw)
         except ValueError as exc:
             raise ToolError(f"{host!r} resolved to an unreadable address {raw!r}") from exc
+        # IPv4-mapped IPv6 addresses (::ffff:127.0.0.1) must be checked as the
+        # IPv4 address they actually reach, not as a separate IPv6 range.
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        addresses.append(address)
     return tuple(dict.fromkeys(addresses))
 
 
 def _is_non_public(address: ipaddress._BaseAddress) -> bool:
-    """True for anything that is not a routable public destination."""
-    return any(
-        (
-            address.is_private,
-            address.is_loopback,
-            address.is_link_local,
-            address.is_multicast,
-            address.is_reserved,
-            address.is_unspecified,
-        )
-    )
+    """True for anything that is not a globally routable destination.
+
+    ``is_global`` is an allow-list: it covers CGNAT and other special-use
+    ranges that are neither ``is_private`` nor ``is_reserved``.  IPv6 transition
+    formats need one extra check because their outer address can be global while
+    the embedded IPv4 destination is not.
+    """
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if not address.is_global:
+        return True
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.sixtofour is not None and not address.sixtofour.is_global:
+            return True
+        teredo = address.teredo
+        if teredo is not None and not teredo[1].is_global:
+            return True
+    return False
 
 
 def _split_host(parsed, cleaned: str) -> tuple[str, int]:
@@ -202,24 +231,115 @@ def _split_host(parsed, cleaned: str) -> tuple[str, int]:
     return raw, default_port
 
 
-def _check_destination(url: str) -> str:
-    """Refuse a URL that points at this machine or the local network."""
+def _pin_key(host: str, port: int) -> tuple[str, int]:
+    return host.rstrip(".").lower(), port
+
+
+def _check_destination(url: str, session: BrowserSession | None = None) -> str:
+    """Refuse a URL that points at this machine or the local network.
+
+    When a session is supplied, every approved address is recorded.  The HTTP
+    transport uses those recorded addresses instead of asking DNS again, so a
+    public-first/private-second rebinding answer cannot redirect the connection,
+    and a dead first address can fail over to the next checked one.
+    """
     cleaned = _check_url(url)
     parsed = urlparse(cleaned)
     host, port = _split_host(parsed, cleaned)
-    for address in _resolved_addresses(host, port):
+    addresses = _resolved_addresses(host, port)
+    for address in addresses:
         if _is_non_public(address):
             raise ToolError(
                 f"refusing to fetch {cleaned}: {host!r} resolves to {address}, which is "
                 "not a public address. The browser tools do not reach this machine, "
                 "the local network or link-local services."
             )
+    if not addresses:
+        raise ToolError(f"could not resolve {host!r}")
+    if session is not None:
+        session.pins[_pin_key(host, port)] = tuple(str(address) for address in addresses)
     return cleaned
+
+
+class _PinnedBackend(SyncBackend):
+    """Connect only to an address approved by the egress check.
+
+    ``httpcore`` normally passes the hostname to ``socket.create_connection``,
+    which resolves it again.  That second lookup is the rebinding window this
+    backend closes: it receives the original hostname but connects to the
+    already-checked numeric address.
+    """
+
+    def __init__(self, pins: dict[tuple[str, int], tuple[str, ...]]) -> None:
+        super().__init__()
+        self.pins = pins
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options=None,  # noqa: ANN001
+    ) -> SyncStream:
+        addresses = self.pins.get(_pin_key(host, port))
+        if not addresses:
+            raise httpcore.ConnectError(
+                f"no checked address is available for {host}:{port}"
+            )
+
+        last_error: Exception | None = None
+        for address in addresses:
+            family = socket.AF_INET6 if ":" in address else socket.AF_INET
+            sock: socket.socket | None = None
+            try:
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+                if local_address is not None:
+                    source = (
+                        (local_address, 0, 0, 0)
+                        if family == socket.AF_INET6
+                        else (local_address, 0)
+                    )
+                    sock.bind(source)
+                sock.connect(
+                    (address, port, 0, 0)
+                    if family == socket.AF_INET6
+                    else (address, port)
+                )
+                for option in socket_options or ():
+                    sock.setsockopt(*option)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except socket.timeout as exc:
+                if sock is not None:
+                    sock.close()
+                last_error = httpcore.ConnectTimeout(str(exc))
+            except OSError as exc:
+                if sock is not None:
+                    sock.close()
+                last_error = httpcore.ConnectError(str(exc))
+            else:
+                assert sock is not None
+                return SyncStream(sock)
+
+        assert last_error is not None
+        raise last_error
+
+
+class _PinnedTransport(httpx.HTTPTransport):
+    """An httpx transport whose TCP connections use the pinned addresses."""
+
+    def __init__(self, pins: dict[tuple[str, int], tuple[str, ...]]) -> None:
+        super().__init__(trust_env=False)
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=httpx.create_ssl_context(trust_env=False),
+            network_backend=_PinnedBackend(pins),
+        )
 
 
 def _get(session: BrowserSession, url: str, *, limit: int) -> httpx.Response:
     """GET a URL, following redirects one hop at a time through the egress check."""
-    current = _check_destination(url)
+    current = _check_destination(url, session)
     response: httpx.Response | None = None
     for _ in range(MAX_REDIRECTS + 1):
         try:
@@ -233,7 +353,7 @@ def _get(session: BrowserSession, url: str, *, limit: int) -> httpx.Response:
             raise ToolError(
                 f"{current} answered HTTP {response.status_code} without a Location header"
             )
-        current = _check_destination(urljoin(str(response.url), location))
+        current = _check_destination(urljoin(str(response.url), location), session)
     else:
         raise ToolError(f"too many redirects starting at {url} (limit {MAX_REDIRECTS})")
     assert response is not None  # the loop either breaks or raises

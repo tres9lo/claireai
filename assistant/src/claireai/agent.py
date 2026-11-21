@@ -174,6 +174,84 @@ class AgentOutcome:
     route: str | None = None
 
 
+@dataclass
+class _ReadState:
+    """What this task has actually looked at.
+
+    A task-wide boolean was too broad: reading folder A made a write to folder B
+    look grounded.  The gate now records the exact files read and the folders
+    listed, and a mutation must name a source/destination covered by that
+    evidence.  Tools with no filesystem argument (calendar or plan tools) keep
+    the old "some read happened" rule.
+    """
+
+    paths: set[Path] = field(default_factory=set)
+    folders: set[Path] = field(default_factory=set)
+    any_read: bool = False
+
+    def note_listing(self, folders: Sequence[Path]) -> None:
+        self.folders.update(folders)
+        self.any_read = self.any_read or bool(folders)
+
+    def note_read(self, tool_name: str, detail: Mapping[str, Any]) -> None:
+        self.any_read = True
+        raw = detail.get("path")
+        if not isinstance(raw, str):
+            return
+        path = Path(raw)
+        if tool_name == "list_folder":
+            self.folders.add(path)
+        elif tool_name in {"get_file_info", "read_text_file"}:
+            self.paths.add(path)
+
+    def _known(self, path: Path) -> bool:
+        """The exact path was read, or the exact folder was listed."""
+        return path in self.paths or path in self.folders
+
+    def _known_folder(self, path: Path) -> bool:
+        """The exact folder was listed or inspected with get_file_info."""
+        return path in self.folders or path in self.paths
+
+    def allows_mutation(
+        self, tool_name: str, arguments: Mapping[str, Any], sandbox: Sandbox
+    ) -> bool:
+        """True when the proposed source and destination were actually read."""
+        path_arg = arguments.get("path")
+        source_arg = arguments.get("source")
+        destination_arg = arguments.get("destination")
+        has_path = any(isinstance(value, str) and value.strip() for value in (
+            path_arg, source_arg, destination_arg
+        ))
+        if not has_path:
+            return self.any_read
+
+        if tool_name == "create_text_file":
+            target = sandbox.resolve(path_arg)
+            if arguments.get("overwrite"):
+                return target in self.paths
+            return self._known_folder(target.parent)
+        if tool_name in {"create_folder", "download_file"}:
+            target = sandbox.resolve(path_arg)
+            return self._known_folder(target.parent)
+        if tool_name == "write_to_file":
+            target = sandbox.resolve(path_arg)
+            return target in self.paths
+        if tool_name == "rename_file":
+            source = sandbox.resolve(path_arg)
+            destination = sandbox.resolve(source.parent / str(arguments.get("new_name", "")))
+            return self._known(source) and self._known_folder(destination.parent)
+        if tool_name == "move_file":
+            source = sandbox.resolve(source_arg)
+            destination = sandbox.resolve(destination_arg)
+            target = destination / source.name if destination.is_dir() else destination
+            return self._known(source) and (
+                target in self.paths or self._known_folder(target.parent)
+            )
+        if tool_name == "move_to_trash":
+            return self._known(sandbox.resolve(path_arg))
+        return self.any_read
+
+
 def _clip(text: str, limit: int = MAX_TOOL_TEXT) -> str:
     if len(text) <= limit:
         return text
@@ -341,7 +419,7 @@ async def run_task(
     # A registry with no read tool at all starts verified: there is nothing to
     # require, and a gate that can never be satisfied would block every write.
     can_verify = any(registry.get(name).risk == "safe" for name in registry.names())
-    verified = not can_verify
+    verified = _ReadState(any_read=not can_verify)
 
     # For a request that can write, read the allowed folders *before the model
     # speaks*. Small models can go straight to a write without grounding.
@@ -350,10 +428,10 @@ async def run_task(
     if can_verify and plan is not None and any(
         registry.get(name).mutates for name in plan.tools
     ):
-        listing, read_ok = _discovery(sandbox, registry, {})
+        listing, read_ok, listed = _discovery(sandbox, registry, {})
         if read_ok:
             context_note = f"\n\nWhat those folders contain right now:\n{listing}"
-            verified = True
+            verified.note_listing(listed)
 
     directives = [item["content"] for item in DirectiveRepository(conn).list(enabled_only=True)]
     previous_messages = conversations.messages(conversation_id, limit=10)[:-1]
@@ -798,14 +876,8 @@ async def run_task(
                     browser=browser,
                 )
                 steps.append(step)
-                if step.discovered or (
-                    step.status == "done"
-                    and step.tool in registry
-                    and registry.get(step.tool).risk == "safe"
-                ):
-                    # A read happened, whether the model asked for it or the
-                    # runtime did it on the model's behalf.
-                    verified = True
+                # _execute records a successful read against the exact path or
+                # folder it touched; no task-wide flag is set here.
                 messages.append(
                     Message(role="tool", tool_name=call.name, content=_clip(step.result_text))
                 )
@@ -853,7 +925,7 @@ async def run_task(
 
 def _discovery(
     sandbox: Sandbox, registry: ToolRegistry, arguments: Mapping[str, Any]
-) -> tuple[str, bool]:
+) -> tuple[str, bool, tuple[Path, ...]]:
     """Read a folder the model should have looked at, and describe it.
 
     Called only when a write arrives with nothing read yet. The runtime does the
@@ -864,7 +936,7 @@ def _discovery(
     Returns the text to feed back and whether a read actually happened.
     """
     if "list_folder" not in registry:
-        return "", False
+        return "", False, ()
 
     folders: list[Path] = []
     for key in ("source", "path", "destination"):
@@ -875,8 +947,9 @@ def _discovery(
             resolved = sandbox.resolve(raw)
         except PermissionDenied:
             continue
-        folders.append(resolved if resolved.is_dir() else resolved.parent)
-        break
+        folder = resolved if resolved.is_dir() else resolved.parent
+        if folder not in folders:
+            folders.append(folder)
     if not folders:
         # The named path is not reachable at all. Show what *is* reachable,
         # which is exactly the fact a model that invented /Users/... lacks.
@@ -886,11 +959,13 @@ def _discovery(
     # whole line and gets a working path. Fed the human-readable listing
     # ("file 13 B quarterly-report.pdf") it pasted that fragment in as a name.
     parts: list[str] = []
-    for folder in folders[:2]:
+    listed: list[Path] = []
+    for folder in folders:
         try:
             entries = sorted(folder.iterdir(), key=lambda item: (not item.is_dir(), item.name))[:MAX_LISTED]
         except OSError:
             continue
+        listed.append(folder)
         block = [f"{folder} contains:"]
         for entry in entries:
             if entry.is_dir():
@@ -907,7 +982,7 @@ def _discovery(
         if total > len(entries):
             block.append(f"  ... and {total - len(entries)} more")
         parts.append("\n".join(block))
-    return "\n".join(parts), bool(parts)
+    return "\n".join(parts), bool(parts), tuple(listed)
 
 
 async def _execute(
@@ -925,7 +1000,7 @@ async def _execute(
     audit: AuditLog,
     conn: sqlite3.Connection,
     dry_run: bool,
-    verified: bool,
+    verified: _ReadState,
     browser: Any = None,
 ) -> AgentStep:
     """Validate, authorize, run and log one proposed call."""
@@ -952,14 +1027,16 @@ async def _execute(
             status = "skipped"
             text = f"[dry run] would call {tool.name} with {rendered}"
             detail["reason"] = "dry_run"
-        elif tool.mutates and not verified:
-            # Nothing has been read in this task, so this target has never been
-            # checked. Offering the read tools was measured not to be enough, so
-            # the runtime reads the folder itself and hands back real names.
+        elif tool.mutates and not verified.allows_mutation(tool.name, rendered, sandbox):
+            # This exact source/destination has never been checked. Offering the
+            # read tools was measured not to be enough, so the runtime reads the
+            # folder itself and hands back real names.
             status = "skipped"
             detail["reason"] = "verify_first"
-            found, did_read = _discovery(sandbox, registry, arguments)
+            found, did_read, listed = _discovery(sandbox, registry, arguments)
             detail["discovered"] = did_read
+            if did_read:
+                verified.note_listing(listed)
             if did_read:
                 # Factual, with no instruction the model can mistake for an
                 # answer: it copied "call move_file again" back as its reply.
@@ -1056,6 +1133,8 @@ async def _execute(
             detail.update(dict(result.detail))
             if approval_ref:
                 detail["approval_ref"] = approval_ref
+            if tool.risk == "safe":
+                verified.note_read(tool.name, detail)
 
     except UnknownTool as exc:
         status = "skipped"
@@ -1086,10 +1165,11 @@ async def _execute(
             # A missing path is the failure the model has to recover from, and
             # it does not recover from a bare "does not exist" — it stops. Give
             # it the real names, absolute paths, in the same breath.
-            found, did_read = _discovery(sandbox, registry, arguments)
+            found, did_read, listed = _discovery(sandbox, registry, arguments)
             if did_read:
                 text = f"error: {exc}\n{found}"
                 detail["discovered"] = True
+                verified.note_listing(listed)
     except OSError as exc:
         status = "failed"
         text = f"error: the operating system refused the request ({exc.strerror or exc})"

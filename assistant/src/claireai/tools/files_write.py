@@ -13,6 +13,7 @@ the task log records the exact destination of every moved file.
 
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,8 +37,48 @@ def _require_parent(target: Path) -> None:
 
 
 def _refuse_if_exists(target: Path) -> None:
-    if target.exists():
+    # lexists also catches a broken symlink. exists() would return False for it,
+    # and a later copy could then follow or replace the link unexpectedly.
+    if os.path.lexists(target):
         raise ToolError(f"{target} already exists")
+
+
+def _copy_no_follow(source: str | Path, destination: str | Path) -> str:
+    """Copy a file without following a symlink swapped in after the check."""
+    return shutil.copy2(source, destination, follow_symlinks=False)
+
+
+def _refuse_symlink(target: Path) -> None:
+    if target.is_symlink():
+        raise ToolError(
+            f"{target} is a symbolic link; rename, move and trash operate on "
+            "real files and folders. Pass the real path instead."
+        )
+
+
+def _resolve_mutation(context: ToolContext, raw: str) -> Path:
+    """Resolve a rename/move/trash path without following a final symlink.
+
+    A symlink inside the allow-list can point at the link itself or at an
+    outside target.  Following it would make these tools rename or trash the
+    target, so the consistent rule is to refuse the link and ask for its real
+    path instead.
+    """
+    target = context.sandbox.resolve(raw, follow_final_symlink=False)
+    _refuse_symlink(target)
+    return target
+
+
+def _move_no_follow(source: Path, destination: Path) -> None:
+    """Move a path, rechecking for a symlink at the operation boundary.
+
+    The earlier resolve() check catches the normal case.  Rechecking here closes
+    the practical gap where another process replaces the source between that
+    check and the move.  Cross-device copies use copy2 with follow_symlinks=False
+    so a swapped-in link is copied or unlinked as a link, never dereferenced.
+    """
+    _refuse_symlink(source)
+    shutil.move(str(source), str(destination), copy_function=_copy_no_follow)
 
 
 class CreateFolderArgs(_Args):
@@ -143,14 +184,14 @@ def write_to_file(context: ToolContext, arguments: WriteToFileArgs) -> ToolResul
 
 
 def rename_file(context: ToolContext, arguments: RenameFileArgs) -> ToolResult:
-    source = context.sandbox.resolve(arguments.path)
+    source = _resolve_mutation(context, arguments.path)
     if not source.exists():
         raise ToolError(f"{source} does not exist")
     new_name = arguments.new_name.strip()
     if not new_name or new_name in {".", ".."} or "/" in new_name or "\\" in new_name:
         raise ToolError("new_name must be a plain file name without folders")
 
-    destination = context.sandbox.resolve(source.parent / new_name)
+    destination = _resolve_mutation(context, str(source.parent / new_name))
     if destination == source:
         raise ToolError("new_name is the same as the current name")
     _refuse_if_exists(destination)
@@ -174,15 +215,15 @@ def _looks_like_file_name(name: str) -> bool:
 
 
 def move_file(context: ToolContext, arguments: MoveFileArgs) -> ToolResult:
-    source = context.sandbox.resolve(arguments.source)
+    source = _resolve_mutation(context, arguments.source)
     if not source.exists():
         raise ToolError(f"{source} does not exist")
 
-    destination_arg = context.sandbox.resolve(arguments.destination)
+    destination_arg = _resolve_mutation(context, arguments.destination)
     destination_is_dir = destination_arg.is_dir()
     destination = destination_arg
     if destination_is_dir:
-        destination = context.sandbox.resolve(destination_arg / source.name)
+        destination = _resolve_mutation(context, str(destination_arg / source.name))
     if destination == source:
         raise ToolError("source and destination are the same path")
 
@@ -207,7 +248,7 @@ def move_file(context: ToolContext, arguments: MoveFileArgs) -> ToolResult:
     _refuse_if_exists(destination)
     _require_parent(destination)
 
-    shutil.move(str(source), str(destination))
+    _move_no_follow(source, destination)
     return ToolResult(
         text=f"moved {source.name} to {destination}",
         detail={"path": str(source), "destination": str(destination)},
@@ -215,7 +256,7 @@ def move_file(context: ToolContext, arguments: MoveFileArgs) -> ToolResult:
 
 
 def move_to_trash(context: ToolContext, arguments: MoveToTrashArgs) -> ToolResult:
-    source = context.sandbox.resolve(arguments.path)
+    source = _resolve_mutation(context, arguments.path)
     if not source.exists():
         raise ToolError(f"{source} does not exist")
     if context.data_dir is None:
@@ -225,11 +266,11 @@ def move_to_trash(context: ToolContext, arguments: MoveToTrashArgs) -> ToolResul
     trash_root.mkdir(parents=True, exist_ok=True)
     destination = trash_root / source.name
     counter = 1
-    while destination.exists():
+    while os.path.lexists(destination):
         destination = trash_root / f"{source.name}.{counter}"
         counter += 1
 
-    shutil.move(str(source), str(destination))
+    _move_no_follow(source, destination)
     return ToolResult(
         text=f"moved {source.name} to ClaireAI's trash ({destination})",
         detail={

@@ -821,6 +821,130 @@ async def test_a_write_request_is_grounded_in_a_real_listing_first(
     assert target.is_dir()
 
 
+async def test_a_read_in_one_folder_does_not_verify_a_write_in_another(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    first = downloads / "first"
+    second = downloads / "second"
+    first.mkdir()
+    second.mkdir()
+    target = second / "new"
+    broker = FixedBroker(approved=True)
+    # Routing off isolates the runtime's verification rule: no preflight
+    # listing is allowed to make a different folder look checked.
+    settings = agent_settings.model_copy(update={"tool_routing": "off"})
+    brain = ScriptedBrain(
+        [
+            tool_call("list_folder", path=str(first)),
+            tool_call("create_folder", path=str(target)),
+            answer("Done."),
+        ]
+    )
+
+    outcome = await run_task(
+        settings=settings,
+        conn=conn,
+        brain=brain,
+        request="make a folder",
+        approvals=broker,
+    )
+
+    assert outcome.steps[0].status == "done"
+    assert outcome.steps[1].status == "skipped"
+    assert not target.exists()
+    rows = trail(AuditLog(conn).for_task(outcome.task_id))
+    refused = next(
+        row for row in rows if row.action == "tool.call" and row.tool == "create_folder"
+    )
+    assert '"reason": "verify_first"' in (refused.detail or "")
+
+
+@pytest.mark.parametrize("operation", ["rename", "move", "trash"])
+async def test_mutation_sources_need_exact_file_evidence(
+    operation: str,
+    conn: sqlite3.Connection,
+    agent_settings: Settings,
+    downloads: Path,
+) -> None:
+    """Listing the parent folder must not stand in for reading the source."""
+    source = downloads / "small.txt"
+    destination = downloads / "moved.txt"
+    renamed = downloads / "renamed.txt"
+
+    def proposal() -> BrainResponse:
+        if operation == "rename":
+            return tool_call("rename_file", path=str(source), new_name="renamed.txt")
+        if operation == "move":
+            return tool_call("move_file", source=str(source), destination=str(destination))
+        return tool_call("move_to_trash", path=str(source))
+
+    settings = agent_settings.model_copy(update={"tool_routing": "off"})
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain(
+        [
+            tool_call("list_folder", path=str(downloads)),
+            proposal(),
+            tool_call("get_file_info", path=str(source)),
+            proposal(),
+            answer("Done."),
+        ]
+    )
+
+    outcome = await run_task(
+        settings=settings,
+        conn=conn,
+        brain=brain,
+        request="move the small file",
+        approvals=broker,
+    )
+
+    assert [step.status for step in outcome.steps] == ["done", "skipped", "done", "done"]
+    rows = trail(AuditLog(conn).for_task(outcome.task_id))
+    refused = next(row for row in rows if row.action == "tool.call" and row.status == "skipped")
+    assert '"reason": "verify_first"' in (refused.detail or "")
+    assert len(broker.requests) == 1  # only the verified attempt was offered
+    if operation == "rename":
+        assert renamed.read_text(encoding="utf-8") == "tiny"
+        assert not source.exists()
+    elif operation == "move":
+        assert destination.read_text(encoding="utf-8") == "tiny"
+        assert not source.exists()
+    else:
+        assert not source.exists()
+
+
+async def test_a_destination_folder_can_be_inspected_without_listing_it(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    """get_file_info is exact evidence that a destination folder exists."""
+    sub = downloads / "sub"
+    sub.mkdir()
+    source = downloads / "small.txt"
+    settings = agent_settings.model_copy(update={"tool_routing": "off"})
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain(
+        [
+            tool_call("list_folder", path=str(downloads)),
+            tool_call("get_file_info", path=str(sub)),
+            tool_call("get_file_info", path=str(source)),
+            tool_call("move_file", source=str(source), destination=str(sub)),
+            answer("Moved."),
+        ]
+    )
+
+    outcome = await run_task(
+        settings=settings,
+        conn=conn,
+        brain=brain,
+        request="move the small file into sub",
+        approvals=broker,
+    )
+
+    assert [step.status for step in outcome.steps] == ["done", "done", "done", "done"]
+    assert (sub / "small.txt").read_text(encoding="utf-8") == "tiny"
+    assert len(broker.requests) == 1
+
+
 async def test_a_read_request_pays_nothing_for_that_listing(
     conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
 ) -> None:
