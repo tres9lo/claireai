@@ -12,6 +12,7 @@ because message tags and fast appends matter there, and tables keep
 
 from __future__ import annotations
 
+import os
 import tempfile
 import tkinter as tk
 from pathlib import Path
@@ -31,6 +32,26 @@ FONT_BODY = (theme.FONT, 12)
 FONT_SMALL = (theme.FONT, 11)
 FONT_TITLE = (theme.FONT, 24, "bold")
 FONT_SUBTITLE = (theme.FONT, 12)
+
+
+def _whole_pc_roots() -> tuple[Path, ...]:
+    """Filesystem roots for the explicit whole-PC allow-list choice.
+
+    On POSIX the root is the whole filesystem. Windows has one root per drive,
+    so only the drives that currently exist are offered; a missing A: drive must
+    not turn into a phantom allow-list entry.
+    """
+    if os.name != "nt":
+        return (Path("/"),)
+    roots: list[Path] = []
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        root = Path(f"{letter}:\\")
+        try:
+            if root.exists():
+                roots.append(root)
+        except OSError:
+            continue
+    return tuple(roots)
 
 
 def _style_tables(root: tk.Misc) -> None:
@@ -570,6 +591,7 @@ class ApprovalsPage(Page):
         self.preview = self.text_area(holder, height=3)
         self.preview.pack(fill="x", padx=6, pady=6)
         self.preview.configure(state="disabled")
+        self.refresh()
         self.frame.after(1000, self._tick)
 
     def refresh(self) -> None:
@@ -607,10 +629,20 @@ class ApprovalsPage(Page):
             messagebox.showwarning("ClaireAI", str(error), parent=self.frame)
         self.refresh()
 
+    def on_show(self) -> None:
+        # The Activity page already refreshes when opened. Without this, a
+        # request arriving while the page was hidden could leave the list empty
+        # until the next timer tick — and a failed tick used to stop the timer.
+        self.refresh()
+
     def _tick(self) -> None:
-        if self.frame.winfo_ismapped():
-            self.refresh()
-        self.frame.after(1500, self._tick)
+        try:
+            if self.frame.winfo_ismapped():
+                self.refresh()
+        except Exception as error:  # noqa: BLE001 - the page must keep polling
+            self.note.configure(text=f"refresh failed: {error}", text_color=theme.DANGER)
+        if self.frame.winfo_exists():
+            self.frame.after(1500, self._tick)
 
 
 class ConversationsPage(Page):
@@ -934,16 +966,55 @@ class SettingsPage(Page):
             progress_color=theme.DANGER, text_color=theme.TEXT,
             font=ctk.CTkFont(family=theme.FONT, size=11)))
 
-        folders = ", ".join(self.runtime.status()["allowed_folders"]) or "none"
+        access = self.card(body)
         ctk.CTkLabel(
-            body, text=f"Allowed folders: {folders}", text_color=theme.MUTED,
-            font=ctk.CTkFont(family=theme.FONT, size=11), anchor="w", justify="left", wraplength=800,
-        ).pack(anchor="w", padx=16, pady=(0, 2))
+            access, text="File access", text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=13, weight="bold"), anchor="w",
+        ).pack(anchor="w", padx=16, pady=(14, 2))
         ctk.CTkLabel(
-            body, text="Change folders with CLAIREAI_ALLOWED_FOLDERS; they are never widened from here.",
+            access,
+            text=(
+                "ClaireAI can read only these folders. Writes still ask for approval "
+                "every time. Choose specific folders, or explicitly allow the whole PC."
+            ),
             text_color=theme.MUTED, font=ctk.CTkFont(family=theme.FONT, size=11),
-            anchor="w", justify="left", wraplength=800,
-        ).pack(anchor="w", padx=16)
+            anchor="w", justify="left", wraplength=780,
+        ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        saved_folders = preferences.get("allowed_folders")
+        if saved_folders is None:
+            saved_folders = self.runtime.status().get("allowed_folders", [])
+        self.allowed_folders = [
+            str(Path(path).expanduser().resolve(strict=False)) for path in saved_folders
+        ]
+        self.folder_list = tk.Listbox(
+            access,
+            height=4,
+            exportselection=False,
+            selectmode=tk.EXTENDED,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=theme.BORDER,
+            background=theme.SURFACE_HIGH,
+            foreground=theme.TEXT,
+            selectbackground=theme.ACCENT_DEEP,
+            selectforeground=theme.TEXT,
+            activestyle="none",
+            font=FONT_SMALL,
+        )
+        self.folder_list.pack(fill="x", padx=16, pady=(0, 8))
+        folder_buttons = ctk.CTkFrame(access, fg_color="transparent")
+        folder_buttons.pack(fill="x", padx=16, pady=(0, 6))
+        self.button(folder_buttons, "Add folder…", self._add_folder, primary=True).pack(side="left")
+        self.button(folder_buttons, "Allow whole PC…", self._allow_whole_pc).pack(side="left", padx=8)
+        self.button(folder_buttons, "Remove selected", self._remove_folder).pack(side="left")
+        self.folder_note = ctk.CTkLabel(
+            access, text="", text_color=theme.MUTED, anchor="w", justify="left",
+            wraplength=780, font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        self.folder_note.pack(anchor="w", padx=16, pady=(0, 14))
+        self._render_folders()
 
         actions = ctk.CTkFrame(body, fg_color="transparent")
         actions.pack(anchor="w", pady=(14, 0))
@@ -971,6 +1042,85 @@ class SettingsPage(Page):
         ).pack(side="left")
         factory(line).pack(side="left")
 
+    def _render_folders(self) -> None:
+        self.folder_list.delete(0, "end")
+        for folder in self.allowed_folders:
+            self.folder_list.insert("end", folder)
+        if self.allowed_folders:
+            self.folder_note.configure(
+                text=f"{len(self.allowed_folders)} folder(s) allowed.", text_color=theme.MUTED
+            )
+        else:
+            self.folder_note.configure(
+                text="No folders yet — file tools are disabled until you add one.",
+                text_color=theme.WARN,
+            )
+
+    def _save_folders(self) -> bool:
+        try:
+            saved = self.runtime.update_preferences({"allowed_folders": self.allowed_folders})
+        except (ValueError, OSError) as error:
+            self.folder_note.configure(text=f"Not saved: {error}", text_color=theme.DANGER)
+            return False
+        self.allowed_folders = [
+            str(Path(path).expanduser().resolve(strict=False))
+            for path in saved.get("allowed_folders", self.allowed_folders)
+        ]
+        self._render_folders()
+        self.folder_note.configure(text="Folders saved.", text_color=theme.OK)
+        return True
+
+    def _add_folders(self, candidates: list[Path]) -> None:
+        known = {Path(folder).expanduser().resolve(strict=False) for folder in self.allowed_folders}
+        added = False
+        for candidate in candidates:
+            resolved = candidate.expanduser().resolve(strict=False)
+            if resolved in known:
+                continue
+            known.add(resolved)
+            self.allowed_folders.append(str(resolved))
+            added = True
+        if not added:
+            self.folder_note.configure(text="Already allowed.", text_color=theme.MUTED)
+            return
+        self._save_folders()
+
+    def _add_folder(self) -> None:
+        chosen = filedialog.askdirectory(
+            parent=self.frame,
+            title="Choose a folder ClaireAI may use",
+            mustexist=True,
+        )
+        if chosen:
+            self._add_folders([Path(chosen)])
+
+    def _allow_whole_pc(self) -> None:
+        roots = _whole_pc_roots()
+        if not roots:
+            self.folder_note.configure(text="No filesystem root was found.", text_color=theme.DANGER)
+            return
+        names = ", ".join(str(root) for root in roots)
+        if not messagebox.askyesno(
+            "Allow the whole PC?",
+            (
+                f"ClaireAI will be able to read every file under {names}.\n\n"
+                "Writes still require your approval for each action. "
+                "Only continue if you understand this."
+            ),
+            parent=self.frame,
+        ):
+            return
+        self._add_folders(list(roots))
+
+    def _remove_folder(self) -> None:
+        selected = list(self.folder_list.curselection())
+        if not selected:
+            self.folder_note.configure(text="Select a folder first.", text_color=theme.WARN)
+            return
+        for index in reversed(selected):
+            del self.allowed_folders[index]
+        self._save_folders()
+
     def apply(self) -> None:
         try:
             self.runtime.update_preferences(
@@ -980,6 +1130,7 @@ class SettingsPage(Page):
                     "max_output_tokens": int(self.max_tokens.get()),
                     "agent_max_steps": int(self.max_steps.get()),
                     "voice_enabled": bool(self.voice_enabled.get()),
+                    "allowed_folders": self.allowed_folders,
                 }
             )
             self.runtime.set_control(
@@ -1063,6 +1214,14 @@ class SettingsPage(Page):
         self.browser.set(bool(control["browser"]))
         self.improvement.set(bool(control["self_improvement"]))
         self.shutdown.set(bool(control["shutdown"]))
+        preferences = self.runtime.preferences()
+        saved_folders = preferences.get("allowed_folders")
+        if saved_folders is None:
+            saved_folders = self.runtime.status().get("allowed_folders", [])
+        self.allowed_folders = [
+            str(Path(path).expanduser().resolve(strict=False)) for path in saved_folders
+        ]
+        self._render_folders()
         self._refresh_learning()
 
 

@@ -114,6 +114,7 @@ class FakeRuntime:
         return {
             "owner_name": "Tester", "response_style": "balanced", "max_output_tokens": 128,
             "agent_max_steps": 8, "voice_enabled": False, "voice_pitch": 50, "voice_rate": 175,
+            "allowed_folders": [],
         }
 
     def status(self):
@@ -254,3 +255,54 @@ def test_the_chat_page_appends_and_resets(tmp_path, tk_root) -> None:
     assert "hello" in chat.transcript.get("1.0", "end")
     chat.new_chat()
     assert chat.transcript.get("1.0", "end").strip() == ""
+
+
+def test_approvals_page_shows_pending_actions_immediately(tmp_path, tk_root) -> None:
+    pytest.importorskip("customtkinter")
+    from claireai.desktop.app import ClaireDesktop
+    from claireai.desktop.pages import ApprovalsPage
+
+    class PendingRuntime(FakeRuntime):
+        def pending_approvals(self):
+            return [
+                {
+                    "ref": "ref-1",
+                    "task_id": "task-1",
+                    "tool": "create_folder",
+                    "risk": "needs_approval",
+                    "arguments": {"path": "/tmp/example"},
+                    "target": "/tmp/example",
+                    "preview": "Create folder",
+                    "description": "ClaireAI wants to run `create_folder`",
+                    "expires_in": 120,
+                }
+            ]
+
+    app = ClaireDesktop(tk_root, PendingRuntime(tmp_path))  # type: ignore[arg-type]
+    app.show(ApprovalsPage)
+
+    page = app.pages[ApprovalsPage]
+    assert page.tree.get_children() == ("ref-1",)
+    assert "1 waiting" in page.note.cget("text")
+
+
+def test_settings_page_adds_and_saves_a_folder(tmp_path, tk_root, monkeypatch) -> None:
+    pytest.importorskip("customtkinter")
+    from claireai.desktop import pages as pages_module
+    from claireai.desktop.app import ClaireDesktop
+    from claireai.desktop.pages import SettingsPage
+
+    runtime = FakeRuntime(tmp_path)
+    app = ClaireDesktop(tk_root, runtime)  # type: ignore[arg-type]
+    app.show(SettingsPage)
+    page = app.pages[SettingsPage]
+    folder = tmp_path / "work"
+    folder.mkdir()
+    monkeypatch.setattr(pages_module.filedialog, "askdirectory", lambda **_kwargs: str(folder))
+
+    page._add_folder()
+
+    expected = str(folder.resolve())
+    assert page.allowed_folders == [expected]
+    assert runtime.preference_updates[-1] == {"allowed_folders": [expected]}
+    assert page.folder_list.get(0, "end") == (expected,)

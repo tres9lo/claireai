@@ -76,9 +76,25 @@ TOOL_CALL_REPAIR = (
     '<tool_call>{"name":"tool_name","arguments":{...}}</tool_call>'
 )
 
+# A weak model can answer an action request from memory instead of proposing
+# the tool that would actually do it. Accepting that answer is a hallucination:
+# the owner sees "Done" while nothing happened and the Approvals page stays
+# empty. This corrective turn is deliberately separate from the malformed-call
+# repair above; here the model produced readable prose, just no action.
+TOOL_REQUIRED_INSTRUCTION = (
+    "This request needs a tool. Call one of the offered tools now; do not answer "
+    "from memory and do not claim an action happened. If a path is needed, use one "
+    "from the folder context and never invent it."
+)
+
 
 def _repair_instruction(shown: Sequence[str]) -> str:
     return f"{TOOL_CALL_REPAIR} Tools offered: {', '.join(shown) or '(none)'}."
+
+
+def _tool_required(plan: Route | None) -> bool:
+    """A matched route is evidence that the answer depends on tool data."""
+    return plan is not None and plan.intent != "unrouted"
 
 
 def _retry_worthwhile(response: BrainResponse, temperature: float) -> bool:
@@ -120,6 +136,16 @@ class AgentEmptyReply(AgentError):
 
     An empty assistant message is not a valid answer, and treating it as one
     shows the owner a blank screen while the task claims success.
+    """
+
+
+class AgentToolRequired(AgentError):
+    """The model answered a routed task without using any tool.
+
+    Returning that text would let the model claim a folder was created or a
+    calendar entry added while no tool ran and no approval was requested. The
+    agent gives the model one corrective turn, then fails honestly instead of
+    presenting the hallucinated answer as success.
     """
 
 
@@ -198,6 +224,11 @@ async def run_task(
     from claireai.tools import default_registry  # local import keeps import graph flat
 
     settings = apply_preferences(settings, conn)
+    # The caller may have built the brain before this turn's saved preferences
+    # were loaded. ScratchBrain uses this field for max_new_tokens; without the
+    # update a saved 192-token cap still generated at the startup default of 128.
+    if hasattr(brain, "max_output_tokens"):
+        brain.max_output_tokens = settings.max_output_tokens
     controls = RuntimeControl(settings.control_state_path)
     control_state = controls.read()
     if control_state["shutdown"]:
@@ -339,6 +370,7 @@ async def run_task(
     messages[0] = Message(role="system", content=messages[0].content + context_note)
     steps: list[AgentStep] = []
     repair_attempts = 0
+    tool_retry_attempts = 0
     research_attempted = False
     research_result = None
     browser = BrowserSession() if "open_url" in registry else None
@@ -387,6 +419,7 @@ async def run_task(
             # the model never gets an implicit network capability. Once per task.
             if (
                 not response.tool_calls
+                and not _tool_required(plan)
                 and not research_attempted
                 and browser is not None
                 and controls.read()["browser"]
@@ -549,6 +582,45 @@ async def run_task(
                     "being asked to correct it"
                 )
 
+            # An action request answered with prose is not a result. Give the
+            # model one explicit chance to call the tool it was offered; the
+            # first answer is discarded, not shown, so a made-up "Done" cannot
+            # reach the owner or pretend an approval happened.
+            if (
+                not response.tool_calls
+                and response.content.strip()
+                and not steps
+                and _tool_required(plan)
+                and tool_retry_attempts < 1
+            ):
+                tool_retry_attempts += 1
+                with transaction(conn):
+                    audit.record(
+                        task_id=task.id,
+                        device=device,
+                        action="agent.tool_required",
+                        status="skipped",
+                        target=plan.intent if plan else None,
+                        detail={
+                            "reason": "answered without a tool",
+                            "step": step_number,
+                            "preview": response.content[:200],
+                        },
+                    )
+                messages.append(Message(role="assistant", content=response.content))
+                messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            f"{TOOL_REQUIRED_INSTRUCTION} "
+                            f"Tools offered: {', '.join(shown_names) or '(none)'}."
+                        ),
+                    )
+                )
+                if presence:
+                    presence.emit("thinking", task_id=task.id)
+                continue
+
             if not response.tool_calls:
                 if not response.content.strip():
                     duration_ms = int((time.perf_counter() - started) * 1000)
@@ -574,6 +646,33 @@ async def run_task(
                     raise AgentEmptyReply(
                         "the model returned an empty reply (no text and no tool call); try again"
                     )
+                if _tool_required(plan) and not steps:
+                    duration_ms = int((time.perf_counter() - started) * 1000)
+                    error = (
+                        "the model answered a task that needs a tool without calling one; "
+                        "nothing was run and no approval was requested"
+                    )
+                    with transaction(conn):
+                        audit.record(
+                            task_id=task.id,
+                            device=device,
+                            action="agent.answer",
+                            status="failed",
+                            target=response.model,
+                            detail={
+                                "model": response.model,
+                                "steps": len(steps),
+                                "duration_ms": duration_ms,
+                                "reason": "no tool call",
+                                "route": plan.intent if plan else None,
+                                "preview": response.content[:200],
+                            },
+                        )
+                        tasks.update_status(task.id, "failed", error=error)
+                    if presence:
+                        presence.emit("error", detail={"reason": "no tool call"})
+                    raise AgentToolRequired(error)
+
                 # A confirmed research excerpt is offered as a lesson only
                 # after the answer is delivered. The model's own wording is
                 # never the thing stored: the source-bearing excerpt is, and a

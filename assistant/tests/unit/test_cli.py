@@ -19,6 +19,7 @@ from claireai.brain import BrainHealth, BrainResponse, BrainUnavailable, ToolCal
 from claireai.cli import (
     CliApprovalBroker,
     _handle_turn,
+    _parse_plan_task,
     _read_input_or_stop,
     _speak_answer,
     ask,
@@ -37,6 +38,28 @@ def test_briefing_and_inbox_flags_are_parsed() -> None:
     assert args.countries == "Kenya,France"
     assert args.inbox == 5
     assert build_parser().parse_args(["--inbox"]).inbox == 10
+
+
+def test_day_plan_flags_and_task_parsing() -> None:
+    args = build_parser().parse_args(["--day-plan", "tomorrow"])
+    assert args.day_plan == "tomorrow"
+    args = build_parser().parse_args(
+        [
+            "--plan-task",
+            "09:00 Read inbox",
+            "--plan-task",
+            "14:00 Review",
+            "--day-plan-date",
+            "tomorrow",
+            "--day-plan-run",
+        ]
+    )
+    assert args.plan_task == ["09:00 Read inbox", "14:00 Review"]
+    assert args.day_plan_date == "tomorrow"
+    assert args.day_plan_run is True
+    assert _parse_plan_task("09:05 Read inbox") == ("09:05", "Read inbox")
+    with pytest.raises(ValueError, match="HH:MM"):
+        _parse_plan_task("9am Read inbox")
 
 
 def test_stop_interrupts_an_idle_cli_input_wait(tmp_path: Path, monkeypatch) -> None:

@@ -12,6 +12,7 @@ from claireai.storage.database import MIGRATIONS_DIR, split_statements
 EXPECTED_TABLES = {
     "tasks", "task_log", "summaries", "notes", "schema_migrations",
     "conversations", "conversation_messages", "user_directives", "user_preferences",
+    "day_plan_items",
 }
 
 
@@ -29,8 +30,9 @@ def test_migration_creates_expected_tables(database: Database) -> None:
             "0001_initial",
             "0002_conversations_directives_preferences",
             "0003_appointments",
+            "0004_day_plan",
         ]
-        assert {"appointments"} <= _table_names(conn)
+        assert {"appointments", "day_plan_items"} <= _table_names(conn)
     finally:
         conn.close()
 

@@ -8,6 +8,12 @@ from claireai.storage.user_data import (
     PreferenceRepository,
     apply_preferences,
 )
+from claireai.storage.day_plan import (
+    DayPlanItem,
+    DayPlanRepository,
+    PLAN_STATUSES,
+    render_day_plan,
+)
 from claireai.storage.tasks import (
     ALLOWED_TRANSITIONS,
     STATUSES,
@@ -21,6 +27,10 @@ __all__ = [
     "ALLOWED_TRANSITIONS",
     "Database",
     "ConversationMessage",
+    "DayPlanItem",
+    "DayPlanRepository",
+    "PLAN_STATUSES",
+    "render_day_plan",
     "ConversationRepository",
     "DirectiveRepository",
     "InvalidTransition",

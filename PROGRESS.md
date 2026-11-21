@@ -1,5 +1,44 @@
 # Progress log
 
+## 2026-11-21 — Training limits checked; runtime token cap aligned
+
+- **No day-plan work was due.** Both the app database and `runtime-data` were
+  checked; `day_plan_items` is empty in the app database and absent from the
+  checkout database, so `--day-plan-run` had nothing to execute.
+- **The full run is the practical ceiling on this host.** It is training at
+  `224` width, `5` layers, `512` context, batch `8`, `8,000` steps and a `192`
+  max target length. The process used about `1.1 GiB` RSS with roughly `1.1 GiB`
+  available; a 768-context run alongside the desktop app would risk swapping,
+  so the active run was not interrupted or widened.
+- **Saved output-token preferences now reach tool-enabled turns.** `run_task`
+  applies the saved `max_output_tokens` to a ScratchBrain after loading
+  preferences; previously a saved 192 still generated at the startup default of
+  128. The owner preference is now `192`, matching the training target
+  (`128 -> 192`).
+- **Verified:** the full suite passes from `assistant/`, including the new
+  preference-to-brain regression test. The active training process was left
+  running; no checkpoint was installed or promoted.
+
+## 2026-11-20 (planner) — Full-day task planner and safe due runner
+
+- **A day plan is now local data, not model memory.** `0004_day_plan` adds
+  `day_plan_items` with a local day, start time, sanitized request, status and a
+  linked task id. The repository enforces its own transitions; a paused item is
+  never picked up by the automatic runner again.
+- **Tools:** `plan_day` (approval-gated) assigns up to 24 timed requests and
+  `list_day_plan` (safe) reads them. Both resolve `today`/`tomorrow`/dates
+  through the deterministic date parser, not through the model.
+- **Safe runner:** `--day-plan-run` executes only due `planned` items through the
+  normal agent, registry, sandbox and audit path. It attaches a broker that
+  records and refuses approval requests, so safe reads can run but writes,
+  downloads and web actions pause as `awaiting_approval`.
+- **CLI:** `--plan-task "HH:MM request"` (repeatable) assigns a day,
+  `--day-plan [DATE]` lists it, and `--day-plan-date` selects the day. No model
+  is needed to assign or list.
+- **Verified:** the full test suite passes from `assistant/`, including new
+  planner tests; a local-source CLI smoke test assigned and listed two tasks and
+  applied migration `0004_day_plan`.
+
 ## 2026-11-20 (later) — Bilingual corpus and one-command training path
 
 - **Casual conversation is a data/capacity problem, not a decoding one.** The

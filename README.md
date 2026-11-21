@@ -44,8 +44,8 @@ I am not a model-training expert. I am learning this in public: every training r
 | Provider-neutral `Brain` interface + local scratch-checkpoint adapter | ✅ foundation |
 | Opt-in Claude, ChatGPT and Ollama connectors (local model stays the default) | ✅ scratch remains default |
 | CLI chat that records every turn as a task plus audit entries | ✅ |
-| 6 read-only tools (list, info, read, search, largest, calendar listing) | ✅ |
-| 8 approval-gated writes (create, write, rename, move, trash, download, add appointment) | ✅ |
+| Read-only tools (files, calendar, day plan, image identification; browser tools when enabled) | ✅ |
+| 9 approval-gated writes (create, write, rename, move, trash, download, add appointment, plan day) | ✅ |
 | Interactive approval flow with per-decision audit references | ✅ |
 | Agent loop with schema validation, risk policy and step cap | ✅ |
 | Deterministic tool routing (roughly halves prompt tokens per step) | ✅ |
@@ -312,11 +312,16 @@ counts.
 
 ### Granting a folder
 
+In the native window, open **Settings → File access** and use **Add folder…**.
+The same allow-list can be set before launch:
+
 ```bash
 export CLAIREAI_ALLOWED_FOLDERS='["~/Downloads", "~/Documents"]'
 ```
 
-Only those trees are visible to the file tools. Everything else is refused.
+Only those trees are visible to the file tools. **Allow whole PC…** is an
+explicit, separately confirmed choice and is never enabled by default. Writes
+always ask for approval, even inside an allowed folder.
 
 ### Everyday commands
 
@@ -345,6 +350,19 @@ assistant/.venv/bin/python -m claireai.cli --inbox 10
 
 # Daily summary at 18:00 local time
 assistant/.venv/bin/python -m claireai.cli --summary-at 18:00
+
+# Assign a full day of tasks, then inspect the plan
+assistant/.venv/bin/python -m claireai.cli \
+  --plan-task "09:00 Read the inbox" \
+  --plan-task "14:00 Review the weekly report"
+assistant/.venv/bin/python -m claireai.cli --day-plan
+
+# Run tasks whose local time has arrived. Safe actions run; writes pause.
+assistant/.venv/bin/python -m claireai.cli --day-plan-run
+
+`--day-plan-run` is safe by default: it pauses at the first approval and leaves
+that item `awaiting_approval` instead of granting itself a write. Add
+`--day-plan-date tomorrow` when assigning or running tomorrow's plan.
 
 # The whole app in one command (installs the venv on first run, then opens it)
 ./scripts/start.sh

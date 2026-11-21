@@ -40,6 +40,12 @@ from claireai.tools.calendar import (
     add_appointment,
     list_appointments,
 )
+from claireai.tools.day_plan import (
+    ListDayPlanArgs,
+    PlanDayArgs,
+    list_day_plan,
+    plan_day,
+)
 from claireai.tools.vision import (
     IdentifyImageArgs,
     SeeScreenArgs,
@@ -240,6 +246,24 @@ VISION_TOOLS: tuple[Tool, ...] = (
 )
 
 
+DAY_PLAN_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="list_day_plan",
+        description="Read the owner's assigned tasks for a day, with local start times and status.",
+        risk="safe",
+        args_model=ListDayPlanArgs,
+        handler=list_day_plan,
+    ),
+    Tool(
+        name="plan_day",
+        description="Assign one or more tasks to a local day and time. Needs approval.",
+        risk="needs_approval",
+        args_model=PlanDayArgs,
+        handler=plan_day,
+    ),
+)
+
+
 CALENDAR_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="list_appointments",
@@ -263,6 +287,7 @@ def default_registry(*, browser_enabled: bool = False) -> ToolRegistry:
     tools = (
         *FILE_TOOLS,
         *WRITE_TOOLS,
+        *DAY_PLAN_TOOLS,
         *CALENDAR_TOOLS,
         *VISION_TOOLS,
         *(BROWSER_TOOLS if browser_enabled else ()),
@@ -274,11 +299,14 @@ __all__ = [
     "AddAppointmentArgs",
     "BROWSER_TOOLS",
     "CALENDAR_TOOLS",
+    "DAY_PLAN_TOOLS",
     "FILE_TOOLS",
     "WorldNewsArgs",
     "world_news",
     "ListAppointmentsArgs",
+    "ListDayPlanArgs",
     "LargestFilesArgs",
+    "PlanDayArgs",
     "VISION_TOOLS",
     "WRITE_TOOLS",
     "Tool",

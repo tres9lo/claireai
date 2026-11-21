@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import queue
+import re
 import sqlite3
 import sys
 import threading
@@ -42,7 +43,7 @@ from claireai.brain import (
     ScratchBrain,
     build_brain,
 )
-from claireai.dates import answer_date_question
+from claireai.dates import answer_date_question, parse_when
 from claireai.config import Settings
 from claireai.identity import answer_self_question, system_prompt as self_prompt
 from claireai.learning import LearningError, LearningJournal
@@ -59,9 +60,11 @@ from claireai.scheduler import build_scheduler, next_run_label, run_once
 from claireai.storage import (
     ConversationRepository,
     Database,
+    DayPlanRepository,
     DirectiveRepository,
     TaskRepository,
     apply_preferences,
+    render_day_plan,
     transaction,
 )
 from claireai.summary import DailySummary, SummaryError, parse_day, render_markdown
@@ -321,6 +324,45 @@ def _print_summary(summary: DailySummary, path: Path | None) -> None:
         print(f"saved: {path}")
 
 
+def _parse_plan_task(value: str) -> tuple[str, str]:
+    """Parse ``HH:MM request`` for the owner's direct CLI convenience."""
+    match = re.match(r"^([01]\d|2[0-3]):([0-5]\d)\s+(.+)$", str(value or "").strip())
+    if match is None:
+        raise ValueError(f"plan task needs 'HH:MM request', got {value!r}")
+    return f"{match.group(1)}:{match.group(2)}", match.group(3).strip()
+
+
+def _run_day_plan_add(args: argparse.Namespace, conn: sqlite3.Connection) -> int:
+    """Add owner-typed tasks without pretending the model assigned them."""
+    try:
+        day = parse_when(args.day_plan_date)
+        items = [_parse_plan_task(item) for item in args.plan_task]
+        with transaction(conn):
+            created = DayPlanRepository(conn).add_many(day=day, items=items)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    except sqlite3.Error as exc:
+        print(f"ERROR: the day-plan table is unavailable: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    print(render_day_plan(created, day))
+    return EXIT_OK
+
+
+def _run_day_plan_list(conn: sqlite3.Connection, when: str) -> int:
+    try:
+        day = parse_when(when)
+        items = DayPlanRepository(conn).for_day(day)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    except sqlite3.Error as exc:
+        print(f"ERROR: the day-plan table is unavailable: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    print(render_day_plan(items, day))
+    return EXIT_OK
+
+
 def _run_prune(args: argparse.Namespace, settings: Settings, conn: sqlite3.Connection) -> int:
     """`--prune` shows what is old; `--prune --apply` removes it."""
     from claireai.retention import RetentionError, human_size
@@ -516,6 +558,16 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
             return _run_prune(args, settings, conn)
         finally:
             conn.close()
+    if args.day_plan is not None:
+        try:
+            return _run_day_plan_list(conn, args.day_plan)
+        finally:
+            conn.close()
+    if args.plan_task:
+        try:
+            return _run_day_plan_add(args, conn)
+        finally:
+            conn.close()
 
     if args.briefing or args.briefing_at:
         from claireai.briefing import build_briefing, build_scheduler as build_briefing_scheduler
@@ -623,6 +675,26 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
                     file=sys.stderr,
                 )
             return EXIT_RUNTIME
+
+        if args.day_plan_run:
+            from claireai.planner import render_day_plan_run, run_due_items
+
+            try:
+                day = parse_when(args.day_plan_date)
+            except ValueError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return EXIT_CONFIG
+            report = await run_due_items(
+                settings=settings,
+                conn=conn,
+                brain=brain,
+                day=day,
+                registry=registry,
+                sandbox=sandbox,
+                device=args.device,
+            )
+            print(render_day_plan_run(report))
+            return EXIT_TASK_FAILED if report.failed else EXIT_OK
 
         if args.once:
             return await _handle_turn(
@@ -746,6 +818,31 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         metavar="COUNTRIES",
         help="comma-separated countries for --briefing/--briefing-at (e.g. Kenya,France)",
+    )
+    parser.add_argument(
+        "--day-plan",
+        nargs="?",
+        const="today",
+        metavar="DATE",
+        help="print the day plan for DATE (default today) and exit",
+    )
+    parser.add_argument(
+        "--plan-task",
+        action="append",
+        default=[],
+        metavar="HH:MM REQUEST",
+        help="assign a task at a local time (repeat for a full day)",
+    )
+    parser.add_argument(
+        "--day-plan-date",
+        default="today",
+        metavar="DATE",
+        help="day for --plan-task and --day-plan-run (default today)",
+    )
+    parser.add_argument(
+        "--day-plan-run",
+        action="store_true",
+        help="run due day-plan tasks now; safe actions run, writes pause for approval",
     )
     parser.add_argument(
         "--email-setup",

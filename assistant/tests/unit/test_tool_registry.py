@@ -35,10 +35,12 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "get_page_text",
         "identify_image",
         "list_appointments",
+        "list_day_plan",
         "list_folder",
         "move_file",
         "move_to_trash",
         "open_url",
+        "plan_day",
         "read_text_file",
         "rename_file",
         "search_files",
@@ -54,6 +56,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "get_page_text",  # reads a page already fetched in this task
         "identify_image",  # reads one file inside the allow-list
         "list_appointments",  # reads the local calendar only
+        "list_day_plan",  # reads local plan rows only
         "list_folder",
         "read_text_file",
         "search_files",

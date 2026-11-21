@@ -142,6 +142,36 @@ Do not start 10K/30K training because a candidate loads. The recall probe has
 failed at every tested long-context length and CPU latency is already high.
 Retrieval and a smaller measured experiment are the better next step.
 
+## Candidate acceptance and install checklist
+
+Training writes a candidate; it never promotes it. Use this sequence after the
+`train_claireai.py` pipeline finishes:
+
+1. Read the candidate's `.pipeline.json`. Confirm `exit_code` is `0`, the
+   `train` stage produced the `.pt` file, and both evaluation stages completed.
+   A rate-limited optional *fetch* is allowed; a failed gate is not.
+2. Run the fixed suites against the candidate at the same run count used for the
+   installed checkpoint. Do not compare a 1-run candidate with a 3-run baseline.
+
+   ```bash
+   assistant/.venv/bin/python scripts/eval_model.py \
+     --model-checkpoint runtime-data/models/candidates/claire-chat-v15-full.pt --runs 3
+   assistant/.venv/bin/python scripts/conversation_eval.py \
+     --model-checkpoint runtime-data/models/candidates/claire-chat-v15-full.pt --runs 3
+   ```
+
+3. Compare conversation, tool-call validity, refusals, latency and peak memory
+   with the installed checkpoint. A lower training loss is not a reason to
+   install; a regression in any required suite is a reason not to.
+4. Confirm the candidate's manifest context is the context it was actually
+   trained on. Do not use an expanded position table as if the new rows had been
+   learned.
+5. Install only through an explicit owner action (desktop **Install checkpoint**
+   or `DesktopRuntime.install_checkpoint`). Keep the previous checkpoint so the
+   change is reversible.
+6. Record the candidate name, evaluation counts, install decision and rollback
+   path in `PROGRESS.md`.
+
 ## Further reading
 
 - [SmolLM2: training small language models](https://arxiv.org/abs/2502.02737)

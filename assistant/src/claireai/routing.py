@@ -50,6 +50,13 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
         "asking what is scheduled; the calendar answers from the local database",
     ),
     (
+        "day_plan",
+        r"\b(plan|plan out|assign|schedule|organi[sz]e|show|list|what(?:'s| is))\b",
+        r"\b(day plan|day|today|tomorrow|morning|afternoon|evening|task|tasks|agenda)\b",
+        ("plan_day", "list_day_plan", "list_appointments"),
+        "assigning or reading tasks for a full local day",
+    ),
+    (
         "news",
         r"\b(news|headlines?|briefing|top stories|what(?:'s| is) happening)\b",
         r"\b(world|country|countries|from|in|about|latest)\b",

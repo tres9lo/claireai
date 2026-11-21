@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from claireai.agent import (
     AgentEmptyReply,
     AgentStepLimit,
+    AgentToolRequired,
     AgentUnreadableToolCall,
     run_task,
     system_message,
@@ -26,13 +27,14 @@ from claireai.config import Settings
 from claireai.permissions import PermissionDenied, Sandbox
 from claireai.presence import PresenceStream
 from claireai.runtime_control import RuntimeControl
-from claireai.storage import TaskRepository
+from claireai.storage import PreferenceRepository, TaskRepository
 from claireai.tools import default_registry
 from claireai.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
 
 
 class ScriptedBrain:
     name = "scripted"
+    max_output_tokens = 128
 
     def __init__(self, responses) -> None:  # noqa: ANN001
         self.responses = list(responses)
@@ -211,6 +213,17 @@ async def test_disabled_browser_before_a_proposed_action_fails_the_task(
     assert rows[-1].status == "failed"
 
 
+async def test_saved_max_output_tokens_reaches_the_tool_brain(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    PreferenceRepository(conn).update({"max_output_tokens": 192})
+    brain = ScriptedBrain([answer("hi")])
+
+    await run_task(settings=agent_settings, conn=conn, brain=brain, request="hi")
+
+    assert brain.max_output_tokens == 192
+
+
 async def test_tool_schemas_are_offered_to_the_model(
     conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
 ) -> None:
@@ -241,6 +254,8 @@ async def test_tool_schemas_are_offered_to_the_model(
         "download_file",
         "identify_image",
         "see_screen",
+        "list_day_plan",
+        "plan_day",
     } == names
 
 
@@ -719,6 +734,62 @@ async def test_an_approved_action_records_the_same_reference_twice(
     assert tool_row.action == "tool.call" and tool_row.status == "done"
     assert decision.approval_ref == tool_row.approval_ref
     assert '"approved": true' in (decision.detail or "")
+
+
+async def test_a_routed_task_answered_without_a_tool_gets_one_corrective_turn(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    # The small model can answer an action request with prose. That answer says
+    # work happened while no tool ran and no approval was requested; the runtime
+    # must ask for a call instead of showing it.
+    target = downloads / "reports"
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain(
+        [
+            answer("I created the reports folder."),
+            tool_call("create_folder", path=str(target)),
+            answer("Created."),
+        ]
+    )
+
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="make a folder called reports in Downloads",
+        approvals=broker,
+    )
+
+    assert [step.tool for step in outcome.steps] == ["create_folder"]
+    assert outcome.steps[0].status == "done"
+    assert target.is_dir()
+    assert len(brain.calls) == 3
+    assert brain.calls[1]["messages"][-1].role == "user"
+    assert "needs a tool" in brain.calls[1]["messages"][-1].content
+    rows = trail(AuditLog(conn).for_task(outcome.task_id))
+    assert any(row.action == "agent.tool_required" for row in rows)
+
+
+async def test_a_routed_task_that_still_answers_without_a_tool_fails_honestly(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    brain = ScriptedBrain([answer("Done."), answer("Done.")])
+
+    with pytest.raises(AgentToolRequired, match="without calling one"):
+        await run_task(
+            settings=agent_settings,
+            conn=conn,
+            brain=brain,
+            request="make a folder called reports in Downloads",
+        )
+
+    task = TaskRepository(conn).recent(1)[0]
+    assert task.status == "failed"
+    assert "no approval was requested" in (task.error or "")
+    rows = trail(AuditLog(conn).for_task(task.id))
+    assert rows[-1].action == "agent.answer"
+    assert rows[-1].status == "failed"
+    assert not any(row.action == "tool.call" for row in rows)
 
 
 async def test_a_write_request_is_grounded_in_a_real_listing_first(
