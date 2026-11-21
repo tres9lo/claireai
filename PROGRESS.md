@@ -1,5 +1,27 @@
 # Progress log
 
+## 2026-11-21 (learning loop) — Replay, cited retrieval closeout, and tool-use fetchers
+
+- **Replay protects older confirmed lessons.** `LearningJournal.compile()` now
+  refreshes `learning/replay.jsonl` with a deterministic, bounded sample of
+  older owner-confirmed, source-bearing lessons. `TrainingCurriculum` adds that
+  sample to the nightly corpus, so lessons older than the recent 200-example
+  window do not disappear. Unverified model answers are never replayed.
+- **The cited retrieval path is proven through the final answer.** A focused
+  agent test checks that the model receives `RESEARCH RESULT` with the source
+  before generating its answer, and that the conversation writes no training
+  corpus. The playbook now states the exact journal → compiled corpus → gated
+  candidate boundary.
+- **ToolACE and Hermes have bounded fetchers.** `fetch_corpora.py --source
+  toolace` and `--source hermes` cap at 500 rows, accept only one or two calls,
+  validate call names against the row's source schema, normalise ToolACE's
+  bracket syntax to runtime `<tool_call>` JSON, remove held-out evaluation
+  prompts and duplicates, and write licence / SHA-256 sidecars. Source tool
+  names remain metadata; they are not executable runtime tools.
+- **Verified:** `test_learning.py`, `test_training.py`, `test_data_sources.py`
+  and the focused `test_agent.py` retrieval cases pass. The active training run
+  was not interrupted.
+
 ## 2026-11-21 (research safety) — Unknown answers and private requests
 
 - **The browser-off path is now explicit.** When the model says it does not

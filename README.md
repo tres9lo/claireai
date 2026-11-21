@@ -54,6 +54,7 @@ I am not a model-training expert. I am learning this in public: every training r
 | Workspace calendar: appointments in SQLite, `what's on tomorrow` answered from them | ✅ listing is read-only, adding needs approval |
 | Retention/pruning for trash and summaries | ✅ |
 | Browser tools, disabled until enabled in Settings | ✅ |
+| Unknown public question → approved web search, cited answer, optional confirmed lesson | ✅ |
 | Runtime stop switch and browser access control | ✅ first version |
 | Native desktop window and terminal chat, no browser surface | ✅ |
 | Stored conversation history, owner directives and preferences | ✅ first version |
@@ -152,9 +153,10 @@ sudo apt install pulseaudio-utils            # for paplay; espeak-ng as fallback
 #   fr/fr_FR/siwis/medium. Each voice needs its .onnx and .onnx.json side by side.
 
 # 2. Prepare the licensed bilingual corpus, train a candidate and evaluate it.
-#    This one command fetches bounded Dolly/OASST1/GSM8K/FineWeb samples, builds
-#    the authored English/French curriculum, merges and trains. It never installs
-#    the candidate; promotion stays an explicit owner decision after the gate.
+#    This one command fetches bounded Dolly/OASST1/GSM8K/FineWeb plus ToolACE and
+#    Hermes tool-call samples, builds the authored English/French curriculum,
+#    merges and trains. It never installs the candidate; promotion stays an
+#    explicit owner decision after the gate.
 export CLAIREAI_DATA_DIR=./runtime-data
 assistant/.venv/bin/python brain-lab/train_claireai.py --profile full
 # Smaller smoke run on this laptop:

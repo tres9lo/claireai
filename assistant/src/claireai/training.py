@@ -483,7 +483,8 @@ class TrainingCurriculum:
         for domain, builder in BUILDERS.items():
             records.extend(builder())
         try:
-            for entry in self.journal.entries()[-200:]:
+            journal_entries = self.journal.entries()
+            for entry in journal_entries[-200:]:
                 sources = [
                     str(source)
                     for source in entry.get("sources") or []
@@ -501,6 +502,10 @@ class TrainingCurriculum:
                         f"{answer}\n\nSource: {sources[0]}",
                     )
                 )
+            # Confirmed lessons older than the recent window would otherwise
+            # disappear from the curriculum. Replay a bounded sample of them so
+            # new lessons do not overwrite greetings, refusals or tool use.
+            records.extend(self.journal.replay_records(entries=journal_entries))
         except (LearningError, OSError):
             pass
         # Deterministic split: every seventh record is validation.

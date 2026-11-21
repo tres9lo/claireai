@@ -47,6 +47,25 @@ def test_only_confirmed_lessons_enter_the_curriculum(tmp_path) -> None:
     assert "an unverified guess" not in questions
 
 
+def test_curriculum_replays_older_confirmed_lessons(tmp_path) -> None:
+    from claireai.learning import LearningJournal
+
+    journal = LearningJournal(tmp_path)
+    for index in range(270):
+        journal.record_lesson(
+            f"older fact {index}",
+            f"answer {index}",
+            sources=[f"https://example.test/{index}"],
+        )
+    assert journal.compile() == 270
+
+    records = training.TrainingCurriculum(tmp_path, journal=journal).examples()
+    questions = [record["messages"][0]["content"] for record in records]
+    assert "older fact 0" in questions
+    assert "older fact 269" in questions
+    assert len(questions) == len(set(questions))
+
+
 def test_merge_keeps_authored_intent_and_confirmed_lessons(tmp_path) -> None:
     authored = tmp_path / "authored"
     external = tmp_path / "external"

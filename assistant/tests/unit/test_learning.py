@@ -7,7 +7,12 @@ import os
 
 import pytest
 
-from claireai.learning import BackgroundLearner, LearningError, LearningJournal
+from claireai.learning import (
+    REPLAY_LIMIT,
+    BackgroundLearner,
+    LearningError,
+    LearningJournal,
+)
 
 
 def test_recording_is_opt_in_at_the_call_site_and_idempotent(tmp_path) -> None:
@@ -87,6 +92,43 @@ def test_compile_does_not_trust_a_forged_verified_entry(tmp_path) -> None:
     assert journal.compile() == 0
     assert not journal.corpus_path.exists()
     assert journal.status()["scanned"] == 1
+
+
+def test_compile_keeps_a_bounded_replay_of_older_confirmed_lessons(tmp_path) -> None:
+    journal = LearningJournal(tmp_path / "data")
+    for index in range(270):
+        journal.record_lesson(
+            f"fact {index}",
+            f"answer {index}",
+            sources=[f"https://example.test/{index}"],
+        )
+
+    assert journal.compile() == 270
+    replay = journal.replay_records()
+    assert len(replay) == REPLAY_LIMIT
+    questions = [record["messages"][0]["content"] for record in replay]
+    assert all(int(question.rsplit(" ", 1)[-1]) < 70 for question in questions)
+    assert all(record["source"] == "claireai-confirmed-research-replay" for record in replay)
+    assert journal.replay_path.is_file()
+    assert len(journal.replay_path.read_text(encoding="utf-8").splitlines()) == REPLAY_LIMIT
+    # The same journal and cursor produce the same replay slice.
+    assert journal.replay_records() == replay
+
+
+def test_replay_never_teaches_an_unverified_guess(tmp_path) -> None:
+    journal = LearningJournal(tmp_path / "data")
+    journal.record("an unverified guess", "a model answer")
+    for index in range(201):
+        journal.record_lesson(
+            f"confirmed {index}",
+            f"answer {index}",
+            sources=[f"https://example.test/{index}"],
+        )
+
+    assert journal.compile() == 201
+    replay = journal.replay_records()
+    assert len(replay) == 1
+    assert replay[0]["messages"][0]["content"] == "confirmed 0"
 
 
 def test_the_worker_does_nothing_while_disabled(tmp_path) -> None:

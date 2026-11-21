@@ -35,16 +35,16 @@ retrieval, not general parity on this CPU model.
   private/first-person request never leaves the machine.
 - [x] Add regression tests for `query_for` privacy and for
   `LearningJournal.compile()` accepting only verified, source-bearing lessons.
-- [ ] Add an immediate retrieval answer with a source, then keep weight updates
+- [x] Add an immediate retrieval answer with a source, then keep weight updates
   in the nightly batch. Do not update gradients during a conversation.
-- [ ] Add a replay slice of older conversations when compiling new lessons, so
+- [x] Add a replay slice of older conversations when compiling new lessons, so
   the next candidate does not forget greetings, refusals or tool calls.
-- [ ] Document the exact difference between "remembered today" (journal) and
+- [x] Document the exact difference between "remembered today" (journal) and
   "learned into weights" (gated candidate).
 
 ### 2. Datasets and training correctness
 
-- [ ] Add bounded fetchers for ToolACE and Hermes Function Calling v1 first;
+- [x] Add bounded fetchers for ToolACE and Hermes Function Calling v1 first;
   add Glaive, xLAM and Smol-SmolTalk only after those pass format checks.
 - [ ] Keep 300–500 filtered examples per source, 512 tokens or less, one or two
   tool calls, direct-answer negatives, deduplication and held-out

@@ -32,6 +32,29 @@ The immediate answer is retrieval. Weight updates are a later, gated batch, not
 an online gradient step. That avoids poisoning the model with an arbitrary web
 page and avoids rewriting weights while a conversation is in progress.
 
+## Remembered today vs learned into weights
+
+These are deliberately different states, with different files and different
+authority:
+
+- **Remembered today (journal).** `learning/journal.jsonl` is the owner-readable
+  record of an exchange. It may contain unverified model answers, but those are
+  never training targets. The journal is not the active model.
+- **Approved material (compiled corpus).** `learning/corpus.jsonl` receives only
+  owner-confirmed, source-bearing lessons. Compilation is append-only and does
+  not touch the running checkpoint. `learning/replay.jsonl` holds a bounded,
+  deterministic sample of older confirmed lessons so new material does not crowd
+  out greetings, refusals or tool behaviour.
+- **Learned weights (candidate).** Only the nightly worker trains a separate
+  checkpoint under `models/candidates/`. The fixed gate compares it with the
+  installed checkpoint at the same run count. Passing that gate is still not an
+  automatic install: the owner promotes it explicitly, and the previous
+  checkpoint remains available for rollback.
+
+So an answer with a citation is available immediately, while the same lesson
+changes weights only after confirmation, compilation, a separate training run
+and the install gate. No gradient step happens during a conversation.
+
 ## Data rules
 
 - Prefer small, licensed, behaviour-specific sets over a huge undifferentiated
@@ -105,8 +128,9 @@ and Smol-SmolTalk. Start with a few hundred filtered examples per source.
   requires a second, explicit owner confirmation.
 - Strip prompt-shaped markers from page text. A page cannot become a system
   message later.
-- Compile only verified, source-bearing lessons. Add a replay slice of older
-  conversations so a new lesson does not erase greetings, refusals or tool use.
+- Compile only verified, source-bearing lessons. Replay a bounded sample of
+  older confirmed lessons (`learning/replay.jsonl`) so a new lesson does not
+  erase greetings, refusals or tool use.
 - Train the nightly candidate, run both fixed suites at the same run count, and
   install only through the existing gate. If the gate fails, keep the old model.
 

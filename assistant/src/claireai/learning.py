@@ -25,10 +25,15 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 MAX_LESSON_CHARS = 4000
 COMPILE_INTERVAL_SECONDS = 30.0
+# Training keeps the newest lessons in the curriculum. Older confirmed lessons
+# are replayed in a bounded sample so a new lesson cannot quietly erase the
+# greetings, refusals and tool behaviour the model already learned.
+RECENT_LESSON_WINDOW = 200
+REPLAY_LIMIT = 64
 
 CORPUS_SYSTEM = (
     "You are ClaireAI, a local-first personal assistant running on the owner's computer. "
@@ -56,6 +61,47 @@ def _write_line(path: Path, payload: dict[str, Any]) -> None:
         os.close(descriptor)
 
 
+def _write_lines(path: Path, payloads: Iterable[dict[str, Any]]) -> None:
+    """Replace a small derived file atomically with owner-only permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        for payload in payloads:
+            handle.write(
+                json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+                + "\n"
+            )
+    os.replace(temporary, path)
+
+
+def _http_sources(entry: dict[str, Any]) -> list[str]:
+    return [
+        str(source).strip()
+        for source in entry.get("sources") or []
+        if str(source).strip().startswith(("http://", "https://"))
+    ]
+
+
+def _lesson_record(
+    entry: dict[str, Any], sources: list[str], *, source: str
+) -> dict[str, Any]:
+    return {
+        "system": CORPUS_SYSTEM,
+        "messages": [
+            {"role": "user", "content": entry["question"]},
+            {
+                "role": "assistant",
+                "content": f"{entry['answer']}\n\nSource: {sources[0]}",
+            },
+        ],
+        "source": source,
+        "recorded_at": entry.get("at"),
+        "model": entry.get("model"),
+        "sources": sources,
+    }
+
+
 class LearningError(Exception):
     """The journal or its compiled form cannot be read."""
 
@@ -68,6 +114,7 @@ class LearningJournal:
         self.directory = self.root / "learning"
         self.journal_path = self.directory / "journal.jsonl"
         self.corpus_path = self.directory / "corpus.jsonl"
+        self.replay_path = self.directory / "replay.jsonl"
         self.state_path = self.directory / "state.json"
         self._lock = threading.Lock()
 
@@ -190,12 +237,52 @@ class LearningJournal:
             sources=sources,
         )
 
+    def replay_records(
+        self,
+        *,
+        entries: list[dict[str, Any]] | None = None,
+        limit: int = REPLAY_LIMIT,
+        recent: int = RECENT_LESSON_WINDOW,
+    ) -> list[dict[str, Any]]:
+        """Return a bounded, deterministic sample of older confirmed lessons.
+
+        Only verified, source-bearing exchanges can be replayed. The newest
+        ``recent`` confirmed lessons are already in the curriculum, so replaying
+        them would waste slots; this selects from the older confirmed lessons
+        that would otherwise fall out of the recent window. The selection is
+        content-only and deterministic, which makes the corpus reproducible.
+        """
+        if limit < 1:
+            return []
+        source_entries = self.entries() if entries is None else entries
+        eligible: list[tuple[dict[str, Any], list[str]]] = []
+        for entry in source_entries:
+            if entry.get("verified") is not True:
+                continue
+            sources = _http_sources(entry)
+            if sources:
+                eligible.append((entry, sources))
+        older = eligible[:-recent] if recent > 0 and len(eligible) > recent else []
+        if not older:
+            return []
+        if len(older) <= limit:
+            selected = older
+        else:
+            indexes = [min(len(older) - 1, index * len(older) // limit) for index in range(limit)]
+            selected = [older[index] for index in indexes]
+        return [
+            _lesson_record(entry, sources, source="claireai-confirmed-research-replay")
+            for entry, sources in selected
+        ]
+
     def compile(self) -> int:
         """Compile verified lessons into corpus records.
 
         Unverified exchanges are still retained in the journal for the owner to
         inspect, but they do not become training targets. This is the difference
-        between remembering a conversation and teaching a guess as fact.
+        between remembering a conversation and teaching a guess as fact. A
+        bounded replay slice is refreshed at the same time, so old confirmed
+        lessons remain visible to the next training run.
         """
         with self._lock:
             entries = self.entries()
@@ -205,32 +292,19 @@ class LearningJournal:
             for entry in entries[start:]:
                 if entry.get("verified") is not True:
                     continue
-                sources = [
-                    str(source)
-                    for source in entry.get("sources") or []
-                    if str(source).startswith(("http://", "https://"))
-                ]
+                sources = _http_sources(entry)
                 if not sources:
                     continue
                 _write_line(
                     self.corpus_path,
-                    {
-                        "system": CORPUS_SYSTEM,
-                        "messages": [
-                            {"role": "user", "content": entry["question"]},
-                            {
-                                "role": "assistant",
-                                "content": f"{entry['answer']}\n\nSource: {sources[0]}",
-                            },
-                        ],
-                        "source": "claireai-confirmed-research",
-                        "recorded_at": entry.get("at"),
-                        "model": entry.get("model"),
-                        "sources": sources,
-                    },
+                    _lesson_record(entry, sources, source="claireai-confirmed-research"),
                 )
                 added += 1
             if start < len(entries):
+                _write_lines(
+                    self.replay_path,
+                    self.replay_records(entries=entries),
+                )
                 self.state_path.parent.mkdir(parents=True, exist_ok=True)
                 temporary = self.state_path.with_suffix(".tmp")
                 temporary.write_text(

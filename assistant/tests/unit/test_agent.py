@@ -1128,6 +1128,16 @@ async def test_unknown_public_question_can_search_then_save_a_confirmed_lesson(
     )
 
     assert outcome.content == "Paris is the capital."
+    # The answer after retrieval must be generated from the cited evidence, not
+    # from the model's original admission of uncertainty.
+    second_messages = brain.calls[1]["messages"]
+    evidence = [message.content for message in second_messages if message.role == "tool"]
+    assert any(
+        "RESEARCH RESULT" in content and "Source: https://example.test/france" in content
+        for content in evidence
+    )
+    # A conversation never updates weights. The lesson is journaled only.
+    assert not (agent_settings.resolved_data_dir / "learning" / "corpus.jsonl").exists()
     assert [request.tool for request in broker.requests] == ["research_web", "remember_research"]
     research_request, lesson_request = broker.requests
     assert research_request.arguments == {"query": "what is the capital of France"}

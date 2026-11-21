@@ -5,6 +5,27 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — bounded ToolACE and Hermes fetchers
+
+- `brain-lab/fetch_corpora.py --source toolace` and `--source hermes` fetch at
+  most 500 rows per source, require one or two calls, validate call names against
+  the row's source schema, normalise ToolACE's bracket syntax to the runtime's
+  `<tool_call>` JSON format, remove held-out evaluation prompts and exact
+  duplicates, and write a licence / retrieval-time / SHA-256 sidecar. Tool names
+  remain metadata and must be mapped to registry tools before training.
+
+### Added — replay buffer and retrieval closeout
+
+- `LearningJournal.compile()` now refreshes `learning/replay.jsonl` with a
+  deterministic, bounded sample of older confirmed, source-bearing lessons.
+  `TrainingCurriculum` replays those examples so a new lesson does not crowd out
+  greetings, refusals or tool calls. Unverified model answers are never replayed.
+- The unknown-answer path is covered end to end: after an approved search, the
+  model receives the cited `RESEARCH RESULT`, the final answer is generated from
+  it, and no training corpus is written during the conversation. The playbook
+  now documents the difference between the journal, the compiled corpus and the
+  gated candidate.
+
 ### Added — bilingual corpus, one-command training, and trained-context fitting
 
 - `brain-lab/train_claireai.py --profile full` is the single reproducible path:

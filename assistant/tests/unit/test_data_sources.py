@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 ALLOWED_ACCESS = {"public", "request", "credentials", "do-not-use"}
+FETCHER = ROOT / "brain-lab" / "fetch_corpora.py"
+
+
+def _fetcher_module():
+    spec = importlib.util.spec_from_file_location("fetch_corpora_under_test", FETCHER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_every_source_has_a_licence_link_and_access_state() -> None:
@@ -30,3 +40,91 @@ def test_sources_with_restrictions_are_not_marked_for_training() -> None:
     assert by_id["stack-exchange"]["access"] == "do-not-use"
     assert by_id["enron-email"]["access"] == "do-not-use"
     assert by_id["fineweb-edu"]["license"].startswith("ODC-By")
+
+
+def test_toolace_call_syntax_is_normalised_without_guessing() -> None:
+    fetcher = _fetcher_module()
+    calls = fetcher._parse_toolace_calls(
+        '[GetCompetitions(), Get Manager Placeholder Image(sport="football")]'
+    )
+    assert calls == [
+        {"name": "GetCompetitions", "arguments": {}},
+        {"name": "Get Manager Placeholder Image", "arguments": {"sport": "football"}},
+    ]
+    assert fetcher._parse_toolace_calls("[Broken(name=)]") is None
+
+
+def test_hermes_call_blocks_are_parsed() -> None:
+    fetcher = _fetcher_module()
+    calls = fetcher._parse_hermes_calls(
+        '<tool_call>\n{"name":"list_cameras","arguments":{"include_offline":false}}\n</tool_call>'
+    )
+    assert calls == [{"name": "list_cameras", "arguments": {"include_offline": False}}]
+    nested = fetcher._parse_hermes_calls(
+        '<tool_call>{"name":"save","arguments":{"payload":{"a":1,"b":2}}}</tool_call>'
+    )
+    assert nested == [{"name": "save", "arguments": {"payload": {"a": 1, "b": 2}}}]
+    assert fetcher._parse_hermes_calls("<tool_call>{not json}</tool_call>") is None
+
+
+def test_toolace_fetch_keeps_only_known_one_or_two_call_rows(monkeypatch) -> None:
+    fetcher = _fetcher_module()
+    system = (
+        "You are an expert in composing functions.\n"
+        "Here is a list of functions in JSON format that you can invoke:\n"
+        '[{"name": "GetCompetitions"}, {"name": "Get Manager Placeholder Image"}]'
+    )
+    good = {
+        "system": system,
+        "conversations": [
+            {"from": "user", "value": "Show me the televised football competitions."},
+            {"from": "assistant", "value": "[GetCompetitions()]"},
+        ],
+    }
+    unknown = {
+        "system": system,
+        "conversations": [
+            {"from": "user", "value": "Call a tool that is not in this schema."},
+            {"from": "assistant", "value": "[NotATool()]"},
+        ],
+    }
+    monkeypatch.setattr(fetcher, "_rows", lambda *args, **kwargs: [good, unknown])
+
+    records = fetcher.fetch_toolace(10)
+    assert len(records) == 1
+    assert records[0]["source"] == "toolace"
+    assert records[0]["available_tools"] == ["GetCompetitions", "Get Manager Placeholder Image"]
+    assert records[0]["messages"][1]["content"] == (
+        '<tool_call>{"name":"GetCompetitions","arguments":{}}</tool_call>'
+    )
+
+
+def test_hermes_fetch_keeps_a_cited_tool_schema(monkeypatch) -> None:
+    fetcher = _fetcher_module()
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_cameras",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    row = {
+        "tools": json.dumps(tools),
+        "conversations": [
+            {"from": "system", "value": "Use the supplied functions."},
+            {"from": "human", "value": "List every camera on my home network."},
+            {
+                "from": "gpt",
+                "value": '<tool_call>{"name":"list_cameras","arguments":{"include_offline":false}}</tool_call>',
+            },
+        ],
+    }
+    monkeypatch.setattr(fetcher, "_rows", lambda *args, **kwargs: [row])
+
+    records = fetcher.fetch_hermes(10)
+    assert len(records) == 1
+    assert records[0]["source"] == "hermes-function-calling-v1"
+    assert records[0]["available_tools"] == ["list_cameras"]
+    assert "<tool_call>" in records[0]["messages"][1]["content"]

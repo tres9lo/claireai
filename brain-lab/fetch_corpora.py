@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Download a bounded, licensed slice of public instruction data.
 
-This is deliberately not a bulk scraper. It fetches a small sample from two
-public datasets, normalises each item into the trainer's JSONL shape, and writes
+This is deliberately not a bulk scraper. It fetches a small sample from a
+public dataset, normalises each item into the trainer's JSONL shape, and writes
 a sidecar with the licence, URL, retrieval time and SHA-256. Review the licence
 before increasing ``--limit``.
 
@@ -12,11 +12,15 @@ Sources:
   oasst1     OpenAssistant Conversations, Apache-2.0
   gsm8k      OpenAI grade-school math, MIT
   fineweb    FineWeb-Edu sample, ODC-By 1.0
+  fineweb-fr French FineWeb-2 sample, ODC-By 1.0
+  toolace    ToolACE bounded tool-call sample, Apache-2.0
+  hermes     Hermes Function Calling v1 bounded sample, Apache-2.0
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import gzip
 import hashlib
 import json
@@ -43,6 +47,13 @@ FINEWEB_DATASET = "HuggingFaceFW/fineweb-edu"
 FINEWEB_FR_DATASET = "HuggingFaceFW/fineweb-2"
 FINEWEB_FR_CONFIG = "fra_Latn"
 GSM8K_URL = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/train.jsonl"
+ROWS_API = "https://datasets-server.huggingface.co/rows"
+HERMES_DATASET = "NousResearch/hermes-function-calling-v1"
+HERMES_CONFIG = "func_calling_singleturn"
+HERMES_URL = "https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1"
+TOOLACE_DATASET = "Team-ACE/ToolACE"
+TOOLACE_URL = "https://huggingface.co/datasets/Team-ACE/ToolACE"
+TOOL_SOURCE_LIMIT = 500
 
 
 class FetchError(Exception):
@@ -103,6 +114,341 @@ def _record(user: str, assistant: str, *, source: str, license_name: str, url: s
         "license": license_name,
         "url": url,
     }
+
+
+def _tool_record(
+    user: str,
+    assistant: str,
+    *,
+    source: str,
+    license_name: str,
+    url: str,
+    available_tools: list[str],
+) -> dict[str, Any] | None:
+    """A tool-use record in the runtime's own wire format, bounded for 512 tokens."""
+    user, assistant = _clean(user), _clean(assistant)
+    if len(user) < 8 or len(assistant) < 8:
+        return None
+    # A conservative character bound. The trainer still tokenises and truncates,
+    # but this keeps obviously oversized schemas out of the bounded sample.
+    if len(user) + len(assistant) + len(SYSTEM) > 2048:
+        return None
+    return {
+        "system": SYSTEM,
+        "messages": [
+            {"role": "user", "content": user[:1200]},
+            {"role": "assistant", "content": _clip(assistant, 900)},
+        ],
+        "source": source,
+        "license": license_name,
+        "url": url,
+        "available_tools": available_tools,
+        "format": "runtime-tool-call-v1",
+    }
+
+
+def _json_list(text: Any) -> list[dict[str, Any]]:
+    """Decode a JSON list embedded in a dataset field without guessing."""
+    raw = str(text or "")
+    start = raw.find("[")
+    if start < 0:
+        return []
+    try:
+        value, _ = json.JSONDecoder().raw_decode(raw[start:])
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _source_tool_names(system: str) -> list[str]:
+    marker = "Here is a list of functions in JSON format that you can invoke:"
+    start = str(system or "").find(marker)
+    if start < 0:
+        return []
+    names: list[str] = []
+    for item in _json_list(str(system)[start + len(marker) :]):
+        name = item.get("name")
+        if not name and isinstance(item.get("function"), dict):
+            name = item["function"].get("name")
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names
+
+
+def _split_top_level(text: str) -> list[str]:
+    """Split a call list on commas that are not inside quotes or parentheses."""
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(text):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _parse_toolace_calls(value: str) -> list[dict[str, Any]] | None:
+    """Parse ToolACE's ``[name(key=value), ...]`` call syntax.
+
+    The source is not JSON, so this converts only calls whose names and argument
+    literals are unambiguous. Anything malformed is dropped rather than taught.
+    """
+    text = str(value or "").strip()
+    if not (text.startswith("[") and text.endswith("]")):
+        return None
+    inner = text[1:-1].strip()
+    if not inner:
+        return []
+    calls: list[dict[str, Any]] = []
+    for part in _split_top_level(inner):
+        if "(" not in part or not part.endswith(")"):
+            return None
+        name, raw_arguments = part.split("(", 1)
+        name = name.strip()
+        if not name:
+            return None
+        arguments: dict[str, Any] = {}
+        raw_arguments = raw_arguments[:-1].strip()
+        if raw_arguments:
+            for pair in _split_top_level(raw_arguments):
+                if "=" not in pair:
+                    return None
+                key, raw_value = pair.split("=", 1)
+                key = key.strip()
+                if not key:
+                    return None
+                raw_value = raw_value.strip()
+                try:
+                    arguments[key] = ast.literal_eval(raw_value)
+                except (SyntaxError, ValueError):
+                    # Some source rows use bare ``true``/``false`` or an
+                    # unquoted token. Keep the literal as text only when it is
+                    # not a structural fragment.
+                    if not raw_value or raw_value.startswith(("[", "{", "(")):
+                        return None
+                    arguments[key] = raw_value
+        calls.append({"name": name, "arguments": arguments})
+    return calls
+
+
+def _parse_hermes_calls(value: str) -> list[dict[str, Any]] | None:
+    # Take everything between the tags and let the JSON decoder handle nested
+    # objects. A non-greedy ``\{.*?\}`` regex stops at the first closing brace
+    # and silently drops valid calls whose arguments contain an object.
+    blocks = re.findall(r"<tool_call>\s*(.*?)\s*</tool_call>", str(value or ""), re.DOTALL)
+    if not blocks:
+        return None
+    calls: list[dict[str, Any]] = []
+    for block in blocks:
+        try:
+            payload = json.loads(block)
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        name = payload.get("name")
+        arguments = payload.get("arguments")
+        if not isinstance(name, str) or not name.strip() or not isinstance(arguments, dict):
+            return None
+        calls.append({"name": name.strip(), "arguments": arguments})
+    return calls
+
+
+def _call_text(call: dict[str, Any]) -> str:
+    return (
+        "<tool_call>"
+        + json.dumps(call, ensure_ascii=False, separators=(",", ":"))
+        + "</tool_call>"
+    )
+
+
+def _held_out_prompts() -> set[str]:
+    """Evaluation prompts that must never enter a training sample."""
+    prompts: set[str] = set()
+    for name in ("model_eval_cases.json", "conversation_cases.json"):
+        path = ROOT.parent / "scripts" / name
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        for case in payload.get("cases", []):
+            if case.get("prompt"):
+                prompts.add(str(case["prompt"]).strip())
+            for turn in case.get("turns", []):
+                if turn.get("user"):
+                    prompts.add(str(turn["user"]).strip())
+    return prompts
+
+
+def _rows(dataset: str, config: str, *, offset: int, length: int = 100) -> list[dict[str, Any]]:
+    query = urllib.parse.urlencode(
+        {"dataset": dataset, "config": config, "split": "train", "offset": offset, "length": length}
+    )
+    payload = _get_json(f"{ROWS_API}?{query}")
+    rows = payload.get("rows") or []
+    return [item.get("row") or {} for item in rows if isinstance(item, dict)]
+
+
+def fetch_toolace(limit: int) -> list[dict[str, Any]]:
+    """Bounded ToolACE sample, normalised into the runtime call format."""
+    limit = max(1, min(int(limit), TOOL_SOURCE_LIMIT))
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    held_out = _held_out_prompts()
+    offset = 0
+    while len(records) < limit:
+        batch = _rows(TOOLACE_DATASET, "default", offset=offset)
+        if not batch:
+            break
+        for row in batch:
+            conversations = row.get("conversations") or []
+            user = next(
+                (str(item.get("value") or "") for item in conversations if item.get("from") == "user"),
+                "",
+            )
+            assistant = next(
+                (
+                    str(item.get("value") or "")
+                    for item in conversations
+                    if item.get("from") == "assistant"
+                ),
+                "",
+            )
+            if not user or not assistant or user.strip() in held_out:
+                continue
+            available = _source_tool_names(str(row.get("system") or ""))
+            calls = _parse_toolace_calls(assistant)
+            if calls is not None:
+                if not 1 <= len(calls) <= 2:
+                    continue
+                if not available or any(call["name"] not in available for call in calls):
+                    continue
+                target = "".join(_call_text(call) for call in calls)
+            else:
+                if assistant.lstrip().startswith("[") or "<tool_call>" in assistant:
+                    continue
+                target = assistant
+            record = _tool_record(
+                user,
+                target,
+                source="toolace",
+                license_name="Apache-2.0",
+                url=TOOLACE_URL,
+                available_tools=available,
+            )
+            if record is None:
+                continue
+            digest = hashlib.sha256(
+                (record["messages"][0]["content"] + "\x00" + target).encode("utf-8")
+            ).hexdigest()
+            if digest in seen:
+                continue
+            seen.add(digest)
+            records.append(record)
+            if len(records) >= limit:
+                break
+        offset += len(batch)
+        if len(batch) < 100:
+            break
+    return records
+
+
+def fetch_hermes(limit: int) -> list[dict[str, Any]]:
+    """Bounded Hermes Function Calling v1 sample (single-turn config)."""
+    limit = max(1, min(int(limit), TOOL_SOURCE_LIMIT))
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    held_out = _held_out_prompts()
+    offset = 0
+    while len(records) < limit:
+        batch = _rows(HERMES_DATASET, HERMES_CONFIG, offset=offset)
+        if not batch:
+            break
+        for row in batch:
+            conversations = row.get("conversations") or []
+            user = next(
+                (
+                    str(item.get("value") or "")
+                    for item in conversations
+                    if item.get("from") in {"human", "user"}
+                ),
+                "",
+            )
+            assistant = next(
+                (
+                    str(item.get("value") or "")
+                    for item in conversations
+                    if item.get("from") in {"gpt", "assistant"}
+                ),
+                "",
+            )
+            if not user or not assistant or user.strip() in held_out:
+                continue
+            available = [
+                str(name)
+                for item in _json_list(row.get("tools"))
+                for name in [
+                    item.get("function", {}).get("name")
+                    if isinstance(item.get("function"), dict)
+                    else item.get("name")
+                ]
+                if isinstance(name, str) and name.strip()
+            ]
+            calls = _parse_hermes_calls(assistant)
+            if calls is not None:
+                if not 1 <= len(calls) <= 2:
+                    continue
+                if not available or any(call["name"] not in available for call in calls):
+                    continue
+                target = "".join(_call_text(call) for call in calls)
+            else:
+                if "<tool_call>" in assistant:
+                    continue
+                target = assistant
+            record = _tool_record(
+                user,
+                target,
+                source="hermes-function-calling-v1",
+                license_name="Apache-2.0",
+                url=HERMES_URL,
+                available_tools=available,
+            )
+            if record is None:
+                continue
+            digest = hashlib.sha256(
+                (record["messages"][0]["content"] + "\x00" + target).encode("utf-8")
+            ).hexdigest()
+            if digest in seen:
+                continue
+            seen.add(digest)
+            records.append(record)
+            if len(records) >= limit:
+                break
+        offset += len(batch)
+        if len(batch) < 100:
+            break
+    return records
 
 
 def fetch_oasst(limit: int) -> dict[str, list[dict[str, Any]]]:
@@ -298,7 +644,15 @@ def fetch_gsm8k(limit: int) -> list[dict[str, Any]]:
     return records
 
 
-def _write(records: Iterable[dict[str, Any]], output: Path, *, source: str, license_name: str, url: str) -> dict[str, Any]:
+def _write(
+    records: Iterable[dict[str, Any]],
+    output: Path,
+    *,
+    source: str,
+    license_name: str,
+    url: str,
+    notes: str | None = None,
+) -> dict[str, Any]:
     material = list(records)
     if not material:
         raise FetchError(f"{source} returned no usable records; refusing to write an empty corpus")
@@ -312,7 +666,8 @@ def _write(records: Iterable[dict[str, Any]], output: Path, *, source: str, lice
         "retrieved": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "records": len(material),
         "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
-        "notes": "Bounded sample for a local from-scratch model; review the dataset card before increasing limits.",
+        "notes": notes
+        or "Bounded sample for a local from-scratch model; review the dataset card before increasing limits.",
     }
     output.with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest
@@ -322,7 +677,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--source",
-        choices=("oasst1", "gsm8k", "fineweb", "fineweb-fr", "all"),
+        choices=(
+            "oasst1",
+            "gsm8k",
+            "fineweb",
+            "fineweb-fr",
+            "toolace",
+            "hermes",
+            "all",
+        ),
         default="all",
     )
     parser.add_argument("--limit", type=int, default=1000)
@@ -332,7 +695,7 @@ def main() -> int:
         parser.error("--limit must be positive")
 
     sources = (
-        ("oasst1", "gsm8k", "fineweb", "fineweb-fr")
+        ("oasst1", "gsm8k", "fineweb", "fineweb-fr", "toolace", "hermes")
         if args.source == "all"
         else (args.source,)
     )
@@ -375,6 +738,40 @@ def main() -> int:
                 print(
                     f"fineweb-2-fr: {manifest['records']} records -> "
                     f"{args.output / 'fineweb-2-fr.jsonl'}"
+                )
+            elif source == "toolace":
+                records = fetch_toolace(args.limit)
+                manifest = _write(
+                    records,
+                    args.output / "toolace.jsonl",
+                    source="toolace",
+                    license_name="Apache-2.0",
+                    url=TOOLACE_URL,
+                    notes=(
+                        "Bounded one/two-call ToolACE sample in runtime-tool-call-v1 format; "
+                        "tool names are source metadata and must be mapped to registry tools before training."
+                    ),
+                )
+                print(
+                    f"toolace: {manifest['records']} records -> "
+                    f"{args.output / 'toolace.jsonl'}"
+                )
+            elif source == "hermes":
+                records = fetch_hermes(args.limit)
+                manifest = _write(
+                    records,
+                    args.output / "hermes-function-calling.jsonl",
+                    source="hermes-function-calling-v1",
+                    license_name="Apache-2.0",
+                    url=HERMES_URL,
+                    notes=(
+                        "Bounded one/two-call Hermes sample in runtime-tool-call-v1 format; "
+                        "tool names are source metadata and must be mapped to registry tools before training."
+                    ),
+                )
+                print(
+                    f"hermes-function-calling-v1: {manifest['records']} records -> "
+                    f"{args.output / 'hermes-function-calling.jsonl'}"
                 )
             else:
                 records = fetch_fineweb(args.limit)

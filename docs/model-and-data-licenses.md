@@ -101,7 +101,8 @@ Bounded external samples are handled by `brain-lab/fetch_corpora.py`, which
 writes a sidecar with licence, URL, retrieval time and SHA-256. Current sources:
 GSM8K (`openai/grade-school-math`, MIT), FineWeb-Edu (ODC-By 1.0, with extractive
 answers), French FineWeb-2 (`HuggingFaceFW/fineweb-2`, `fra_Latn`, ODC-By 1.0,
-with extractive French leads), and OASST1 English/French (Apache-2.0). OASST1 is
+with extractive French leads), OASST1 English/French (Apache-2.0), and the two
+bounded tool-use sources described below. OASST1 is
 read from the released `2023-04-12_oasst_ready.messages.jsonl.gz` archive rather
 than the rate-limited rows endpoint; only reviewed, non-deleted, non-synthetic
 assistant replies with a human prompt in the same language are kept. The
@@ -111,10 +112,18 @@ third-party text is redistributed with this repository. The full source list,
 including the gated/forbidden cases, is in `brain-lab/data-sources.json`. Do not
 raise a sample limit without re-reading the dataset card and this file.
 
-Candidate tool-use datasets are catalogued but not downloaded: Glaive Function
-Calling v2 and ToolACE (Apache-2.0), Hermes Function Calling v1 (Apache-2.0),
-xLAM Function Calling 60k (CC BY 4.0, attribution required), and Smol-SmolTalk
-(Apache-2.0). They are listed in `brain-lab/data-sources.json`; each needs a
+ToolACE (Apache-2.0) and Hermes Function Calling v1 (Apache-2.0) now have bounded
+fetchers in `brain-lab/fetch_corpora.py`. They are capped at 500 records per
+source, require one or two validated calls, convert ToolACE's bracket syntax to
+the runtime's `<tool_call>` JSON format, retain the source tool names as
+metadata, drop malformed calls, and remove held-out evaluation prompts. Their
+sidecars record licence, URL, retrieval time and SHA-256. The tool names still
+have to be mapped to actual registry tools and evaluated before training; a
+fetched schema is not an executable capability.
+
+Glaive Function Calling v2 (Apache-2.0), xLAM Function Calling 60k (CC BY 4.0,
+attribution required), and Smol-SmolTalk (Apache-2.0) remain catalogued but are
+not downloaded. They are listed in `brain-lab/data-sources.json`; each needs a
 bounded sample, a format/filter pass, a manifest and an evaluation before it can
 enter a training corpus.
 

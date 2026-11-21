@@ -50,9 +50,23 @@ held-out split separate.
 
 ## Compact tool-use and small-model candidates
 
-These are catalogued, not downloaded. Start with the smallest set that tests the
+ToolACE and Hermes Function Calling v1 now have bounded fetchers; the remaining
+sources are catalogued only. Start with the smallest set that tests the
 behaviour we need; a 224-wide, 5-layer model does not benefit from swallowing a
 113k-row corpus.
+
+```bash
+# Bounded samples, 500 records maximum per tool source
+assistant/.venv/bin/python brain-lab/fetch_corpora.py --source toolace --limit 500
+assistant/.venv/bin/python brain-lab/fetch_corpora.py --source hermes --limit 500
+```
+
+The fetcher normalises ToolACE's bracket calls to the runtime's `<tool_call>`
+JSON format, keeps only one or two calls whose names appear in that row's source
+schema, removes evaluation prompts and exact duplicates, and writes a licence /
+SHA-256 sidecar. Source tool names remain metadata: map them to the actual
+registry before training, and evaluate the result. Fetching a schema never makes
+that API executable.
 
 | Dataset | Size | Licence | Best use | Guardrail |
 | --- | ---: | --- | --- | --- |
