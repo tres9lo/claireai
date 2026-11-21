@@ -30,10 +30,10 @@ retrieval, not general parity on this CPU model.
 
 ### 1. Internet fallback and confirmed learning
 
-- [ ] Exercise `agent.py`'s unknown-answer path with browser access off and on.
+- [x] Exercise `agent.py`'s unknown-answer path with browser access off and on.
   Confirm the approval is shown, the query and source are displayed, and a
   private/first-person request never leaves the machine.
-- [ ] Add regression tests for `query_for` privacy and for
+- [x] Add regression tests for `query_for` privacy and for
   `LearningJournal.compile()` accepting only verified, source-bearing lessons.
 - [ ] Add an immediate retrieval answer with a source, then keep weight updates
   in the nightly batch. Do not update gradients during a conversation.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -64,6 +65,28 @@ def test_a_verified_lesson_needs_a_source(tmp_path) -> None:
     journal = LearningJournal(tmp_path / "data")
     with pytest.raises(LearningError, match=r"http\(s\) source"):
         journal.record("q", "a", verified=True)
+
+
+def test_compile_does_not_trust_a_forged_verified_entry(tmp_path) -> None:
+    journal = LearningJournal(tmp_path / "data")
+    journal.directory.mkdir(parents=True)
+    journal.journal_path.write_text(
+        json.dumps(
+            {
+                "id": "forged",
+                "question": "q",
+                "answer": "a",
+                "verified": True,
+                "sources": ["file:///etc/passwd"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert journal.compile() == 0
+    assert not journal.corpus_path.exists()
+    assert journal.status()["scanned"] == 1
 
 
 def test_the_worker_does_nothing_while_disabled(tmp_path) -> None:

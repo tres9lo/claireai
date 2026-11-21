@@ -1,5 +1,24 @@
 # Progress log
 
+## 2026-11-21 (research safety) — Unknown answers and private requests
+
+- **The browser-off path is now explicit.** When the model says it does not
+  know, browser access is off, no research approval is requested, no network
+  client is created, and the web tools are not offered. The owner gets the
+  honest answer instead of a silent search.
+- **The browser-on path is checked end to end.** A public unknown question asks
+  for `research_web` with the full query, displays the cited result before
+  asking to save a lesson, and only stores it after a second approval. The
+  stored lesson retains its source URLs.
+- **Private questions stay local.** A first-person question with browser access
+  on still produces no research approval and no web call. The existing
+  `query_for` privacy tests remain in place.
+- **A forged lesson cannot become training data.** `LearningJournal.compile()`
+  ignores an entry whose `verified` flag is true but whose source is not
+  `http(s)`, even if the journal file was edited by hand.
+- **Verified:** focused `test_agent.py`, `test_learning.py` and `test_research.py`
+  tests pass; `git diff --check` passes. The active training run was untouched.
+
 ## 2026-11-21 (desktop) — Day Plan page and folder-access rollback
 
 - **The day plan is now usable from the native window.** The new **Day plan**

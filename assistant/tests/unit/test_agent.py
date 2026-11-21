@@ -1129,6 +1129,12 @@ async def test_unknown_public_question_can_search_then_save_a_confirmed_lesson(
 
     assert outcome.content == "Paris is the capital."
     assert [request.tool for request in broker.requests] == ["research_web", "remember_research"]
+    research_request, lesson_request = broker.requests
+    assert research_request.arguments == {"query": "what is the capital of France"}
+    assert research_request.target == "what is the capital of France"
+    assert lesson_request.target == "https://example.test/france"
+    assert "Paris is the capital of France." in lesson_request.preview
+    assert "Source: https://example.test/france" in lesson_request.preview
     actions = [row.action for row in AuditLog(conn).for_task(outcome.task_id)]
     assert "research.result" in actions
     assert "research.lesson" in actions
@@ -1137,6 +1143,65 @@ async def test_unknown_public_question_can_search_then_save_a_confirmed_lesson(
     entries = LearningJournal(agent_settings.resolved_data_dir).entries()
     assert entries and entries[0]["verified"] is True
     assert entries[0]["sources"] == ["https://example.test/france", "https://example.test/other"]
+
+
+async def test_unknown_answer_with_browser_off_never_asks_or_searches(
+    conn: sqlite3.Connection, agent_settings: Settings, monkeypatch
+) -> None:  # noqa: ANN001
+    RuntimeControl(agent_settings.control_state_path).update({"browser": False})
+    called = {"searched": False}
+
+    def must_not_search(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        called["searched"] = True
+        raise AssertionError("browser-off research must not touch the network")
+
+    monkeypatch.setattr("claireai.research.web_research", must_not_search)
+    brain = ScriptedBrain([answer("I do not know.")])
+    broker = FixedBroker(approved=True)
+
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="what is the capital of France?",
+        approvals=broker,
+    )
+
+    assert outcome.content == "I do not know."
+    assert called["searched"] is False
+    assert broker.requests == []
+    assert not any(
+        "open_url" in schema["function"]["name"] for schema in brain.calls[0]["tools"] or []
+    )
+
+
+async def test_a_private_question_is_never_researched_even_with_browser_on(
+    conn: sqlite3.Connection, agent_settings: Settings, monkeypatch
+) -> None:  # noqa: ANN001
+    RuntimeControl(agent_settings.control_state_path).update({"browser": True})
+    called = {"searched": False}
+
+    def must_not_search(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        called["searched"] = True
+        raise AssertionError("a private request must never reach the web")
+
+    monkeypatch.setattr("claireai.research.web_research", must_not_search)
+    brain = ScriptedBrain([answer("I do not know.")])
+    broker = FixedBroker(approved=True)
+
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="what is my favorite color?",
+        approvals=broker,
+    )
+
+    assert outcome.content == "I do not know."
+    assert called["searched"] is False
+    assert broker.requests == []
+    actions = [row.action for row in AuditLog(conn).for_task(outcome.task_id)]
+    assert "research.result" not in actions
 
 
 async def test_denied_research_does_not_search_or_save(
