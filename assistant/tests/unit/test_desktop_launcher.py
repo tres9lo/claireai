@@ -69,6 +69,8 @@ def test_claireai_desktop_also_goes_through_the_launcher(monkeypatch) -> None:
 
     module.main = fake_main  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "claireai.desktop.launcher", module)
+    # Routing test: CI does not install the optional torch runtime.
+    monkeypatch.setattr(app_module, "missing_requirements", lambda: [])
 
     assert app_module.main(["--desktop", "--data-dir", "/tmp/elsewhere"]) == 0
     assert seen == [["--data-dir", "/tmp/elsewhere"]]

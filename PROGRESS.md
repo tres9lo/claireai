@@ -21,9 +21,20 @@
   torch-dependent test and uses `pytest.importorskip`; the rest of the suite
   runs in CI.
 - **Verified:** the full assistant suite passes locally with torch and in a
-  simulated no-torch environment (one skip); focused mapping, audit and gate
-  tests pass; the live corpus audit returned the expected strict failure for an
-  unknown tool. The active v15 training process was not interrupted.
+  simulated environment without torch or the desktop toolkit; focused mapping,
+  audit and gate tests pass; the live corpus audit returned the expected strict
+  failure for an unknown tool. The active v15 training process was not
+  interrupted.
+
+### CI follow-up
+
+Removing the collection error exposed six failures that were previously never
+reached. Two app-routing tests hit the host's real model-runtime preflight instead
+of mocking it; two desktop tests imported `customtkinter` without the existing
+optional-toolkit skip; and the update test only handled `uv build`, while CI's
+fallback is `pip wheel --wheel-dir`. The tests now exercise the intended routing,
+skip unavailable window tooling, and accept either builder. The same suite passes
+locally and with both optional modules removed.
 
 ## 2026-11-21 (training correctness) — Decoded-batch inspection
 

@@ -51,6 +51,8 @@ def test_the_window_opens_by_default(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         "claireai.models.ensure_installed_checkpoint", lambda settings: None
     )
+    # This test is about routing, not the host's optional model runtime.
+    monkeypatch.setattr("claireai.app.missing_requirements", lambda: [])
     assert main(["--data-dir", str(tmp_path)]) == 0
     assert seen == [["--data-dir", str(tmp_path)]]
 
@@ -66,6 +68,7 @@ def test_desktop_flag_is_explicit_but_changes_nothing(monkeypatch) -> None:
     monkeypatch.setattr(
         "claireai.models.ensure_installed_checkpoint", lambda settings: None
     )
+    monkeypatch.setattr("claireai.app.missing_requirements", lambda: [])
     assert main(["--desktop"]) == 0
     assert len(seen) == 1
 

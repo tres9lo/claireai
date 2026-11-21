@@ -21,8 +21,9 @@ Run it from `assistant/`, not the repository root: the pytest configuration
 the root the async tests fail with "async def functions are not natively
 supported" and the run reports 23 failed / 52 passed. CI uses
 `working-directory: assistant` for the same reason. CI intentionally installs
-without torch, so the one decoded-batch training test is skipped there; the
-rest of the suite, including the corpus audit and tool mapping, still runs.
+without torch or the desktop toolkit, so the decoded-batch training test and the
+window-widget tests are skipped there; the rest of the suite, including the
+corpus audit and tool mapping, still runs.
 
 Covered today: settings validation and loopback enforcement, migration runner
 (idempotency, checksum tampering, statement splitting with trigger bodies),

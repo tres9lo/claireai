@@ -109,8 +109,11 @@ def test_run_update_reconciles_the_extra_after_replacing_the_code(tmp_path, monk
 
     def fake_run(command, cwd):
         calls.append(list(command))
-        if "build" in command:
-            output = Path(command[command.index("--out-dir") + 1])
+        # pip wheel is the fallback when uv is absent (CI); uv build uses
+        # --out-dir. Keep this test independent of which builder is installed.
+        if "build" in command or "wheel" in command:
+            flag = "--out-dir" if "--out-dir" in command else "--wheel-dir"
+            output = Path(command[command.index(flag) + 1])
             (output / "claireai-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
         return "ok"
 

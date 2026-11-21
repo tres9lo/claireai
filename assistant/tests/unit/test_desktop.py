@@ -240,6 +240,7 @@ def test_every_page_is_its_own_screen(tmp_path, tk_root) -> None:
 
 
 def test_saving_voice_tuning_does_not_turn_speech_on(tmp_path) -> None:
+    pytest.importorskip("customtkinter")
     from types import SimpleNamespace
 
     from claireai.desktop.pages import VoicePage
@@ -255,6 +256,7 @@ def test_saving_voice_tuning_does_not_turn_speech_on(tmp_path) -> None:
 
 
 def test_turning_speak_replies_off_persists_and_stops_audio(tmp_path) -> None:
+    pytest.importorskip("customtkinter")
     from types import SimpleNamespace
 
     from claireai.desktop.pages import ChatPage
