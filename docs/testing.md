@@ -23,7 +23,9 @@ supported" and the run reports 23 failed / 52 passed. CI uses
 `working-directory: assistant` for the same reason. CI intentionally installs
 without torch or the desktop toolkit, so the decoded-batch training test and the
 window-widget tests are skipped there; the rest of the suite, including the
-corpus audit and tool mapping, still runs.
+corpus audit and tool mapping, still runs. Windows also skips the POSIX-file-mode
+and systemd-only checks, which cannot be represented by `st_mode` or
+`systemctl` on that platform.
 
 Covered today: settings validation and loopback enforcement, migration runner
 (idempotency, checksum tampering, statement splitting with trigger bodies),

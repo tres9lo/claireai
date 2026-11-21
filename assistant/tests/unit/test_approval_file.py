@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import stat
 import time
 from hashlib import sha256
@@ -78,6 +79,9 @@ def test_tampered_arguments_are_refused(tmp_path):
     assert consume(forged, data_dir=tmp_path).approved is False
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows ACLs do not map to POSIX st_mode"
+)
 def test_key_is_readable_by_its_owner_only(tmp_path):
     issue(request(), data_dir=tmp_path)
     mode = stat.S_IMODE((tmp_path / "approval.key").stat().st_mode)

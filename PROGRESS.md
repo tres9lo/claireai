@@ -36,6 +36,13 @@ fallback is `pip wheel --wheel-dir`. The tests now exercise the intended routing
 skip unavailable window tooling, and accept either builder. The same suite passes
 locally and with both optional modules removed.
 
+Windows then exposed path-display, POSIX-mode and systemd assumptions. Tests now
+compare the sandbox's displayed `~/...` form instead of a raw home path, use a
+root outside home for the absolute-path case, and skip POSIX ACL and systemd
+checks where the platform cannot represent them. `loose_permissions` no longer
+warns about every Windows file: Windows reports `666` for ordinary files, while
+its ACLs are not represented by `st_mode`.
+
 ## 2026-11-21 (training correctness) — Decoded-batch inspection
 
 - **The trainer's actual tensors are now inspected in a test.** It builds a

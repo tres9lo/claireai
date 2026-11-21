@@ -31,7 +31,10 @@ def test_home_folders_are_shown_as_tilde() -> None:
 
 
 def test_a_folder_outside_home_stays_absolute(tmp_path: Path) -> None:
-    assert Sandbox(roots=(tmp_path,)).describe() == str(tmp_path)
+    # tmp_path is under the user's home on Windows, so use the filesystem root
+    # to exercise the outside-home branch on every platform.
+    root = Path(tmp_path.anchor) / "claireai-outside-home"
+    assert Sandbox(roots=(root,)).describe() == str(root)
 
 
 def test_no_folders_keeps_the_runtime_sentence() -> None:
@@ -61,6 +64,9 @@ def test_the_environment_is_the_fallback(monkeypatch: pytest.MonkeyPatch) -> Non
     assert stored_secret("brain_api_key:openai") == "from-env"
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX mode bits do not describe Windows ACLs"
+)
 def test_a_group_readable_key_file_is_reported(tmp_path: Path) -> None:
     key_file = tmp_path / ".env"
     key_file.write_text("CLAIREAI_BRAIN_API_KEY=x\n", encoding="utf-8")
@@ -69,6 +75,9 @@ def test_a_group_readable_key_file_is_reported(tmp_path: Path) -> None:
     assert problem and "chmod 600" in problem
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX mode bits do not describe Windows ACLs"
+)
 def test_a_private_key_file_is_not_reported(tmp_path: Path) -> None:
     key_file = tmp_path / ".env"
     key_file.write_text("x=1\n", encoding="utf-8")

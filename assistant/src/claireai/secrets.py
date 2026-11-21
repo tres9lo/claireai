@@ -68,8 +68,12 @@ def stored_secret(account: str) -> str | None:
 def loose_permissions(path: Path) -> str | None:
     """Describe a permission problem on a file that may hold a key, or None.
 
-    Only the mode is reported, never the contents.
+    Only the mode is reported, never the contents. Windows ACLs are not
+    represented by POSIX mode bits, so this check is skipped there rather than
+    warning about every file (Windows reports 666 for an ordinary file).
     """
+    if os.name == "nt":
+        return None
     try:
         mode = path.stat().st_mode
     except OSError:

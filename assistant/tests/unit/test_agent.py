@@ -103,8 +103,9 @@ class FixedBroker:
 
 
 def test_system_message_names_the_allowed_folders(downloads: Path) -> None:
-    message = system_message(Sandbox(roots=(downloads,)))
-    assert str(downloads) in message.content
+    sandbox = Sandbox(roots=(downloads,))
+    message = system_message(sandbox)
+    assert sandbox.describe() in message.content
     assert "approval" in message.content
 
 
@@ -431,8 +432,9 @@ async def test_a_path_outside_the_allow_list_is_refused(
     assert "permission denied" in outcome.steps[0].result_text
     assert "private" not in outcome.steps[0].result_text
     # The refusal must also say where the model *can* go, or a corrected
-    # attempt has nothing new to work with.
-    assert str(agent_settings.allowed_folders[0]) in outcome.steps[0].result_text
+    # attempt has nothing new to work with. The runtime displays home-relative
+    # paths as ~/..., so compare with that form rather than the raw OS path.
+    assert Sandbox.from_settings(agent_settings).describe() in outcome.steps[0].result_text
     fed_back = brain.calls[1]["messages"][-1]
     assert fed_back.role == "tool"
     assert "Allowed folders" in fed_back.content

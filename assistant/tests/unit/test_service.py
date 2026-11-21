@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
+import pytest
+
 from claireai import service
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="systemd user units are Linux-only"
+)
 
 
 def test_units_run_the_headless_entry_and_are_persistent(tmp_path, monkeypatch) -> None:
