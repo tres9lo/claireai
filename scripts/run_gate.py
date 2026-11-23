@@ -9,7 +9,7 @@ This does not install a checkpoint. It only measures:
 4. the extended direct-answer / missing-argument / refusal probes.
 
     assistant/.venv/bin/python scripts/run_gate.py \
-        --checkpoint runtime-data/models/candidates/claire-chat-v15-full.pt
+        --checkpoint runtime-data/models/candidates/claire-chat-v16-full.pt
 
 Exit codes: 0 all stages passed, 1 at least one stage failed, 2 bad configuration.
 """

@@ -102,6 +102,32 @@ def test_a_decoded_batch_keeps_the_prompt_masked_and_the_reply_learned() -> None
     assert mask[1].sum().item() == len(examples[1][0]) - examples[1][1]
 
 
+def test_evaluation_sample_spreads_across_the_validation_split() -> None:
+    pytest.importorskip("torch")
+    module = _train_chat_module()
+    examples = [(index, 0) for index in range(100)]
+
+    selected = module.evaluation_sample(examples, 10)
+
+    assert [item[0] for item in selected] == [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]
+
+
+def test_core_validation_excludes_external_sources() -> None:
+    pytest.importorskip("torch")
+    module = _train_chat_module()
+    records = [
+        {"source": "fineweb-edu", "messages": []},
+        {"messages": []},
+        {"source": "gsm8k", "messages": []},
+        {"source": "", "messages": []},
+    ]
+
+    assert module.core_validation_records(records) == [
+        {"messages": []},
+        {"source": "", "messages": []},
+    ]
+
+
 def test_the_curriculum_covers_every_domain_with_correct_numbers() -> None:
     curriculum = training.TrainingCurriculum(Path("/tmp/does-not-exist"))
     records = curriculum.examples()

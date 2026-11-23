@@ -7,7 +7,7 @@ tool is actually executable, whether a prompt leaked in from an evaluation
 suite, and whether the train/validation split overlaps.
 
     assistant/.venv/bin/python brain-lab/audit_corpus.py \
-        --corpus brain-lab/data/chat-v15 --out runtime-data/eval/corpus-audit.json
+        --corpus brain-lab/data/chat-v16 --out runtime-data/eval/corpus-audit.json
 """
 
 from __future__ import annotations
@@ -229,7 +229,7 @@ def _render(report: dict[str, Any], label: str) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", type=Path, default=Path(__file__).resolve().parent / "data" / "chat-v15")
+    parser.add_argument("--corpus", type=Path, default=Path(__file__).resolve().parent / "data" / "chat-v16")
     parser.add_argument("--tokenizer-manifest", type=Path, default=None)
     parser.add_argument("--context", type=int, default=512)
     parser.add_argument("--target-tokens", type=int, default=192)

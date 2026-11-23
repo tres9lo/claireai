@@ -36,18 +36,21 @@ current transformer is text-only, so do not merge them into its text corpus.
 ## One-command bilingual training
 
 For a reproducible run that fetches the bounded licensed sources, builds the
-authored corpus, merges it, trains a fresh candidate and runs both fixed
-evaluations:
+authored corpus, merges a capped minority of external data, trains a fresh
+candidate and runs the full fixed gate:
 
 ```bash
 assistant/.venv/bin/python brain-lab/train_claireai.py --profile full
 ```
 
-The command writes only to `brain-lab/data/chat-v14`, `brain-lab/data/chat-v15`
+The command writes only to `brain-lab/data/chat-v14`, `brain-lab/data/chat-v16`
 and `runtime-data/models/candidates/`. It **never installs** the candidate. Only
-after the tool and conversation gates pass should the owner promote it
-explicitly. A `*.pipeline.json` file beside the candidate records the exact
-stage exit codes and corpus counts.
+after the full model, conversation and tool gate passes should the owner promote
+it explicitly. A `*.pipeline.json` file beside the candidate records the exact
+stage exit codes and corpus counts. The rejected v15 artifacts are kept in place.
+
+External samples are capped at 35% of merged training rows even when each
+individual source is under its per-source limit.
 
 | Profile | Authored quota | External sample per source | Steps | Model | Intended use |
 | --- | ---: | ---: | ---: | --- | --- |
@@ -77,8 +80,8 @@ Build the conversation corpus and train:
 ```bash
 assistant/.venv/bin/python brain-lab/build_chat_dataset.py
 assistant/.venv/bin/python brain-lab/train_chat.py \
-  --corpus brain-lab/data/chat-v14 --steps 6000 \
-  --output runtime-data/models/claire-chat-v14.pt
+  --corpus brain-lab/data/chat-v16 --steps 6000 \
+  --output runtime-data/models/claire-chat-v16.pt
 ```
 
 The builder mixes original synthetic templates (small talk, refusals, intent
@@ -112,7 +115,7 @@ Measure it with the post-training gate:
 
 ```bash
 assistant/.venv/bin/python scripts/run_gate.py \
-  --checkpoint runtime-data/models/claire-chat-v15.pt
+  --checkpoint runtime-data/models/candidates/claire-chat-v16-full.pt
 ```
 
 `run_gate.py` runs the model, conversation, standard tool and extended tool
@@ -128,7 +131,7 @@ Audit a corpus without loading the model:
 
 ```bash
 assistant/.venv/bin/python brain-lab/audit_corpus.py \
-  --corpus brain-lab/data/chat-v15 --strict
+  --corpus brain-lab/data/chat-v16 --strict
 ```
 
 The audit reports prompt/target token distributions, call counts, unknown tool
@@ -204,18 +207,21 @@ The catalog in `data-sources.json` is a starting point, not blanket permission.
 `fetch_corpora.py` downloads bounded samples and records licence, URL, date and
 SHA-256 beside each file. `merge_corpora.py` merges those records with `chat-v14`,
 removes held-out evaluation prompts, exact duplicate pairs and pairs that also
-appear in validation, then writes `chat-v15`. The manifest records how many rows
-each cleanup removed:
+appear in validation, caps external rows at a minority of the training set, then
+writes `chat-v16`. The manifest records how many rows each cleanup removed and
+how many external rows survived the cap:
 
 ```bash
 assistant/.venv/bin/python brain-lab/fetch_corpora.py --source all --limit 800
 assistant/.venv/bin/python brain-lab/merge_corpora.py \
-  --base brain-lab/data/chat-v14 --output brain-lab/data/chat-v15
+  --base brain-lab/data/chat-v14 --output brain-lab/data/chat-v16
 ```
 
 The current mix is GSM8K (MIT), FineWeb-Edu (ODC-By 1.0), French FineWeb-2
 (ODC-By 1.0), OASST1 English/French (Apache-2.0), and the already-present
-Dolly/TinyStories material. OASST1 is read from the released `ready` message
+Dolly/TinyStories material. External rows are capped at 35% of merged training
+data, with a deterministic per-source sample, so adding a source cannot silently
+crowd out authored conversation and tool records. OASST1 is read from the released `ready` message
 archive instead of the rate-limited rows API, so both languages are reproducible.
 FineWeb answers are extractive leads, not model output. A failed fetch is
 reported rather than written as an empty success.

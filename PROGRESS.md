@@ -1,5 +1,37 @@
 # Progress log
 
+## 2026-11-21 (v15 outcome) — Rejected, with the data and selection cause
+
+- **v15 was rejected.** The full run trained for 8,000 steps, reached validation
+  loss 3.6780 and restored step 8,000, but passed only **4/13** model checks and
+  **14/21** conversation cases. Identity, simple arithmetic, intent routing,
+  filename slots and several tool calls failed; replies were repetitive and
+  some calls were malformed. The candidate was left in
+  `runtime-data/models/candidates/claire-chat-v15-full.pt`; the active checkpoint
+  was not changed.
+- **The corpus was not assistant-dominant.** The merge kept **17,459** external
+  rows against **13,440** authored rows: 4,000 FineWeb-Edu, 4,000 French
+  FineWeb-2, 4,000 GSM8K and 5,459 OASST1. Validation loss was therefore mostly
+  web-prose and math loss, not evidence about chat or tool behaviour.
+- **The authored base had exact duplicates.** 13,440 base training rows reduced
+  to 9,243 unique pairs before validation overlap; the old quota calculation
+  counted the duplicates as real authored data and let external data take more
+  than its intended share.
+- **The pipeline gated on two suites.** It ran `eval_model.py` and
+  `conversation_eval.py` at one run, but not the standard and extended tool
+  suites that `run_gate.py` provides. A failing candidate could therefore hide
+  tool-call failures from the pipeline summary.
+- **Fixes for v16.** `merge_corpora.py` now deduplicates base rows first, caps
+  external rows at **35%** of merged training data with a deterministic
+  proportional sample per source, and records selected counts by source.
+  `train_chat.py` selects the best checkpoint on an authored-only validation
+  split and samples validation evenly instead of using its first 64 examples.
+  `train_claireai.py` now runs the full four-suite gate and writes to a fresh
+  `chat-v16` / `claire-chat-v16-*` path, preserving the rejected v15 artifacts.
+- **Not done:** no v16 training run has been started. The change is preparation
+  and gate correctness, not a claim that a 3.6M-parameter model will pass the
+  existing conversation and tool cases.
+
 ## 2026-11-21 (tool corpus + CI) — Strict mapping, audit and gate
 
 - **Source tools are now mapped or dropped.** `brain-lab/tool_mapping.py`

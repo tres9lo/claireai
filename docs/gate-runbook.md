@@ -16,7 +16,7 @@ From the repository root:
 
 ```bash
 assistant/.venv/bin/python scripts/run_gate.py \
-  --checkpoint runtime-data/models/candidates/claire-chat-v15-full.pt
+  --checkpoint runtime-data/models/candidates/claire-chat-v16-full.pt
 ```
 
 The wrapper runs, in order:

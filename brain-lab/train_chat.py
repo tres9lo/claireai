@@ -12,7 +12,7 @@ This is the chat-aware successor to ``train.py``.  The differences that matter:
 
     assistant/.venv/bin/python brain-lab/build_chat_dataset.py
     assistant/.venv/bin/python brain-lab/train_chat.py \
-        --corpus brain-lab/data/chat-v15 --steps 3000
+        --corpus brain-lab/data/chat-v16 --steps 3000
 
 The checkpoint is written in the same manifest format as ``train.py`` so
 ``claireai.brain.ScratchBrain`` can load it unchanged.
@@ -154,6 +154,33 @@ def build_examples(
     return examples
 
 
+def evaluation_sample(
+    examples: Sequence[tuple[np.ndarray, int]], limit: int
+) -> list[tuple[np.ndarray, int]]:
+    """Take an evenly spaced slice instead of the first N examples.
+
+    The old fixed prefix was whatever happened to be first in the shuffled
+    validation file.  A small block can be unrepresentative, and it made the
+    checkpoint-selection loss noisy without making it more honest.
+    """
+    if limit <= 0 or not examples:
+        return []
+    if len(examples) <= limit:
+        return list(examples)
+    step = len(examples) / limit
+    return [examples[min(len(examples) - 1, int(index * step))] for index in range(limit)]
+
+
+def core_validation_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Authored records, without external prose or math sources.
+
+    Validation loss is a useful optimisation signal, but it is not evidence of
+    assistant behaviour when most validation tokens are web passages.  The
+    trainer keeps a second, authored-only split for checkpoint selection.
+    """
+    return [record for record in records if not record.get("source")]
+
+
 def collate(
     batch: Sequence[tuple[np.ndarray, int]],
     *,
@@ -215,7 +242,7 @@ def sample(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", type=Path, default=ROOT / "data" / "chat-v6")
+    parser.add_argument("--corpus", type=Path, default=ROOT / "data" / "chat-v16")
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--context", type=int, default=256)
@@ -250,7 +277,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--data-dir", type=Path, default=None)
-    parser.add_argument("--name", default="claire-chat-v15")
+    parser.add_argument("--name", default="claire-chat-v16")
     parser.add_argument("--resume", action="store_true", help="continue from <output>.partial if present")
     parser.add_argument(
         "--init-from",
@@ -321,14 +348,23 @@ def main() -> int:
     validation_examples = build_examples(
         validation_records, tokenizer, context=args.context, max_target_tokens=args.max_target_tokens
     )
+    core_examples = build_examples(
+        core_validation_records(validation_records),
+        tokenizer,
+        context=args.context,
+        max_target_tokens=args.max_target_tokens,
+    )
     if not train_examples or not validation_examples:
         parser.error("no usable examples after context fitting")
     lengths = sorted(len(ids) for ids, _ in train_examples)
     print(
         f"examples: train={len(train_examples)} validation={len(validation_examples)} "
+        f"core_validation={len(core_examples)} "
         f"median_tokens={lengths[len(lengths)//2]} max_tokens={lengths[-1]}",
         flush=True,
     )
+    if not core_examples:
+        print("warning: no authored validation examples; selecting on all validation data", flush=True)
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -382,6 +418,8 @@ def main() -> int:
     partial = output.with_name(output.name + ".partial")
 
     best_loss = float("inf")
+    best_validation_loss = float("inf")
+    best_core_loss = float("nan") if not core_examples else float("inf")
     best_state = None
     best_step = 0
     start_step = 1
@@ -389,6 +427,8 @@ def main() -> int:
         payload = torch.load(partial, map_location="cpu", weights_only=True)
         model.load_state_dict(payload["state_dict"])
         best_loss = float(payload.get("best_loss", best_loss))
+        best_validation_loss = float(payload.get("best_validation_loss", best_loss))
+        best_core_loss = float(payload.get("best_core_loss", best_loss))
         best_state = payload.get("best_state")
         best_step = int(payload.get("best_step", 0))
         start_step = int(payload.get("step", 0)) + 1
@@ -427,11 +467,27 @@ def main() -> int:
                 flush=True,
             )
         if step % args.eval_interval == 0 or step == args.steps:
-            eval_set = validation_examples[: args.eval_batches * args.batch_size]
+            eval_limit = args.eval_batches * args.batch_size
+            eval_set = evaluation_sample(validation_examples, eval_limit)
             mean, perplexity = evaluate(model, eval_set, batch_size=args.batch_size, pad=PAD)
             print(f"  validation loss={mean:.4f} perplexity={perplexity:.2f}", flush=True)
-            if mean < best_loss:
-                best_loss = mean
+            if core_examples:
+                core_set = evaluation_sample(core_examples, eval_limit)
+                core_mean, core_perplexity = evaluate(
+                    model, core_set, batch_size=args.batch_size, pad=PAD
+                )
+                print(
+                    f"  core validation loss={core_mean:.4f} perplexity={core_perplexity:.2f}",
+                    flush=True,
+                )
+                selection_loss = core_mean
+            else:
+                core_mean = float("nan")
+                selection_loss = mean
+            if selection_loss < best_loss:
+                best_loss = selection_loss
+                best_validation_loss = mean
+                best_core_loss = core_mean
                 best_step = step
                 best_state = {key: value.detach().clone() for key, value in model.state_dict().items()}
             # A multi-hour CPU run must survive an interrupted shell.  Write the
@@ -441,6 +497,8 @@ def main() -> int:
                     "state_dict": model.state_dict(),
                     "best_state": best_state,
                     "best_loss": best_loss,
+                    "best_validation_loss": best_validation_loss,
+                    "best_core_loss": best_core_loss,
                     "best_step": best_step,
                     "step": step,
                 },
@@ -449,7 +507,11 @@ def main() -> int:
 
     if best_state is not None:
         model.load_state_dict(best_state)
-        print(f"restored best checkpoint from step {best_step} (validation loss {best_loss:.4f})", flush=True)
+        print(
+            f"restored best checkpoint from step {best_step} "
+            f"(selection loss {best_loss:.4f}, validation loss {best_validation_loss:.4f})",
+            flush=True,
+        )
 
     # A quick, deterministic look at what the model actually says.  Training loss
     # alone has already fooled this project once; this is the cheapest check that
@@ -480,10 +542,16 @@ def main() -> int:
         "initialized_from": str(args.init_from) if args.init_from is not None else None,
         "steps": args.steps,
         "best_step": best_step,
+        "selection_metric": "core_validation_loss" if core_examples else "validation_loss",
         # A resumed run that had no steps left reports no training loss; NaN in
         # the manifest would serialise as invalid strict JSON.
         "training_loss": None if last_loss != last_loss else last_loss,
-        "validation_loss": best_loss,
+        "validation_loss": (
+            None if best_validation_loss != best_validation_loss else best_validation_loss
+        ),
+        "core_validation_loss": (
+            None if best_core_loss != best_core_loss else best_core_loss
+        ),
         "prompt_format": "SYSTEM / USER / ASSISTANT, TOOL <name> for results, EOS after replies",
         "training_corpus": [
             {"file": str(train_path), "sha256": hashlib.sha256(train_path.read_bytes()).hexdigest()}

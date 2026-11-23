@@ -132,8 +132,9 @@ and Smol-SmolTalk. Start with a few hundred filtered examples per source.
 - Compile only verified, source-bearing lessons. Replay a bounded sample of
   older confirmed lessons (`learning/replay.jsonl`) so a new lesson does not
   erase greetings, refusals or tool use.
-- Train the nightly candidate, run both fixed suites at the same run count, and
-  install only through the existing gate. If the gate fails, keep the old model.
+- Train the nightly candidate, run the full fixed gate at the same run count,
+  and install only through the existing gate. If the gate fails, keep the old
+  model.
 
 This is the safe interpretation of "learn from the internet": retrieve now,
 confirm with the owner, train later, and prove the result.
@@ -173,16 +174,16 @@ Training writes a candidate; it never promotes it. Use this sequence after the
 `train_claireai.py` pipeline finishes:
 
 1. Read the candidate's `.pipeline.json`. Confirm `exit_code` is `0`, the
-   `train` stage produced the `.pt` file, and both evaluation stages completed.
-   A rate-limited optional *fetch* is allowed; a failed gate is not.
+   `train` stage produced the `.pt` file, and the full gate completed. A
+   rate-limited optional *fetch* is allowed; a failed gate is not.
 2. Run the fixed suites against the candidate at the same run count used for the
    installed checkpoint. Do not compare a 1-run candidate with a 3-run baseline.
 
    ```bash
    assistant/.venv/bin/python scripts/eval_model.py \
-     --model-checkpoint runtime-data/models/candidates/claire-chat-v15-full.pt --runs 3
+     --model-checkpoint runtime-data/models/candidates/claire-chat-v16-full.pt --runs 3
    assistant/.venv/bin/python scripts/conversation_eval.py \
-     --model-checkpoint runtime-data/models/candidates/claire-chat-v15-full.pt --runs 3
+     --model-checkpoint runtime-data/models/candidates/claire-chat-v16-full.pt --runs 3
    ```
 
 3. Compare conversation, tool-call validity, refusals, latency and peak memory

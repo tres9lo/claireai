@@ -256,13 +256,23 @@ conversation regression is installed; the previous checkpoint pair is archived
 under `models/archive/`, and a rejected candidate is kept under
 `models/candidates/`. The capability suite is recorded as a diagnostic.
 
-The checkpoint in this checkout is a **288-token** scratch model. The v15
-candidate uses a 512-token architecture; it is still being trained and is not
-installed. Inference fits prompts to the positions the installed checkpoint
-actually learned instead of feeding untrained rows, which produced word salad on
-ordinary greetings. Only the gate and an explicit owner promotion can replace
-the installed checkpoint; the nightly worker continues from it rather than
-creating an unrelated small model.
+The checkpoint in this checkout is a **288-token** scratch model. The **v15
+candidate was rejected** on 2026-11-21: 4/13 model checks and 14/21 conversation
+cases passed, with malformed tool calls, wrong slots and repetitive replies. The
+root cause was not a sampler setting. The corpus had 17,459 external rows against
+13,440 authored rows, validation loss was dominated by web prose and math, and
+the pipeline selected the lowest validation loss instead of authored-chat
+behaviour. It also ran only two of the four gate suites.
+
+The next path is **v16**: external rows are capped to a minority of the merged
+corpus, exact duplicate authored rows are removed before the quota is computed,
+checkpoint selection uses an authored-only validation split, and
+`train_claireai.py` runs the full model, conversation, standard-tool and
+extended-tool gate. The rejected v15 files remain under `models/candidates/`.
+Inference still fits prompts to the positions the installed checkpoint actually
+learned. Only the gate and an explicit owner promotion can replace the installed
+checkpoint; the nightly worker continues from it rather than creating an
+unrelated small model.
 
 The model code now also supports a **10,240-token RoPE architecture** with
 memory-efficient causal attention. A converted candidate was measured at
@@ -320,13 +330,14 @@ of being folded into an opaque `[Errno -3]` line. Headlines and publisher
 summaries are not verified facts; the publisher link is the source to check.
 Google News is a last-resort fallback for a non-DNS Bing failure when no local
 story was found.
-The daily worker trains on `brain-lab/data/chat-v15` when present, then falls
-back to the older `chat-v13-small` licensed mix. The one-command
+The daily worker trains on `brain-lab/data/chat-v16` when present, then falls
+back to `chat-v15` and the older `chat-v13-small` licensed mix. The one-command
 `brain-lab/train_claireai.py --profile full` builds the larger bilingual
-`chat-v15` corpus instead. `fetch_corpora.py` downloads bounded external
+`chat-v16` corpus instead. `fetch_corpora.py` downloads bounded external
 samples; `merge_corpora.py` combines them with the authored base, removes exact
-duplicates and train/validation overlap, and records the counts. Neither script
-trains or installs a checkpoint.
+duplicates and train/validation overlap, caps external data at 35% of the merged
+training set, and records the counts. Neither script trains or installs a
+checkpoint.
 
 ### Granting a folder
 
@@ -449,7 +460,7 @@ Model behaviour is measured, not assumed: `scripts/eval_model.py` scores the loc
 
 ```bash
 assistant/.venv/bin/python scripts/run_gate.py \
-  --checkpoint runtime-data/models/candidates/claire-chat-v15-full.pt
+  --checkpoint runtime-data/models/candidates/claire-chat-v16-full.pt
 ```
 
 A corpus can be checked without loading the model:

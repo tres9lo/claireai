@@ -6,10 +6,11 @@ This is the single command the owner can run later:
     assistant/.venv/bin/python brain-lab/train_claireai.py --profile full
 
 It downloads only the bounded, licensed sources listed in ``data-sources.json``,
-builds the authored bilingual corpus, merges the external samples, trains a
-fresh checkpoint into ``runtime-data/models/candidates/`` and runs both fixed
-evaluation suites. It never installs, promotes or overwrites the active model.
-Installation stays a separate, explicit owner decision after the gate passes.
+builds the authored bilingual corpus, merges a capped minority of external
+samples, trains a fresh checkpoint into ``runtime-data/models/candidates/`` and
+runs the full fixed gate: model, conversation, standard tools and extended
+tools. It never installs, promotes or overwrites the active model. Installation
+stays a separate, explicit owner decision after the gate passes.
 
 Profiles differ in corpus size and model capacity, not in data rights. ``quick``
 is a smoke run for this laptop; ``full`` is the practical quality run; ``huge``
@@ -37,6 +38,7 @@ PROFILES: dict[str, dict[str, Any]] = {
     "quick": {
         "base_records": 8_000,
         "external_limit": 500,
+        "external_share": 0.35,
         "steps": 1_500,
         "vocab": 2_048,
         "width": 224,
@@ -49,6 +51,7 @@ PROFILES: dict[str, dict[str, Any]] = {
     "full": {
         "base_records": 34_000,
         "external_limit": 4_000,
+        "external_share": 0.35,
         "steps": 8_000,
         "vocab": 2_048,
         "width": 224,
@@ -61,6 +64,7 @@ PROFILES: dict[str, dict[str, Any]] = {
     "huge": {
         "base_records": 60_000,
         "external_limit": 8_000,
+        "external_share": 0.35,
         "steps": 15_000,
         "vocab": 4_096,
         "width": 320,
@@ -102,10 +106,16 @@ def main() -> int:
     parser.add_argument("--name", default=None, help="candidate name (default: profile)")
     parser.add_argument("--steps", type=int, default=None, help="override the profile step count")
     parser.add_argument("--external-limit", type=int, default=None, help="records per external source")
+    parser.add_argument(
+        "--external-share",
+        type=float,
+        default=None,
+        help="maximum fraction of merged training records from external sources (default: 0.35)",
+    )
     parser.add_argument("--base-records", type=int, default=None, help="authored-corpus quota")
     parser.add_argument("--no-fetch", action="store_true", help="reuse files already downloaded")
     parser.add_argument("--no-build", action="store_true", help="reuse brain-lab/data/chat-v14")
-    parser.add_argument("--no-merge", action="store_true", help="reuse brain-lab/data/chat-v15")
+    parser.add_argument("--no-merge", action="store_true", help="reuse brain-lab/data/chat-v16")
     parser.add_argument("--no-eval", action="store_true", help="train only; do not run the gate")
     parser.add_argument("--context", type=int, default=None)
     args = parser.parse_args()
@@ -115,6 +125,8 @@ def main() -> int:
         profile["steps"] = args.steps
     if args.external_limit is not None:
         profile["external_limit"] = args.external_limit
+    if args.external_share is not None:
+        profile["external_share"] = args.external_share
     if args.base_records is not None:
         profile["base_records"] = args.base_records
     if args.context is not None:
@@ -126,10 +138,12 @@ def main() -> int:
         profile["context"],
     ) < 1:
         parser.error("steps, external limit, base records and context must be positive")
+    if not 0.0 <= profile["external_share"] < 1.0:
+        parser.error("external share must be at least 0 and below 1")
 
-    name = args.name or f"claire-chat-v15-{args.profile}"
+    name = args.name or f"claire-chat-v16-{args.profile}"
     base_corpus = DATA / "chat-v14"
-    merged_corpus = DATA / "chat-v15"
+    merged_corpus = DATA / "chat-v16"
     candidate = CANDIDATES / f"{name}.pt"
     pipeline_log = candidate.with_suffix(".pipeline.json")
     python = _python()
@@ -141,6 +155,7 @@ def main() -> int:
         "python": python,
         "steps": profile["steps"],
         "external_limit": profile["external_limit"],
+        "external_share": profile["external_share"],
         "base_records": profile["base_records"],
         "context": profile["context"],
         "corpus": str(merged_corpus),
@@ -202,6 +217,8 @@ def main() -> int:
                 str(merged_corpus),
                 "--limit",
                 str(profile["external_limit"]),
+                "--external-share",
+                str(profile["external_share"]),
             ]
         )
         status["stages"]["merge"] = code
@@ -249,31 +266,26 @@ def main() -> int:
         return finish(code or 2)
 
     if not args.no_eval:
-        eval_code = _run(
-            [
-                python,
-                str(REPO / "scripts" / "eval_model.py"),
-                "--model-checkpoint",
-                str(candidate),
-                "--runs",
-                "1",
-            ]
-        )
-        conversation_code = _run(
-            [
-                python,
-                str(REPO / "scripts" / "conversation_eval.py"),
-                "--model-checkpoint",
-                str(candidate),
-                "--runs",
-                "1",
-            ]
-        )
-        status["stages"]["eval_model"] = eval_code
-        status["stages"]["conversation_eval"] = conversation_code
-        if eval_code != 0 or conversation_code != 0:
+        gate_dir = REPO / "runtime-data" / "eval" / f"{name}-gate"
+        gate_command = [
+            python,
+            str(REPO / "scripts" / "run_gate.py"),
+            "--checkpoint",
+            str(candidate),
+            "--out-dir",
+            str(gate_dir),
+            "--runs",
+            "1",
+            "--conversation-runs",
+            "1",
+        ]
+        gate_code = _run(gate_command)
+        status["stages"]["gate"] = gate_code
+        status["gate_command"] = gate_command
+        status["gate_report"] = str(gate_dir / "gate.json")
+        if gate_code != 0:
             print(
-                "\nCandidate failed the fixed evaluation gate. It was left in "
+                "\nCandidate failed the full post-training gate. It was left in "
                 f"{candidate} and the active model was not changed.",
                 file=sys.stderr,
             )
@@ -281,12 +293,12 @@ def main() -> int:
 
     if args.no_eval:
         print(
-            "\nCandidate trained; evaluation was skipped. It is NOT installed. "
+            "\nCandidate trained; gate was skipped. It is NOT installed. "
             "The active checkpoint and permissions were not changed."
         )
     else:
         print(
-            "\nCandidate trained and evaluated. It is NOT installed. "
+            "\nCandidate trained and passed the full gate. It is NOT installed. "
             "The active checkpoint and permissions were not changed."
         )
     return finish(0)

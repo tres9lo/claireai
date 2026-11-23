@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parent
 SEED = 20261120
+DEFAULT_EXTERNAL_SHARE = 0.35
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -115,6 +116,54 @@ def dedupe(
     return kept, dropped
 
 
+def cap_external(
+    records: Iterable[dict[str, Any]], limit: int, *, seed: int = SEED
+) -> list[dict[str, Any]]:
+    """Keep external data a minority while preserving every source.
+
+    ``--limit`` is per source, so five sources can still produce tens of
+    thousands of rows and drown the authored conversation data.  This caps the
+    total and samples proportionally from each source instead of letting raw
+    web prose determine most of the training loss.
+    """
+    material = list(records)
+    if limit < 0:
+        raise ValueError("external cap must not be negative")
+    if len(material) <= limit:
+        return material
+    if limit == 0:
+        return []
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for record in material:
+        groups.setdefault(str(record.get("source") or "external"), []).append(record)
+    if limit < len(groups):
+        # More sources than rows: take one row from the largest sources first.
+        names = sorted(groups, key=lambda name: (-len(groups[name]), name))[:limit]
+        return [groups[name][0] for name in names]
+
+    total = len(material)
+    quotas = {name: max(1, int(limit * len(items) / total)) for name, items in groups.items()}
+    while sum(quotas.values()) > limit:
+        name = max((item for item in quotas if quotas[item] > 1), key=lambda item: quotas[item])
+        quotas[name] -= 1
+    while sum(quotas.values()) < limit:
+        name = max(
+            groups,
+            key=lambda item: (len(groups[item]) - quotas[item], len(groups[item]), item),
+        )
+        if quotas[name] >= len(groups[name]):
+            break
+        quotas[name] += 1
+
+    rng = random.Random(seed)
+    selected: list[dict[str, Any]] = []
+    for name in sorted(groups):
+        count = min(quotas[name], len(groups[name]))
+        selected.extend(rng.sample(groups[name], count))
+    return selected
+
+
 def load_external(directory: Path, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     records: list[dict[str, Any]] = []
     manifests: dict[str, Any] = {}
@@ -140,11 +189,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", type=Path, default=ROOT / "data" / "chat-v14")
     parser.add_argument("--external", type=Path, default=ROOT / "data" / "external")
-    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v15")
+    parser.add_argument("--output", type=Path, default=ROOT / "data" / "chat-v16")
     parser.add_argument("--limit", type=int, default=4000, help="maximum records per external source")
+    parser.add_argument(
+        "--external-share",
+        type=float,
+        default=DEFAULT_EXTERNAL_SHARE,
+        help="maximum fraction of merged training records from external sources (default: 0.35)",
+    )
     parser.add_argument("--base-limit", type=int, default=0, help="optional cap on base training records (0 = all)")
     parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args()
+    if not 0.0 <= args.external_share < 1.0:
+        parser.error("--external-share must be at least 0 and below 1")
 
     base_train = read_jsonl(args.base / "train.jsonl")
     base_validation = read_jsonl(args.base / "validation.jsonl")
@@ -153,6 +210,10 @@ def main() -> int:
     if args.base_limit and len(base_train) > args.base_limit:
         rng0 = random.Random(args.seed)
         base_train = rng0.sample(base_train, args.base_limit)
+    # The authored builder emits some exact duplicate pairs. Deduplicate before
+    # sizing the external quota; otherwise duplicates inflate the base and let
+    # raw web text take more than the configured share of the final corpus.
+    base_train_unique, base_duplicates = dedupe(base_train)
     external, manifests = load_external(args.external, max(1, args.limit))
     if not external:
         parser.error(f"no licensed external JSONL with sidecars under {args.external}; run fetch_corpora.py")
@@ -160,18 +221,29 @@ def main() -> int:
     held_out = held_out_prompts()
     rng = random.Random(args.seed)
     clean_external, external_dropped = dedupe(external, skip_prompts=held_out)
+    # A per-source limit is not a total limit.  With the full profile, five
+    # sources produced 17,459 external rows against 13,440 authored rows, and
+    # validation loss was dominated by web prose rather than assistant replies.
+    max_external = int(
+        len(base_train_unique) * args.external_share / (1.0 - args.external_share)
+    )
+    selected_external = cap_external(clean_external, max_external, seed=args.seed)
+    selected_by_source: dict[str, int] = {}
+    for record in selected_external:
+        name = str(record.get("source") or "external")
+        selected_by_source[name] = selected_by_source.get(name, 0) + 1
 
-    rng.shuffle(clean_external)
-    split = max(1, len(clean_external) // 10)
-    ext_validation, _ = dedupe(clean_external[:split])
-    ext_train, _ = dedupe(clean_external[split:])
+    rng.shuffle(selected_external)
+    split = max(1, len(selected_external) // 10)
+    ext_validation, _ = dedupe(selected_external[:split])
+    ext_train, _ = dedupe(selected_external[split:])
 
     validation, validation_dropped = dedupe(base_validation + ext_validation)
     # Never train on a pair that also appears in validation: that is evaluation
     # leakage, and it makes the validation loss look better than the model is.
     validation_pairs = {_key(record) for record in validation}
     train, train_dropped = dedupe(
-        base_train + ext_train, skip_prompts=held_out, exclude=validation_pairs
+        base_train_unique + ext_train, skip_prompts=held_out, exclude=validation_pairs
     )
     rng.shuffle(train)
     rng.shuffle(validation)
@@ -182,12 +254,17 @@ def main() -> int:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
     manifest = {
-        "dataset": "claireai-chat-v15",
+        "dataset": "claireai-chat-v16",
         "built_from": str(args.base),
         "external": manifests,
         "records_by_split": {"train": len(train), "validation": len(validation)},
         "external_records": len(clean_external),
+        "external_records_selected": len(selected_external),
+        "external_records_by_source": dict(sorted(selected_by_source.items())),
+        "external_share": args.external_share,
         "base_train_records": len(base_train),
+        "base_train_unique_records": len(base_train_unique),
+        "base_duplicate_records": base_duplicates,
         "held_out_prompts_removed": len(held_out),
         "duplicate_or_overlap_removed": {
             "external": external_dropped,
@@ -201,7 +278,8 @@ def main() -> int:
         },
         "notes": [
             "External records are bounded samples, not a full corpus.",
-            "Evaluation prompts are removed by exact match; run the eval suites after training.",
+            "External records are capped to a minority of training data so authored conversation and tool records are not drowned out.",
+            "Evaluation prompts are removed by exact match; run the full gate after training.",
             "The gate, not this manifest, decides whether a checkpoint may be installed.",
         ],
         "files": {
@@ -211,7 +289,10 @@ def main() -> int:
     }
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {len(train)} train / {len(validation)} validation records to {args.output}")
-    print(f"external: {len(clean_external)} from {', '.join(manifests)}")
+    print(
+        f"external: {len(selected_external)}/{len(clean_external)} kept "
+        f"({args.external_share:.0%} max) from {', '.join(manifests)}"
+    )
     return 0
 
 

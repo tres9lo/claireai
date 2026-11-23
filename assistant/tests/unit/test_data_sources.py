@@ -58,6 +58,20 @@ def test_sources_with_restrictions_are_not_marked_for_training() -> None:
     assert by_id["fineweb-edu"]["license"].startswith("ODC-By")
 
 
+def test_external_cap_is_deterministic_and_keeps_every_source() -> None:
+    merger = _merger_module()
+    records = []
+    for source, count in (("oasst1-en", 100), ("fineweb-edu", 60), ("gsm8k", 20)):
+        records.extend({"source": source, "id": index} for index in range(count))
+
+    selected = merger.cap_external(records, 36, seed=7)
+    repeated = merger.cap_external(records, 36, seed=7)
+
+    assert selected == repeated
+    assert len(selected) == 36
+    assert {record["source"] for record in selected} == {"oasst1-en", "fineweb-edu", "gsm8k"}
+
+
 def test_toolace_call_syntax_is_normalised_without_guessing() -> None:
     fetcher = _fetcher_module()
     calls = fetcher._parse_toolace_calls(

@@ -804,15 +804,17 @@ class TrainingWorker(threading.Thread):
         if not trainer.is_file():
             raise TrainingError(f"the trainer is missing: {trainer}")
 
-        # Prefer the merged licensed corpus when the checkout has one. chat-v15
-        # is the bilingual build from train_claireai.py; the v13 names remain
-        # valid for older checkouts. The compact token arrays in train_chat.py
-        # removed the old 15k-record memory ceiling, so a larger corpus is no
-        # longer rejected just because it is large. Whatever is chosen, the
-        # authored intent examples and confirmed lessons are merged in first;
-        # selecting the external corpus directly silently discarded both.
+        # Prefer the newest merged licensed corpus when the checkout has one.
+        # chat-v16 is the capped-external build from train_claireai.py; chat-v15
+        # is the rejected 2026-11-21 run and stays only for older checkouts. The
+        # v13 names remain valid for still older checkouts. The compact token
+        # arrays in train_chat.py removed the old 15k-record memory ceiling, so a
+        # larger corpus is no longer rejected just because it is large. Whatever
+        # is chosen, the authored intent examples and confirmed lessons are
+        # merged in first; selecting the external corpus directly silently
+        # discarded both.
         corpus = Path(curriculum["path"])
-        for name in ("chat-v15", "chat-v13-small", "chat-v13"):
+        for name in ("chat-v16", "chat-v15", "chat-v13-small", "chat-v13"):
             candidate_corpus = source.parent / "brain-lab" / "data" / name
             if (candidate_corpus / "train.jsonl").is_file() and (candidate_corpus / "validation.jsonl").is_file():
                 corpus = merge_training_corpus(

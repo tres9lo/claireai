@@ -55,9 +55,13 @@ retrieval, not general parity on this CPU model.
   response-only loss, unmasked tool-call tokens, masked tool results, EOS, and
   no padding labels.
 - [x] Add a decoded-batch inspection test before the next long training run.
-- [ ] Run the quick candidate from the existing `chat-v15` corpus, then compare
+- [x] Run the full v15 candidate from the existing `chat-v15` corpus. It was
+  rejected: 4/13 model checks and 14/21 conversation cases, with malformed tool
+  calls and repetitive replies. The failure is recorded in `PROGRESS.md`; the
+  active checkpoint was not changed.
+- [ ] Run the next candidate from the rebalanced `chat-v16` corpus, then compare
   it with the installed checkpoint at the same run count. Install only if the
-  existing gate passes and conversation does not regress.
+  full gate passes and conversation does not regress.
 
 ### 3. Conversation and tool use
 
