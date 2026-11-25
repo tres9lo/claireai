@@ -1,131 +1,95 @@
-# Windows setup (Week 1)
+# Windows setup
 
-> **Status: not yet tested.** No Windows machine was available in this session.
-> These are the documented steps with the equivalent commands; they must be run
-> on a real Windows 10/11 machine and the result recorded in
-> `docs/platform-support.md` before the phase gate claims Windows support.
+> **Status: CI-tested, not manually verified.** The unit suite runs on
+> `windows-latest` for Python 3.11 and 3.12. A human still needs to run the
+> installer, Ollama and the Tk window on Windows 10/11 before
+> `docs/platform-support.md` can mark it verified.
+
+The runtime is shared with Linux: Python sidecar, SQLite, allow-list, approvals
+and Ollama on loopback. Only the commands differ.
 
 ## 1. Prerequisites
 
 - Python 3.11+ from python.org (check `py -3 --version`).
 - Git for Windows.
-- PyTorch CPU package for the scratch model (installed in the next section).
-- Later phases only: Node.js LTS, `rustup`, and the Microsoft C++ build tools
-  required by Tauri v2 (<https://v2.tauri.app/start/prerequisites/>).
+- Ollama for Windows from <https://ollama.com/download>.
+- Optional: Node.js LTS and Rust only when working on the future Tauri shell.
 
-## 2. Python environment
+PyTorch is not required for the default runtime.
+
+## 2. Install Ollama and the models
+
+The Windows installer starts Ollama as a background service. In a new terminal:
 
 ```powershell
-py -3 --version
+ollama --version
+ollama pull qwen3:1.7b
+ollama pull qwen2.5-coder:1.5b
+Invoke-RestMethod http://127.0.0.1:11434/api/tags | Select-Object -Expand models
+```
+
+ClaireAI uses `http://127.0.0.1:11434/api`. No key is required.
+
+## 3. Python environment
+
+```powershell
 py -3 -m venv assistant\.venv
 .\assistant\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -e "assistant[dev,model]"
-pip install -e "assistant[voice]" # optional local speech input
-pip install -e .\brain-lab
+pip install -e "assistant[dev,desktop]"
 ```
 
 If PowerShell blocks activation, do **not** weaken the machine-wide execution
-policy. Either call the interpreter directly
-(`.\assistant\.venv\Scripts\python.exe -m claireai.cli`), or use the documented
+policy. Call the interpreter directly
+(`.\assistant\.venv\Scripts\python.exe -m claireai.cli`) or use the documented
 `-ExecutionPolicy Bypass -Scope Process` form for the current shell only.
-
-## 3. Train a local scratch checkpoint
-
-```powershell
-$env:CLAIREAI_DATA_DIR = "$PWD\runtime-data"
-# Pipeline smoke only; the included synthetic corpus is not enough for a useful model.
-python brain-lab\train.py brain-lab\data\bootstrap-v1\text --steps 1000
-```
-
-The transformer is randomly initialized. Training speed and assistant quality
-depend on the corpus and hardware; no pretrained model weights are included.
 
 ## 4. Run
 
 ```powershell
 $env:CLAIREAI_DATA_DIR = "$PWD\runtime-data"
-.\assistant\.venv\Scripts\python.exe -m claireai.cli --once "Explain what a tokenizer does."
+.\assistant\.venv\Scripts\python.exe scripts\doctor.py
+.\assistant\.venv\Scripts\python.exe -m claireai.cli --once "Hello"
 .\assistant\.venv\Scripts\python.exe -m claireai.cli
 ```
 
-Without `CLAIREAI_DATA_DIR`, data lives under `%LOCALAPPDATA%\ClaireAI\ClaireAI`
-(resolved by `platformdirs`, not hard-coded).
+Without `CLAIREAI_DATA_DIR`, data lives under
+`%LOCALAPPDATA%\ClaireAI\ClaireAI`.
 
-## 5. Diagnostics
+## 5. File tools and the allow-list
 
-```powershell
-$env:CLAIREAI_DATA_DIR = "$PWD\runtime-data"
-.\assistant\.venv\Scripts\python.exe scripts\doctor.py
-```
-
-Read-only: no database, model or config is created, and no secret values are
-printed.
-
-## 6. File tools and the allow-list
-
-The allow-list is a JSON array, so Windows backslashes need doubling. Use
-forward slashes instead — Windows accepts them and the value stays readable:
+Use forward slashes in the JSON array; Windows accepts them and the value stays
+readable:
 
 ```powershell
 $env:CLAIREAI_ALLOWED_FOLDERS = '["C:/Users/tresor/Downloads"]'
-.\assistant\.venv\Scripts\python.exe -m claireai.cli --once "List the biggest files in my Downloads folder"
+.\assistant\.venv\Scripts\python.exe -m claireai.cli --once `
+  "List the biggest files in my Downloads folder"
 ```
 
-Setting it in a `.env` file follows the same rule (`CLAIREAI_ALLOWED_FOLDERS=["C:/Users/tresor/Downloads"]`),
-because pydantic-settings parses a JSON array before any Windows path handling
-happens. Empty or unset means every file tool is refused.
+An empty or unset allow-list refuses every file tool. Writes require `y`/`yes`
+at an interactive prompt. Non-interactive runs refuse them.
 
-Typed tool results use forward slashes on every OS (`sub/inner.txt`), so what the
-model sees and what lands in the audit log is identical on Windows and Linux.
-
-## 7. Tests
+## 6. Diagnostics and tests
 
 ```powershell
+.\assistant\.venv\Scripts\python.exe scripts\doctor.py
 cd assistant
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Record the Python version, Windows build, resolved dependency versions, and the
-pytest output in `docs/platform-support.md`.
+Symlink tests need Developer Mode or elevation; a skip in a normal shell is an
+environment limit, not a passing security check.
 
-Three allow-list tests create symlinks, which Windows only permits with
-**Developer Mode** enabled or in an elevated shell. Elsewhere they are reported
-as skipped with that reason — a skip there is an environment limit, not a
-passing security check, so run the suite once on a Windows machine where
-symlinks work before claiming Windows coverage.
+## 7. Speech
 
-## 8. Checking the install end to end
+Optional speech output requires eSpeak NG on `PATH`; Piper can be installed with
+`pip install piper-tts` and a voice under
+`runtime-data\models\voice\piper\`. Windows playback uses `winsound`; live audio
+has not been manually verified.
 
-```powershell
-.\assistant\.venv\Scripts\python.exe scripts\smoke.py
-.\assistant\.venv\Scripts\python.exe scripts\smoke.py --skip-model
-```
+## 8. Installer
 
-Ten checks covering database, model, tool loop, approval refusal, presence stream
-and the append-only audit log. This script uses only `pathlib` and `tempfile`, so
-it is the first thing to run on a real Windows machine; its result belongs in
-`docs/platform-support.md`.
-
-## 9. Writing files and the approval prompt
-
-```powershell
-$env:CLAIREAI_ALLOWED_FOLDERS = '["C:/Users/tresor/Downloads"]'
-.\assistant\.venv\Scripts\python.exe -m claireai.cli --once "Create a folder called reports in my Downloads"
-```
-
-ClaireAI prints the tool, arguments, target and approval reference, then asks
-`approve? [y/N]`. Non-interactive runs refuse every write. A moved file goes to
-`%LOCALAPPDATA%\ClaireAI\ClaireAI\trash\<timestamp>\`, never to permanent deletion.
-
-## 10. Speech output
-
-Optional speech output requires a separately installed eSpeak NG executable;
-ClaireAI does not bundle it. The desktop Voice page provides enable, pitch/rate
-and preview controls. Windows uses Python's built-in `winsound` playback path;
-this has not been verified on a Windows machine yet.
-
-For the checked install path, run `.\install.ps1` from the repository root. It
-prints the detected OS and Python, lists every download with its size, and asks
-before fetching anything; `-dry-run` only prints the plan.
+`.\install.ps1` prints the detected OS and Python, lists downloads, and asks
+before fetching. `-dry-run` prints the plan only. It installs the Python
+application; Ollama remains a separate system install.

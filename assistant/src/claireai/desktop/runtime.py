@@ -138,6 +138,18 @@ class DesktopRuntime:
                 if ready
                 else "Install a checkpoint from a brain-lab run, or set CLAIREAI_MODEL_CHECKPOINT."
             )
+        elif provider == "ollama":
+            from claireai.preflight import ollama_models_installed
+
+            wanted = (self.settings.brain_model, self.settings.brain_coding_model)
+            ready = ollama_models_installed(wanted)
+            hint = (
+                f"Using local Ollama at {self.settings.resolved_brain_base_url} "
+                f"with {self.settings.brain_model}; nothing leaves this machine."
+                if ready
+                else f"Run: ollama pull {self.settings.brain_model} && "
+                f"ollama pull {self.settings.brain_coding_model}"
+            )
         else:
             ready = True
             hint = f"Using the {provider} connector; conversations go to that endpoint."
@@ -148,6 +160,8 @@ class DesktopRuntime:
             facts = describe_checkpoint(checkpoint)
         return {
             "provider": provider,
+            "model": self.settings.brain_model,
+            "coding_model": self.settings.brain_coding_model,
             "checkpoint": str(checkpoint),
             "ready": ready,
             "hint": hint,
@@ -222,8 +236,10 @@ class DesktopRuntime:
         return {
             "data_dir": str(self.data_dir),
             "database": str(self.settings.database_path),
+            "provider": self.settings.brain_provider,
+            "model": self.settings.brain_model,
             "checkpoint": str(checkpoint),
-            "model_ready": checkpoint.is_file(),
+            "model_ready": self.model_status()["ready"],
             "voices": available_voices(),
             "browser": control["browser"],
             "shutdown": control["shutdown"],
@@ -319,7 +335,11 @@ class DesktopRuntime:
                     conn=conn,
                     brain=brain,
                     day=day,
-                    registry=default_registry(browser_enabled=bool(self.control()["browser"])),
+                    registry=default_registry(
+                        browser_enabled=bool(self.control()["browser"]),
+                        memory_enabled=self.settings.memory_enabled,
+                        capabilities=self.settings.allowed_capabilities,
+                    ),
                     sandbox=Sandbox.from_settings(self.settings),
                     device="desktop-native",
                 )
@@ -405,7 +425,11 @@ class DesktopRuntime:
                     conn=conn,
                     brain=brain,
                     request=message,
-                    registry=default_registry(browser_enabled=self.control()["browser"]),
+                    registry=default_registry(
+                        browser_enabled=self.control()["browser"],
+                        memory_enabled=self.settings.memory_enabled,
+                        capabilities=self.settings.allowed_capabilities,
+                    ),
                     approvals=self.approvals,
                     presence=self.presence,
                     device="desktop-native",

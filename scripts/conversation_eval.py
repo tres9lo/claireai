@@ -20,11 +20,11 @@ import asyncio
 import json
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from claireai.brain import Brain, BrainError, Message, ScratchBrain
+from claireai.brain import Brain, BrainError, Message, build_brain
 from claireai.brain.tool_calls import looks_like_tool_call
 from claireai.config import Settings
 from claireai.evaluation import extract_json_object
@@ -51,10 +51,28 @@ class TurnResult:
 class CaseResult:
     case_id: str
     turns: list[TurnResult] = field(default_factory=list)
+    runs: int = 1
+    runs_passed: int = 0
 
     @property
     def passed(self) -> bool:
         return bool(self.turns) and all(turn.passed for turn in self.turns)
+
+
+def select_run_result(outcomes: list[CaseResult]) -> CaseResult:
+    """Require every run to pass, and report the first failing run.
+
+    This used to keep the best of N runs, so a case that passed once in three
+    was reported as a pass.  A stochastic model must not become acceptable by
+    retrying until it happens to produce the right answer.  The tool-call suite
+    already uses the same all-runs rule; this makes conversation consistent.
+    """
+    if not outcomes:
+        raise ValueError("at least one run result is required")
+    for outcome in outcomes:
+        if not outcome.passed:
+            return outcome
+    return outcomes[0]
 
 
 def _normalise(text: str) -> str:
@@ -188,36 +206,44 @@ async def run(args: argparse.Namespace) -> int:
     overrides: dict[str, object] = {}
     if args.model_checkpoint:
         overrides["model_checkpoint"] = args.model_checkpoint
+        overrides["brain_provider"] = "scratch"
     settings = Settings(**overrides)
-    brain = ScratchBrain(checkpoint=settings.resolved_model_checkpoint, max_output_tokens=120)
+    brain = build_brain(settings)
+    label = (
+        f"{settings.brain_provider}:{settings.brain_model}"
+        if settings.brain_provider != "scratch"
+        else f"scratch @ {settings.resolved_model_checkpoint}"
+    )
     registry = default_registry(browser_enabled=False)
     health = await brain.health()
     if not health.available or not health.model_present:
-        print(f"ERROR: scratch model unavailable: {health.detail}", file=sys.stderr)
+        print(f"ERROR: configured model unavailable: {health.detail}", file=sys.stderr)
         return EXIT_RUNTIME
 
     results: list[CaseResult] = []
     try:
         for case in cases:
-            best: CaseResult | None = None
-            for _ in range(max(1, args.runs)):
-                outcome = await run_case(brain, case, registry)
-                if best is None or sum(turn.passed for turn in outcome.turns) > sum(turn.passed for turn in best.turns):
-                    best = outcome
-                if outcome.passed:
-                    best = outcome
-                    break
-            assert best is not None
-            results.append(best)
+            outcomes = [
+                await run_case(brain, case, registry)
+                for _ in range(max(1, args.runs))
+            ]
+            selected = select_run_result(outcomes)
+            results.append(
+                replace(
+                    selected,
+                    runs=len(outcomes),
+                    runs_passed=sum(1 for outcome in outcomes if outcome.passed),
+                )
+            )
     finally:
         await brain.aclose()
 
     print("=" * 78)
-    print(f"conversation evaluation · {settings.resolved_model_checkpoint}")
+    print(f"conversation evaluation · {label}")
     print("=" * 78)
     for result in results:
         status = "PASS" if result.passed else "FAIL"
-        print(f"{status:<5} {result.case_id}")
+        print(f"{status:<5} {result.case_id} ({result.runs_passed}/{result.runs})")
         for turn in result.turns:
             marker = "ok" if turn.passed else "!!"
             print(f"   [{marker}] user: {turn.user}")
@@ -236,13 +262,15 @@ async def run(args: argparse.Namespace) -> int:
         out.write_text(
             json.dumps(
                 {
-                    "checkpoint": str(settings.resolved_model_checkpoint),
+                    "checkpoint": label,
                     "passed": passed,
                     "total": len(results),
                     "cases": [
                         {
                             "id": result.case_id,
                             "passed": result.passed,
+                            "runs": result.runs,
+                            "runs_passed": result.runs_passed,
                             "turns": [
                                 {
                                     "user": turn.user,

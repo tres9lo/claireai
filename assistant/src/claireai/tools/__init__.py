@@ -22,6 +22,13 @@ from claireai.tools.browser import (
     open_url,
     search_web,
 )
+from claireai.tools.computer import ComputerControlArgs, computer_control
+from claireai.tools.memory import (
+    RememberNoteArgs,
+    SearchMemoryArgs,
+    remember_note,
+    search_memory,
+)
 from claireai.tools.files import (
     FileInfoArgs,
     LargestFilesArgs,
@@ -282,8 +289,54 @@ CALENDAR_TOOLS: tuple[Tool, ...] = (
 )
 
 
-def default_registry(*, browser_enabled: bool = False) -> ToolRegistry:
-    """Build the active tools; browser networking stays off unless enabled."""
+MEMORY_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="remember_note",
+        description=(
+            "Keep a durable note in local semantic memory. Needs approval. "
+            "Never store passwords, keys or one-time codes."
+        ),
+        risk="needs_approval",
+        args_model=RememberNoteArgs,
+        handler=remember_note,
+    ),
+    Tool(
+        name="search_memory",
+        description=(
+            "Search the owner's locally stored notes by meaning, not just exact words."
+        ),
+        risk="safe",
+        args_model=SearchMemoryArgs,
+        handler=search_memory,
+    ),
+)
+
+
+COMPUTER_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="computer_control",
+        description=(
+            "Move/click the pointer, scroll, type text or press a key in the "
+            "active desktop session. Dangerous: always needs approval."
+        ),
+        risk="dangerous",
+        args_model=ComputerControlArgs,
+        handler=computer_control,
+        # `mutates` is about the filesystem allow-list in the agent, not the
+        # desktop. Control always needs approval because its risk is dangerous.
+        mutates=False,
+    ),
+)
+
+
+def default_registry(
+    *,
+    browser_enabled: bool = False,
+    memory_enabled: bool = False,
+    capabilities: tuple[str, ...] | list[str] = (),
+) -> ToolRegistry:
+    """Build the active tools; every optional surface stays off unless enabled."""
+    enabled_caps = {str(item).strip().lower() for item in capabilities}
     tools = (
         *FILE_TOOLS,
         *WRITE_TOOLS,
@@ -291,6 +344,8 @@ def default_registry(*, browser_enabled: bool = False) -> ToolRegistry:
         *CALENDAR_TOOLS,
         *VISION_TOOLS,
         *(BROWSER_TOOLS if browser_enabled else ()),
+        *(MEMORY_TOOLS if memory_enabled else ()),
+        *(COMPUTER_TOOLS if enabled_caps & {"cursor", "keyboard"} else ()),
     )
     return ToolRegistry(tools)
 
@@ -299,8 +354,16 @@ __all__ = [
     "AddAppointmentArgs",
     "BROWSER_TOOLS",
     "CALENDAR_TOOLS",
+    "COMPUTER_TOOLS",
+    "ComputerControlArgs",
     "DAY_PLAN_TOOLS",
     "FILE_TOOLS",
+    "MEMORY_TOOLS",
+    "RememberNoteArgs",
+    "SearchMemoryArgs",
+    "computer_control",
+    "remember_note",
+    "search_memory",
     "WorldNewsArgs",
     "world_news",
     "ListAppointmentsArgs",

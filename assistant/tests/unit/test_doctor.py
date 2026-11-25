@@ -11,6 +11,7 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
     defaults = dict(
         _env_file=None,
         data_dir=tmp_path / "data",
+        brain_provider="scratch",
     )
     defaults.update(overrides)
     return Settings(**defaults)

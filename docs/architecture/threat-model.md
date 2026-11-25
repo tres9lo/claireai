@@ -24,7 +24,7 @@ implemented **today**, or marks the control as required-when-built.
 ```
  owner ──prompt──▶ CLI/UI ──request──▶ agent loop ──tool──▶ filesystem / OS
                     ▲                    │
-                    │ approval           ├──▶ model (local scratch checkpoint)
+                    │ approval           ├──▶ model (Ollama/Qwen on loopback)
                     └──── decision ◀─────┘
  window ◀── PresenceEvent (read-only) ── agent
  untrusted input: file contents, file names, screenshots, OCR, clipboard,

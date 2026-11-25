@@ -5,9 +5,11 @@ look through the camera, read the screen, move the cursor, type, inspect windows
 This document fixes the rules before any of it exists, because these are the most
 dangerous capabilities in the product.
 
-Status: **planned**. Per-task grants and the approval flow start in Week 3;
-perception arrives in Months 2–3, control in Months 2–3 with per-action approval.
-Today the repository has none of these tools.
+Status: **partly implemented**. `see_screen` reads the display behind the
+`screen` capability and approval; `computer_control` moves/clicks/types/scrolls
+behind `cursor` or `keyboard`, is `dangerous`, and always asks. Camera capture and
+clipboard reading are still not built. No per-task grant object exists yet: the
+capability allow-list plus the per-action approval are the current boundary.
 
 ## Why this is separate from file tools
 
@@ -115,6 +117,16 @@ System dependencies, not pip packages: `xdg-desktop-portal` (Wayland), `ydotool`
 7. Dry run prints the intended action ("click at 812,433 in window X") without
    moving the pointer.
 8. Every refusal is logged as `skipped` with a reason the user can act on.
+
+## Current implementation evidence
+
+- `see_screen` calls `check_capability("screen", ...)` before capture and is
+  `needs_approval`. `computer_control` checks `cursor` or `keyboard` per action,
+  is `dangerous`, and the agent redacts typed text from the audit row.
+- CUA depends on optional `pyautogui`, `mss` and Pillow; a missing display or
+  package produces one clear error. The test suite injects a fake driver, so it
+  proves policy and argument handling, not live Wayland/X11 support.
+- Camera and clipboard remain unimplemented.
 
 ## Acceptance checks (when built)
 

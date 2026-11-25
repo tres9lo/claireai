@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from claireai.agent import system_message
-from claireai.brain import Message, ScratchBrain
+from claireai.brain import Brain, Message, build_brain
 from claireai.config import Settings
 from claireai.permissions import Sandbox
 from claireai.tools import default_registry
@@ -117,7 +117,7 @@ def _reply_check(expect: dict[str, Any], content: str) -> tuple[bool, str]:
 
 
 async def score_case(
-    brain: ScratchBrain, registry, case: dict[str, Any], runs: int, *, sandbox: str = "home"
+    brain: Brain, registry, case: dict[str, Any], runs: int, *, sandbox: str = "home"
 ) -> dict[str, Any]:
     schemas = [registry.get(name).schema() for name in case.get("tools", []) if name in registry]
     messages = [
@@ -284,8 +284,14 @@ async def _run(args: argparse.Namespace) -> int:
     overrides: dict[str, Any] = {}
     if args.model_checkpoint:
         overrides["model_checkpoint"] = args.model_checkpoint
+        overrides["brain_provider"] = "scratch"
     settings = Settings(_env_file=None, **overrides)
-    brain = ScratchBrain(checkpoint=settings.resolved_model_checkpoint, max_output_tokens=120)
+    brain = build_brain(settings)
+    label = (
+        f"{settings.brain_provider}:{settings.brain_model}"
+        if settings.brain_provider != "scratch"
+        else f"scratch @ {settings.resolved_model_checkpoint}"
+    )
     health = await brain.health()
     if not health.available or not health.model_present:
         print(f"ERROR: {health.detail}", file=sys.stderr)
@@ -301,7 +307,6 @@ async def _run(args: argparse.Namespace) -> int:
         await brain.aclose()
 
     summary = summarise(results, args.runs)
-    label = f"{health.models[0] if health.models else 'scratch'} @ {settings.resolved_model_checkpoint}"
     print("=" * 78)
     print(f"sandbox: {args.sandbox}  (prompt says: Allowed folders: {prompt_clause(args.sandbox)})")
     print(render_report(results, summary, label))

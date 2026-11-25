@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from claireai.brain import Brain, BrainHealth, BrainResponse, ScratchBrain
+from claireai.brain import Brain, BrainHealth, BrainResponse, ScratchBrain, build_brain
 from claireai.config import Settings
 from claireai.evaluation import (
     load_cases,
@@ -75,12 +75,15 @@ def _build_brain(args: argparse.Namespace, cases) -> tuple[Brain, str, Settings 
     overrides: dict[str, object] = {}
     if args.model_checkpoint:
         overrides["model_checkpoint"] = args.model_checkpoint
+        overrides["brain_provider"] = "scratch"
     settings = Settings(**overrides)
-    brain = ScratchBrain(
-        checkpoint=settings.resolved_model_checkpoint,
-        max_output_tokens=200,
+    brain = build_brain(settings)
+    label = (
+        f"{settings.brain_provider}:{settings.brain_model}"
+        if settings.brain_provider != "scratch"
+        else f"scratch @ {settings.resolved_model_checkpoint}"
     )
-    return brain, f"from-scratch model @ {settings.resolved_model_checkpoint}", settings
+    return brain, label, settings
 
 
 def _save(results, *, path: Path, label: str) -> Path:
@@ -121,7 +124,7 @@ async def _run(args: argparse.Namespace) -> int:
                 print(f"ERROR: {health.detail}", file=sys.stderr)
                 return EXIT_RUNTIME
             if not health.model_present:
-                print(f"ERROR: scratch checkpoint unavailable: {health.detail}", file=sys.stderr)
+                print(f"ERROR: configured model unavailable: {health.detail}", file=sys.stderr)
                 return EXIT_RUNTIME
 
         results = await run_cases(brain, cases, runs=args.runs)

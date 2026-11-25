@@ -1,15 +1,25 @@
 # TresorAI / ClaireAI Master Roadmap (12 Months) — Updated Execution Edition (2026-10)
 
-## Owner direction (2026-11-03; supersedes older runtime/model choices)
+## Owner direction (2026-11-25; supersedes the 2026-11-03 scratch-model decision)
 
-ClaireAI must use a model trained from random initialization in this repository.
-Ollama and downloaded pretrained model weights are removed from the active
-runtime path. The target product includes a clear assistant stop control,
-owner-controlled browser/device access, OS-aware adapters, a desktop UI, and
-local speech with configurable voice characteristics. These are staged goals;
-they must not be described as complete until implemented and evaluated. The
-original phase tables below contain historical Ollama-era plans and are not
-current acceptance criteria where they conflict with this direction.
+ClaireAI uses **Ollama** as its brain: **Qwen3 1.7B** for normal turns and
+**Qwen2.5-Coder 1.5B** for code-heavy turns. The from-scratch trainer is kept as
+archived research, not as an install requirement. The reason is the hardware:
+the project runs on a **budget PC with a CPU and about 7 GB RAM**. Training a
+useful model from random initialization took hours, produced candidates that
+failed the gate, and consumed time that belongs to the assistant's permission,
+audit, tool and desktop layers. Pretrained local inference is the right trade.
+
+The target stack remains Tauri + React for the desktop, a Python + FastAPI
+backend, SQLite, local embeddings/vector retrieval, whisper.cpp, Piper,
+openWakeWord, a CUA Driver and APScheduler with Pydantic. The current checkout
+uses the tested Tk desktop and now has a loopback FastAPI service, local vector
+memory, an openWakeWord adapter and a capability-gated CUA driver; Tauri, camera
+and clipboard remain targets. Each item is marked complete only after tests or
+platform evidence, and a wake word still grants no capability.
+The target product includes a clear assistant stop control, owner-controlled
+browser/device access, OS-aware adapters, a desktop UI, and local speech with
+configurable voice characteristics.
 
 The owner also requires an always-available wake-word interface, locally
 learned and reviewable routines, voice identity checks, spoken consent, and a

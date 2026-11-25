@@ -100,6 +100,29 @@ def _read_manifest(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _tokenizer_manifest(vocab_size: int) -> Path | None:
+    """The nearest existing merges for the next corpus budget check.
+
+    A v16 tokenizer does not exist until training starts.  Reuse a checkpoint
+    sidecar with the same vocabulary so merge-time filtering and the audit use
+    the same token accounting instead of a character estimate.
+    """
+    candidates = [
+        REPO / "runtime-data" / "models" / "claire-scratch.json",
+        *sorted(CANDIDATES.glob("*.json")),
+    ]
+    for path in candidates:
+        payload = _read_manifest(path)
+        architecture = payload.get("architecture")
+        if (
+            isinstance(architecture, dict)
+            and architecture.get("vocab_size") == vocab_size
+            and payload.get("tokenizer_merges")
+        ):
+            return path
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=tuple(PROFILES), default="full")
@@ -205,23 +228,30 @@ def main() -> int:
             return finish(code)
 
     if not args.no_merge:
-        code = _run(
-            [
-                python,
-                str(ROOT / "merge_corpora.py"),
-                "--base",
-                str(base_corpus),
-                "--external",
-                str(DATA / "external"),
-                "--output",
-                str(merged_corpus),
-                "--limit",
-                str(profile["external_limit"]),
-                "--external-share",
-                str(profile["external_share"]),
-            ]
-        )
+        merge_command = [
+            python,
+            str(ROOT / "merge_corpora.py"),
+            "--base",
+            str(base_corpus),
+            "--external",
+            str(DATA / "external"),
+            "--output",
+            str(merged_corpus),
+            "--limit",
+            str(profile["external_limit"]),
+            "--external-share",
+            str(profile["external_share"]),
+            "--context",
+            str(profile["context"]),
+            "--target-tokens",
+            "192",
+        ]
+        tokenizer_manifest = _tokenizer_manifest(profile["vocab"])
+        if tokenizer_manifest is not None:
+            merge_command += ["--tokenizer-manifest", str(tokenizer_manifest)]
+        code = _run(merge_command)
         status["stages"]["merge"] = code
+        status["merge_command"] = merge_command
         if code != 0:
             return finish(code)
 
@@ -275,9 +305,9 @@ def main() -> int:
             "--out-dir",
             str(gate_dir),
             "--runs",
-            "1",
+            "3",
             "--conversation-runs",
-            "1",
+            "3",
         ]
         gate_code = _run(gate_command)
         status["stages"]["gate"] = gate_code

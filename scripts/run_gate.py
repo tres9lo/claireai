@@ -165,7 +165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--conversation-runs", type=int, default=1)
+    parser.add_argument("--conversation-runs", type=int, default=3)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--skip-model", action="store_true")
     parser.add_argument("--skip-conversation", action="store_true")

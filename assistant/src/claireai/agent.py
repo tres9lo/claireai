@@ -311,11 +311,18 @@ async def run_task(
     control_state = controls.read()
     if control_state["shutdown"]:
         raise BrainStopped("ClaireAI is stopped. Resume it from the local control panel.")
-    registry = registry or default_registry(browser_enabled=control_state["browser"])
+    registry = registry or default_registry(
+        browser_enabled=control_state["browser"],
+        memory_enabled=settings.memory_enabled,
+        capabilities=settings.allowed_capabilities,
+    )
     sandbox = sandbox or Sandbox.from_settings(settings)
     broker: ApprovalBroker = approvals or DenyAll()
     step_limit = max_steps or settings.agent_max_steps
     data_dir = settings.resolved_data_dir
+    from claireai.memory import memory_index
+
+    memory = memory_index(settings, conn)
 
     tasks = TaskRepository(conn)
     audit = AuditLog(conn)
@@ -874,6 +881,8 @@ async def run_task(
                     dry_run=dry_run,
                     verified=verified,
                     browser=browser,
+                    allowed_capabilities=settings.allowed_capabilities,
+                    memory=memory,
                 )
                 steps.append(step)
                 # _execute records a successful read against the exact path or
@@ -1002,20 +1011,32 @@ async def _execute(
     dry_run: bool,
     verified: _ReadState,
     browser: Any = None,
+    allowed_capabilities: Sequence[str] = (),
+    memory: Any = None,
 ) -> AgentStep:
     """Validate, authorize, run and log one proposed call."""
     started = time.perf_counter()
     arguments = dict(call.arguments)
+    # Typed text is the one tool argument that can contain a password. Keep it
+    # for the actual action, but never put it in the append-only audit row.
+    audit_arguments = dict(arguments)
+    if call.name == "computer_control" and audit_arguments.get("text"):
+        audit_arguments["text"] = "[redacted]"
     target = arguments.get("path") if isinstance(arguments.get("path"), str) else None
     if target is None and isinstance(arguments.get("source"), str):
         target = arguments["source"]
     context = ToolContext(
-        sandbox=sandbox, dry_run=dry_run, data_dir=data_dir, browser=browser
+        sandbox=sandbox,
+        dry_run=dry_run,
+        data_dir=data_dir,
+        browser=browser,
+        allowed_capabilities=tuple(allowed_capabilities),
+        memory=memory,
     )
 
     status = "failed"
     approval_ref: str | None = None
-    detail: dict[str, Any] = {"arguments": arguments, "dry_run": dry_run}
+    detail: dict[str, Any] = {"arguments": audit_arguments, "dry_run": dry_run}
     text = ""
     try:
         tool = registry.get(call.name)
@@ -1054,7 +1075,7 @@ async def _execute(
                 device=device,
                 call=call,
                 index=index,
-                arguments=arguments,
+                arguments=audit_arguments,
                 target=target,
                 status=status,
                 text=text,
@@ -1083,6 +1104,9 @@ async def _execute(
                         detail={"tool": tool.name, "ref": request.ref},
                     )
                 decision = await approvals.decide(request)
+                audit_rendered = dict(rendered)
+                if call.name == "computer_control" and audit_rendered.get("text"):
+                    audit_rendered["text"] = "[redacted]"
                 with transaction(conn):
                     audit.record(
                         task_id=task_id,
@@ -1095,7 +1119,7 @@ async def _execute(
                         approval_ref=request.ref,
                         detail={
                             "risk": tool.risk,
-                            "arguments": rendered,
+                            "arguments": audit_rendered,
                             "approved": decision.approved,
                             "reason": decision.reason,
                         },
@@ -1115,7 +1139,7 @@ async def _execute(
                         device=device,
                         call=call,
                         index=index,
-                        arguments=arguments,
+                        arguments=audit_arguments,
                         target=target,
                         status=status,
                         text=text,
@@ -1182,7 +1206,7 @@ async def _execute(
         device=device,
         call=call,
         index=index,
-        arguments=arguments,
+        arguments=audit_arguments,
         target=target,
         status=status,
         text=text,

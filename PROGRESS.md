@@ -1,5 +1,65 @@
 # Progress log
 
+## 2026-11-25 (capability pass) — CUA, wake word, memory and API
+
+- **Added the four missing runtime pieces without replacing Tk.** The desktop
+  remains the tested Tk/customtkinter UI; the new API is an opt-in loopback
+  service.
+- **CUA:** `cua.py` plus `computer_control`, registered only for enabled
+  `cursor`/`keyboard` capabilities, `dangerous`, approval-gated, typed text
+  redacted from audit. `see_screen` now enforces `screen`. The optional
+  `pyautogui` and `mss` packages are installed. Live `mss` capture returned a
+  1280x720 frame; pointer input is still blocked on this Wayland host because
+  Python-Xlib receives "Authorization required" even with the session's
+  `XAUTHORITY`, so no live pointer action is claimed.
+- **Wake word:** `wakeword.py` wraps openWakeWord, validates 80 ms frames and
+  runs a stop-able microphone loop. The real `hey_jarvis` ONNX model loaded and
+  scored a synthesized "hey jarvis" clip at up to 0.9967; silence produced no
+  detection. `sounddevice` is installed but this host lacks PortAudio, so the
+  listener falls back to ALSA `arecord`; a 3-second capture opened and exited
+  cleanly. A human-spoken microphone test and a custom "Hey Claire" model are
+  still pending.
+- **Memory:** `0005_memory` and `memory.py` add SQLite cosine retrieval with
+  Ollama `nomic-embed-text` or an explicit hash provider, plus
+  `remember_note`/`search_memory`. No chat is embedded in the background. The
+  Ollama model was pulled and verified live: 768-dimension vectors, and
+  "affordable computer without a GPU" ranked the low-cost CPU-only desktop note
+  first at 0.6996.
+- **API:** `api/` exposes a token-authenticated FastAPI service for local
+  clients. Write tools still use `FileApprovalBroker`; a bearer token cannot
+  approve a file change. A real listener on 127.0.0.1 returned `/health` 200,
+  `/v1/status` 401 without a token and 200 with one, then shut down cleanly.
+- **Verification (2026-11-25):** the full unit suite exits `0` when run from
+  `assistant/` (where its pytest config lives); source smoke check reports
+  `10 passed, 0 failed, 1 skipped`; `wakeword_check.py --help` and
+  `claireai.api.main --help` exit `0`. Live screen capture, wake-word inference,
+  ALSA capture, Ollama embeddings/vector search and the API listener were
+  exercised. Live pointer control remains blocked by X authorization.
+
+## 2026-11-25 (runtime direction) — Ollama/Qwen replaces scratch as the default
+
+- **Owner decision changed the runtime.** ClaireAI now uses pretrained Qwen
+  models served by Ollama: `qwen3:1.7b` for normal turns and
+  `qwen2.5-coder:1.5b` for code-heavy turns. The reason is the budget hardware:
+  CPU-only, about 7 GB RAM. From-scratch training was slow, difficult and not
+  producing a dependable assistant; the time was disproportionate to the result.
+- **Default configuration** is now `brain_provider=ollama`, with no API key and a
+  loopback endpoint at `http://127.0.0.1:11434/api`. The audit row still names
+  the model that answered, and every permission, allow-list and approval check
+  is unchanged.
+- **Code paths switched:** `Settings`, the brain factory, identity answers, CLI
+  header/error text, `--setup`, `doctor`, the desktop model/status chips, the
+  smoke check and the eval harnesses. The desktop extra no longer installs
+  PyTorch; `brain-lab` remains available for archived research.
+- **Install documentation** now tells the user to install Ollama and pull both
+  models; Linux and Windows commands, storage locations and troubleshooting are
+  in `docs/setup/models.md`.
+- **Verification (2026-11-25):** `cd assistant && .venv/bin/python -m pytest -q`
+  exits `0`; `scripts/smoke.py --skip-model` reports `10 passed, 0 failed,
+  1 skipped`; `claireai --setup` now reports `brain ollama`, `model qwen3:1.7b`
+  and the missing Qwen pulls instead of a missing scratch checkpoint. No live
+  Qwen inference was run because the weights were not installed in this session.
+
 ## 2026-11-21 (v15 outcome) — Rejected, with the data and selection cause
 
 - **v15 was rejected.** The full run trained for 8,000 steps, reached validation
@@ -26,8 +86,10 @@
   proportional sample per source, and records selected counts by source.
   `train_chat.py` selects the best checkpoint on an authored-only validation
   split and samples validation evenly instead of using its first 64 examples.
-  `train_claireai.py` now runs the full four-suite gate and writes to a fresh
-  `chat-v16` / `claire-chat-v16-*` path, preserving the rejected v15 artifacts.
+  `train_claireai.py` now runs the full four-suite gate at three runs and writes
+  to a fresh `chat-v16` / `claire-chat-v16-*` path, preserving the rejected v15
+  artifacts. `conversation_eval.py` no longer reports the best of several runs:
+  every run must pass, matching the tool-call gate.
 - **Not done:** no v16 training run has been started. The change is preparation
   and gate correctness, not a claim that a 3.6M-parameter model will pass the
   existing conversation and tool cases.

@@ -5,6 +5,55 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — CUA, wake word, local vector memory and the API service
+
+- **CUA driver:** `claireai.cua` drives the pointer, clicks, scrolling, typing
+  and keys through optional `pyautogui`; screenshots use `mss`. The
+  `computer_control` tool is registered only when `cursor` or `keyboard` is in
+  `CLAIREAI_ALLOWED_CAPABILITIES`, checks the capability for each action, is
+  `dangerous`, always needs approval, and redacts typed text from the audit row.
+  `see_screen` now enforces the `screen` capability. Camera and clipboard remain
+  unimplemented.
+- **Wake word:** `claireai.wakeword` wraps openWakeWord with bounded 16 kHz
+  frame scoring, a cooldown and a microphone listener that saves no audio.
+  `scripts/wakeword_check.py` is the explicit check. No model is bundled or
+  downloaded; "Hey Claire" needs a matching trained model. The ONNX engine was
+  live-checked with a synthesized "hey jarvis" clip (top score 0.9967), and the
+  listener opened ALSA capture on this Linux host; a human-spoken acceptance
+  test is still pending.
+- **Local semantic memory:** migration `0005_memory` adds `memory_entries`;
+  `claireai.memory` provides Ollama embeddings (`nomic-embed-text`), an explicit
+  hash fallback, exact cosine search and the `remember_note`/`search_memory`
+  tools. Text and vectors stay in SQLite; no background embedding of chat.
+  Verified live with Ollama `nomic-embed-text`: 768-dimension vectors and the
+  correct top semantic hit for a paraphrase with no shared keywords.
+- **FastAPI backend:** `claireai --api` / `claireai-api` serves a loopback,
+  bearer-token-authenticated API (`/health`, status/models, chat, conversations,
+  memory search, `/docs`). It reuses `run_task` and the audit/sandbox policy;
+  write tools still need a signed one-action approval and cannot be approved by
+  the API token. The listener was exercised over a real loopback socket:
+  `/health` returned 200, and `/v1/status` returned 401 without a token and 200
+  with one.
+- Docs: `docs/api.md`, `docs/setup/extras.md`; model storage now includes the
+  optional embedding model.
+
+### Changed — Ollama + Qwen replaces from-scratch training as the default
+
+- The default brain is now **Qwen3 1.7B** served by a local Ollama daemon, with
+  **Qwen2.5-Coder 1.5B** selected for code-heavy turns. No checkpoint has to be
+  trained, gated or promoted before chatting.
+- This is a deliberate response to the development hardware: a CPU-only budget
+  PC with about 7 GB RAM. From-scratch runs took hours, several candidates
+  failed the gate, and the result was not a dependable assistant. Local
+  pretrained inference is the proportionate choice; `brain-lab/` remains as
+  archived research.
+- Setup, doctor, the CLI header, identity answers, the desktop model status and
+  the evaluation/smoke harnesses now use the configured brain instead of
+  hard-coding a scratch checkpoint. Setup explains `ollama pull` and no longer
+  requires PyTorch for the desktop extra.
+- Exact Linux and Windows model-install steps are in
+  [docs/setup/models.md](docs/setup/models.md).
+
 ### Added — bounded ToolACE and Hermes fetchers
 
 - `brain-lab/fetch_corpora.py --source toolace` and `--source hermes` fetch at

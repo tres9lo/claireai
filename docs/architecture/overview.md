@@ -21,7 +21,7 @@ plan and `PROGRESS.md` holds what is proven and what is not.
  loop (≤ CLAIREAI_AGENT_MAX_STEPS, default 8)                │
    │                                                        │
    ├─► brain.generate(messages, tools=schemas)               │
-   │      └─ claireai.brain.scratch ──► local PyTorch checkpoint │
+   │      └─ claireai.brain.ollama ──► Qwen3 1.7B (loopback)   │
    │                                                         │
    ├─ no tool calls → record answer, status=succeeded, return │
    │                                                         │
@@ -51,7 +51,8 @@ constraints rather than cosmetics.
 | `audit/audit_log.py` | Append-only `task_log` writes, redacted detail | Update or delete (triggers reject it) |
 | `audit/redaction.py` | Pattern-based secret redaction, length truncation | Guarantee that no secret is ever stored |
 | `brain/base.py` | `Brain` protocol, `Message`/`ToolCall`/`BrainResponse` wire-neutral shapes | Import any concrete runtime |
-| `brain/scratch.py` | Local checkpoint loading, text generation and tool-call parsing | Train the model, decide permissions, or run tools |
+| `brain/ollama.py` | Local Qwen chat, tool-call parsing and code-model routing | Train the model, decide permissions, or run tools |
+| `brain/scratch.py` | Archived checkpoint loading for `brain-lab` research | Become the default install path again |
 | `permissions.py` | `Sandbox` (folder allow-list, symlink-aware resolution), risk policy, capability policy | Prompt the user |
 | `tools/base.py` | `Tool` (name, description, risk, pydantic args, handler), registry, schema stripping | Execute side effects |
 | `tools/files.py` | Five read-only file tools | Write anything |
@@ -59,6 +60,10 @@ constraints rather than cosmetics.
 | `approval.py` | `ApprovalRequest`, per-task grants, `DenyAll` default | Decide on the owner's behalf |
 | `agent.py` | The loop: validate, authorize, run, log, feed back | Trust model output |
 | `routing.py` | Narrow the tool set per request (deterministic, no model call) | Remove the fallback to all tools |
+| `memory.py` | Local Ollama/hash embeddings and SQLite cosine search | Upload text or vectors |
+| `cua.py` | Optional pyautogui/mss screen and input driver | Decide its own permission; the agent does that |
+| `wakeword.py` | openWakeWord frame scoring and microphone listener | Download a model or save audio |
+| `api/` | Loopback FastAPI service with bearer-token auth, reusing the same agent/approval path | Approve a write with only an HTTP token |
 | `presence.py` | `PresenceEvent` stream (idle, thinking, tool_running, …) | Hold any capability |
 | `desktop/` | Native Tk/customtkinter window: Chat, Activity, Approvals, History, Voice, Settings, About | Open a network listener or run a tool without approval |
 | `preflight.py` | OS/Python/Tk/display/package checks, a sized download plan and consent before `pip` runs | Download anything without an explicit yes |
@@ -95,7 +100,7 @@ constraints rather than cosmetics.
    an `approval_ref`.
 5. **Storage is local and append-only for audit.** `task_log` triggers reject
    `UPDATE` and `DELETE`. Detail is redacted and truncated on the way in.
-6. **Inference is local.** `ScratchBrain` loads a checkpoint from disk and does not call a remote model service.
+6. **Inference is local by default.** `OllamaBrain` calls a loopback daemon that serves Qwen on this machine. Hosted providers remain explicit opt-in settings. The archived `ScratchBrain` loads a checkpoint from disk.
 
 Deeper: `docs/architecture/threat-model.md` (16 threats, controls and residual
 risks, including the open camera/screen/cursor scope),
@@ -152,16 +157,25 @@ disables the one bounded retry (identical input, identical reply).
 
 ## Deliberate non-decisions
 
-- **No HTTP surface.** The browser UI was removed; the desktop window and the
-  terminal call the runtime directly, so there is no listener, host check or
-  cross-origin request to defend. FastAPI and uvicorn are no longer dependencies.
+- **The API is opt-in and loopback-first.** `claireai --api` / `claireai-api`
+  starts an authenticated FastAPI service for other local clients. The Tk window
+  still calls the runtime directly and remains the desktop UI. A bearer token
+  authorizes API calls, not file writes; those still use signed one-action
+  approvals.
 - **Browser tools are HTTP, not Playwright.** `open_url`, `get_page_text`,
   `search_web` and `download_file` are implemented, approval-gated and tested,
   but they fetch markup instead of running a browser: no JavaScript, so
   client-rendered pages come back empty. Swapping in Playwright changes one
   module; the tool names and risks the model sees stay the same.
-- **No machine tools.** Camera/screen/cursor have contracts but no code. They are
-  scheduled, and they are privacy-heavy.
-- **No packaging.** There is no Tauri shell, no installer, no signed binary.
-- **No hosted inference, ever by default.** Track B's from-scratch model will be
-  another `Brain` implementation behind the same protocol.
+- **Screen and input control are optional extras.** `see_screen` needs the
+  `screen` capability and approval; `computer_control` needs `cursor` or
+  `keyboard` plus approval, and reports unsupported Wayland sessions honestly.
+  Camera capture and clipboard reading are still not built.
+- **The wake-word engine is not a wake phrase claim.** The adapter and listener
+  are implemented, but no "Hey Claire" model is bundled. The owner must supply
+  a matching openWakeWord model and test it on their microphone.
+- **No Tauri shell yet.** The tested desktop is Tk/customtkinter and is kept
+  deliberately for this phase. Tauri + React is a later target.
+- **No hosted inference by default.** Ollama + Qwen is local; hosted providers
+  remain opt-in. The archived scratch model is still available through the same
+  `Brain` protocol for research.

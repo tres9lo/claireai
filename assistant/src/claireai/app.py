@@ -6,9 +6,9 @@
     claireai --setup --install   # offer the missing packages, with sizes
     claireai --once "..."   # any existing CLI flag still works
 
-There is no browser surface: the app is the native window and the terminal.
-Nothing here is privileged, downloads nothing on its own, and never turns on a
-network listener.
+The default surface is the native Tk window and the terminal. A loopback HTTP
+API is available only with ``--api``; it requires a bearer token. Nothing here
+is privileged or downloads anything on its own.
 """
 
 from __future__ import annotations
@@ -42,6 +42,8 @@ REMOVED_FLAGS = {"--port", "--no-browser", "--ui"}
 
 
 def _distribution_version(spec: str) -> str:
+    if not spec.strip():
+        return "system install"
     name = spec.split(">=", 1)[0].split("<", 1)[0].strip()
     try:
         return metadata.version(name)
@@ -64,10 +66,13 @@ def setup_report(
     """
     settings.ensure_directories()
     applied = Database(settings.database_path).migrate()
-    checkpoint = settings.resolved_model_checkpoint
     environment = detect_environment()
     requirements = requirements_for(environment)
-    missing = missing_parts(settings.resolved_data_dir)
+    missing = missing_parts(
+        settings.resolved_data_dir,
+        models=(settings.brain_model, settings.brain_coding_model),
+        embedding_model=settings.embedding_model if settings.memory_enabled else None,
+    )
 
     if voice_report is None:
 
@@ -96,9 +101,13 @@ def setup_report(
         f"  data        {settings.resolved_data_dir}",
         f"  database    {settings.database_path}",
         f"  migrations  {', '.join(applied) if applied else 'already up to date'}",
-        f"  model       {checkpoint}",
+        f"  brain       {settings.brain_provider} @ {settings.resolved_brain_base_url or 'local checkpoint'}",
+        f"  model       {settings.brain_model or settings.resolved_model_checkpoint}",
+        f"  coding      {settings.brain_coding_model or '(same as main model)'}",
         f"  speech      {speech}",
         f"  voice       {voice_report()}",
+        f"  memory      {'on · ' + settings.embedding_model if settings.memory_enabled else 'off'}",
+        f"  API         on demand at http://{settings.api_host}:{settings.api_port}",
         "",
         "  packages",
     ]
@@ -108,14 +117,12 @@ def setup_report(
     )
     lines.append("")
 
-    if checkpoint.is_file() and not missing:
+    if not missing:
         lines.append("Ready. Run `claireai` for the window, or `claireai --cli` for the terminal.")
-    elif checkpoint.is_file():
-        lines.append("The checkpoint is installed; the parts listed below are still missing.")
     else:
         lines.append(
-            "No chat checkpoint is installed yet. Chat stays unavailable until one is "
-            "trained and promoted (see docs/training.md); nothing was downloaded."
+            "The model runtime is not complete yet; the missing parts are listed below. "
+            "Nothing is downloaded until you approve it."
         )
 
     print("\n".join(lines))
@@ -125,7 +132,7 @@ def setup_report(
             print("\nNo desktop display was found; `claireai --cli` works here.")
         return EXIT_OK
 
-    core = {item.key for item in missing} & {"torch", "customtkinter"}
+    core = {item.key for item in missing} & {"ollama", "ollama_models", "customtkinter"}
     if install_missing:
         consent = assume_yes
         if not consent:
@@ -164,6 +171,7 @@ APP_FLAGS = frozenset(
         "--setup", "--install", "--yes", "--update", "--source",
         "--training-run", "--install-training-service", "--uninstall-training-service",
         "--training-service-status",
+        "--api", "--api-host", "--api-port",
     }
 )
 
@@ -246,6 +254,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="report the training timer state",
     )
+    parser.add_argument(
+        "--api",
+        action="store_true",
+        help="run the loopback HTTP API instead of opening a window",
+    )
+    parser.add_argument("--api-host", help="API bind address (default 127.0.0.1)")
+    parser.add_argument("--api-port", type=int, help="API port (default 8765)")
     parsed = parser.parse_args(args)
     if parsed.install and not parsed.setup:
         parser.error("--install is only valid together with --setup")
@@ -282,6 +297,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings,
             install_missing=parsed.install,
             assume_yes=parsed.yes,
+        )
+
+    if parsed.api:
+        from claireai.api.main import run_api
+
+        return run_api(
+            host=parsed.api_host,
+            port=parsed.api_port,
+            data_dir=Path(parsed.data_dir).expanduser() if parsed.data_dir else None,
         )
 
     if (
@@ -375,31 +399,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("menu entry removed" if removed else "no menu entry was installed")
         return EXIT_OK
 
-    # Use a checkpoint this machine already trained, if the data directory is
-    # empty. Only brain-lab checkpoints qualify; a downloaded model is refused.
     settings = (
         Settings(data_dir=Path(parsed.data_dir).expanduser())
         if parsed.data_dir
         else Settings()
     )
-    try:
-        from claireai.models import ensure_installed_checkpoint
+    # Only the legacy scratch provider needs a checkpoint copied in. The normal
+    # Ollama path owns its model files under Ollama's own directory.
+    if settings.brain_provider == "scratch":
+        try:
+            from claireai.models import ensure_installed_checkpoint
 
-        ensure_installed_checkpoint(settings)
-    except Exception:  # noqa: BLE001 - the window explains a missing checkpoint
-        pass
+            ensure_installed_checkpoint(settings)
+        except Exception:  # noqa: BLE001 - the window explains a missing checkpoint
+            pass
 
-    # The window is useless without the model runtime. Say exactly what is
+    # The window is useless without its model runtime. Say exactly what is
     # missing and how to get it instead of opening a chat that cannot answer.
     missing = missing_requirements()
-    if any(item.key == "torch" for item in missing):
-        print("ClaireAI needs its local model runtime before the window can answer:", file=sys.stderr)
-        print(format_plan([item for item in missing if item.key == "torch"]), file=sys.stderr)
+    runtime = next((item for item in missing if item.key == "ollama"), None)
+    if runtime is None and settings.brain_provider == "ollama":
+        from claireai.preflight import ollama_models_installed
+
+        wanted = (settings.brain_model, settings.brain_coding_model)
+        if not ollama_models_installed(wanted):
+            print("ClaireAI needs its Qwen models before the window can answer:", file=sys.stderr)
+            print(
+                f"  ollama pull {settings.brain_model}\n"
+                f"  ollama pull {settings.brain_coding_model}",
+                file=sys.stderr,
+            )
+            print("Then run `claireai --setup` to check the install.", file=sys.stderr)
+            return EXIT_CONFIG
+    if runtime is not None:
+        print("ClaireAI needs Ollama before the window can answer:", file=sys.stderr)
+        print(format_plan([runtime]), file=sys.stderr)
         print("Install it with `claireai --setup --install`, or `./install.sh` to set up everything.", file=sys.stderr)
         return EXIT_CONFIG
 
     # The launcher, not the window module: it reports a missing Tk toolkit
-    # instead of raising ModuleNotFoundError while importing it.
+    # instead of raising ModuleNotFoundError while importing it. The Tk surface
+    # remains the desktop UI; the API is a separate opt-in service.
     from claireai.desktop.launcher import main as desktop_main
 
     return desktop_main(["--data-dir", str(settings.resolved_data_dir)])

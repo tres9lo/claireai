@@ -59,7 +59,7 @@ _BYE = re.compile(
 
 
 def _checkpoint_name(settings, model_ready: bool | None) -> str | None:
-    if getattr(settings, "brain_provider", "scratch") != "scratch":
+    if getattr(settings, "brain_provider", "ollama") != "scratch":
         return None
     path = getattr(settings, "resolved_model_checkpoint", None)
     if path is None:
@@ -70,17 +70,30 @@ def _checkpoint_name(settings, model_ready: bool | None) -> str | None:
 
 
 def _model_line(settings, model_ready: bool | None) -> str:
-    provider = getattr(settings, "brain_provider", "scratch")
+    provider = getattr(settings, "brain_provider", "ollama")
+    model = str(getattr(settings, "brain_model", "") or "")
+    coding = str(getattr(settings, "brain_coding_model", "") or "")
+    if provider == "ollama":
+        line = (
+            f"Replies come from {model or 'a Qwen model'} through the local Ollama "
+            "runtime; the model and the conversation stay on this machine."
+        )
+        if coding:
+            line += f" Code-heavy turns use {coding}."
+        return line
+    if provider in {"openai", "anthropic"}:
+        return (
+            f"Replies come from the {provider} connector you configured; "
+            "that hosted endpoint can see the conversation you send it."
+        )
     checkpoint = getattr(settings, "resolved_model_checkpoint", None)
-    if provider != "scratch":
-        return f"Replies come from the {provider} connector you configured (that endpoint can see the conversation)."
     if model_ready is None:
         model_ready = bool(checkpoint and checkpoint.is_file())
     if model_ready:
-        return f"Replies come from the local checkpoint {checkpoint.name}, running here with no network access."
+        return f"Replies come from the archived local checkpoint {checkpoint.name}, running here with no network access."
     return (
-        "No local checkpoint is installed yet, so I cannot generate new replies. "
-        "Chat > Install a checkpoint points me at one (for example a brain-lab run)."
+        "No local scratch checkpoint is installed. The normal runtime is Ollama + Qwen3; "
+        "set CLAIREAI_BRAIN_PROVIDER=ollama to use it."
     )
 
 
@@ -125,11 +138,11 @@ def capability_lines(
     if control.get("self_improvement"):
         count = (learning or {}).get("total", 0)
         lines.append(
-            f"Learning: on. I keep a private journal of exchanges ({count} so far) and turn it "
-            "into training material; a new checkpoint still has to pass the install gate before it replaces this one."
+            f"Learning: on. I keep a private journal of exchanges ({count} so far) for review; "
+            "it does not retrain the Qwen weights."
         )
     else:
-        lines.append("Learning: off. Turn on Background learning in Settings and I will journal exchanges for training.")
+        lines.append("Learning: off. Turn on Background learning in Settings and I will journal exchanges locally for review.")
     return lines
 
 
@@ -154,24 +167,35 @@ def answer_self_question(
     # three-million-parameter model that has no reliable idea of who it is.
     # These are honest runtime replies, not a scripted imitation of a person.
     if _HOW_ARE_YOU.search(text):
-        if _checkpoint_name(settings, model_ready):
+        if _checkpoint_name(settings, model_ready) or getattr(settings, "brain_provider", "ollama") != "scratch":
             return (
-                "I do not have feelings, but I am running well: the local checkpoint is "
-                "loaded, the tools are ready, and nothing is leaving this machine. "
+                "I do not have feelings, but I am running well: the local model runtime is "
+                "configured, the tools are ready, and inference stays on this machine. "
                 "How are you?"
             )
         return (
-            "I am running, though no checkpoint is installed yet, so I can only answer "
+            "I am running, though no scratch checkpoint is installed, so I can only answer "
             "questions about myself until one is. How are you?"
         )
     if _MADE.search(text):
+        provider = getattr(settings, "brain_provider", "ollama")
+        if provider == "ollama":
+            model = str(getattr(settings, "brain_model", "") or "Qwen3 1.7B")
+            return (
+                f"I run the pretrained {model} model through Ollama on this machine, and "
+                "this Python runtime adds tools, calendar, storage and approvals. I do not "
+                "train the model from scratch."
+            )
         checkpoint = _checkpoint_name(settings, model_ready)
-        where = f" The checkpoint in use is {checkpoint}, trained here." if checkpoint else ""
+        if checkpoint:
+            return (
+                f"I am running the archived scratch checkpoint {checkpoint}, which brain-lab "
+                "trained here. The supported default is Ollama + Qwen3, not scratch training."
+            )
         return (
-            "I am built from scratch: brain-lab trained a small transformer on this "
-            "machine, with no pretrained weights, and this Python runtime adds tools, "
-            "calendar, storage and approvals. " + where.strip()
-        ).strip()
+            "This runtime is designed around pretrained Qwen models served by Ollama; "
+            "no scratch checkpoint is installed for the legacy path."
+        )
     if _THANKS.search(text):
         return "You are welcome. Anything else you want to get done?"
     if _BYE.search(text):
@@ -187,17 +211,14 @@ def answer_self_question(
         return (
             "Honest limits: I only reach folders you allowed and I cannot act without your "
             "approval on a write. I have no permanent delete. I do not know things that are "
-            "not on this machine unless web tools are on and I look them up. The local model "
-            "is a small from-scratch prototype -- short, literal answers are normal; a "
-            "connector or a larger checkpoint is the way to get more fluent conversation."
+            "not on this machine unless web tools are on and I look them up. The model can "
+            "still be wrong or make something up, so verify facts that matter."
         )
     if _LEARN.search(text):
         return (
-            "I learn in two ways that stay under your control. With Background learning on, I "
-            "journal the exchanges and tool outcomes here and compile them into training "
-            "material for brain-lab. Training a new checkpoint never happens silently: it must "
-            "beat the installed one on the measured gates before it is promoted. I do not "
-            "rewrite my own weights while you are using me."
+            "The Qwen weights are pretrained and I do not retrain them during a conversation. "
+            "With Background learning on, I can journal exchanges locally for review, but "
+            "that journal does not silently rewrite the model."
         )
     if _MODEL.search(text):
         return (

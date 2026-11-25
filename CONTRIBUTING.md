@@ -20,8 +20,9 @@ cd assistant
 python -m pytest
 ```
 
-The model smoke check is skipped unless a scratch checkpoint exists. To run the
-dependency-free runtime checks:
+The default brain is Ollama + Qwen. Start `ollama serve` and pull
+`qwen3:1.7b` and `qwen2.5-coder:1.5b` before running model-backed checks. To run
+the dependency-free runtime checks:
 
 ```bash
 assistant/.venv/bin/python scripts/smoke.py --skip-model
@@ -49,18 +50,26 @@ These are not preferences. A change that weakens one of them without an explicit
 
 If a change requires breaking one of these to be useful, say so in the issue and describe the compensating control — for example the per-run token and nonce that approving over loopback HTTP would need.
 
-## Model training: help wanted
+## Model work: Ollama first, training as research
 
-The assistant's brain is a from-scratch model trained on CPU inside `brain-lab/`. It is the part of this project I know least well, and it is the current bottleneck: the model can hold a short conversation, do simple arithmetic and emit valid tool calls on easy prompts, but it is nowhere near a general assistant.
+The supported brain is Qwen served by Ollama. The from-scratch trainer in
+`brain-lab/` is archived research: useful for experiments and reproducibility,
+but not a prerequisite for installing or running ClaireAI. On the development
+PC (CPU only, 7 GB RAM), full training runs were too slow and did not produce a
+dependable assistant.
 
-Useful contributions right now, roughly in order of value:
+Useful contributions now:
 
-- **Better training recipes.** Optimizer settings, warmup/decay schedules, and width/depth/context trade-offs at a fixed CPU budget.
-- **Better data mixes.** Which proportions of task data, dialogue, prose and synthetic examples produce a model that *answers* instead of rambling. Measured, not asserted.
-- **Evaluation that predicts usefulness.** `scripts/eval_model.py` and `scripts/conversation_eval.py` are the bar nothing ships without. If a case is badly written or a metric is misleading, that is a real bug.
-- **Cheaper inference.** Quantisation or batching that keeps replies correct on a 2-core laptop CPU.
-
-If you would rather discuss than code, open an issue with what you would change and why. Comparing notes is welcome — I would rather learn the right way to train this than defend the current one.
+- **Better local inference.** Prompt/tool-schema trimming, model comparisons and
+  latency measurements on CPU-only hardware.
+- **Evaluation that predicts usefulness.** `scripts/tool_call_eval.py` and
+  `scripts/conversation_eval.py` are the bar a brain should clear. Bad cases and
+  misleading metrics are real bugs.
+- **Retrieval and memory.** Local embeddings and vector search that keep context
+  small enough for a 1.7B model.
+- **Training research**, if you enjoy it. Keep it behind `brain-lab/`, record the
+  hardware and data mix, and do not make it the default install path again
+  without evidence that it beats the Ollama baseline.
 
 ## Code style
 

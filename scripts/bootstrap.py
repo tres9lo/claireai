@@ -28,12 +28,14 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from claireai.preflight import (  # noqa: E402 - after the checkout is on sys.path
+    DEFAULT_OLLAMA_MODELS,
+    OLLAMA_INSTALL_URL,
     SPEECH_MODEL_DOWNLOAD,
-    cpu_index_url,
     detect_environment,
     format_environment,
     format_plan,
     install_speech_model,
+    ollama_models_installed,
     requirements_for,
     speech_model_installed,
 )
@@ -228,6 +230,8 @@ def main(argv: list[str] | None = None) -> int:
     if speech_wanted:
         print(f"  {'speech-to-text model':<24} {SPEECH_MODEL_DOWNLOAD}")
         print(f"  {'':<24} faster-whisper tiny; optional, downloaded once, stays local")
+    print(f"  {'Qwen models':<24} about 1.5 GB via Ollama")
+    print(f"  {'':<24} ollama pull {'; ollama pull '.join(DEFAULT_OLLAMA_MODELS)}")
     print("\nNothing is downloaded until you answer yes. Re-run with --no-speech-model")
     print("to skip the voice model, or install it later from Settings > Voice.")
 
@@ -245,19 +249,22 @@ def main(argv: list[str] | None = None) -> int:
             print("ERROR: the virtual environment could not be created.", file=sys.stderr)
             return EXIT_CONFIG
 
-    torch = next(item for item in requirements if item.key == "torch")
-    status = stream(
-        install_command(str(python), torch.spec, index_url=cpu_index_url(environment))
-    )
-    if status != 0:
-        print("ERROR: the local model runtime could not be installed.", file=sys.stderr)
-        return EXIT_CONFIG
-
-    # The complete application: window, runtime and voice input.
+    # The complete application: window, local runtime and voice input. Ollama
+    # itself is a system install, not a Python wheel; the setup report below
+    # names it if it is absent.
     status = stream(install_command(str(python), f"{ROOT / 'assistant'}[desktop]"))
     if status != 0:
         print("ERROR: ClaireAI could not be installed.", file=sys.stderr)
         return EXIT_CONFIG
+
+    if not shutil.which("ollama"):
+        print(f"\nOllama is not installed. Install it from {OLLAMA_INSTALL_URL}, then run:")
+        print("  install.sh --yes" if os.name != "nt" else "  .\\install.ps1 -yes")
+    elif not ollama_models_installed(DEFAULT_OLLAMA_MODELS):
+        print("\nDownloading the local Qwen models through Ollama:")
+        for model in DEFAULT_OLLAMA_MODELS:
+            if stream(["ollama", "pull", model]) != 0:
+                print(f"WARNING: {model} was not pulled; run `ollama pull {model}` later.", file=sys.stderr)
 
     data_dir = _data_dir(python)
     if data_dir is not None:

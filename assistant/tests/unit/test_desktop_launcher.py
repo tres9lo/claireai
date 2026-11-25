@@ -70,8 +70,9 @@ def test_claireai_desktop_also_goes_through_the_launcher(monkeypatch, tmp_path) 
 
     module.main = fake_main  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "claireai.desktop.launcher", module)
-    # Routing test: CI does not install the optional torch runtime.
+    # Routing test: CI does not install Ollama or download the Qwen models.
     monkeypatch.setattr(app_module, "missing_requirements", lambda: [])
+    monkeypatch.setattr("claireai.preflight.ollama_models_installed", lambda models: True)
 
     assert app_module.main(["--desktop", "--data-dir", str(target)]) == 0
     assert seen == [["--data-dir", str(target)]]

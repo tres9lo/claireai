@@ -58,6 +58,43 @@ def test_sources_with_restrictions_are_not_marked_for_training() -> None:
     assert by_id["fineweb-edu"]["license"].startswith("ODC-By")
 
 
+class _FilterTokenizer:
+    def encode(self, text: str, *, append_eos: bool = True) -> list[int]:
+        size = 200 if "over-budget" in text else 10
+        return [1] * (size + (1 if append_eos else 0))
+
+
+def test_budget_filter_rejects_long_targets_and_prompts() -> None:
+    merger = _merger_module()
+    tokenizer = _FilterTokenizer()
+
+    good = {
+        "system": "system",
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "short"},
+        ],
+    }
+    long_target = {
+        "system": "system",
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "over-budget"},
+        ],
+    }
+    long_prompt = {
+        "system": "over-budget",
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "short"},
+        ],
+    }
+
+    assert merger.fits_budget(good, tokenizer, context=64, target_cap=32)
+    assert not merger.fits_budget(long_target, tokenizer, context=512, target_cap=32)
+    assert not merger.fits_budget(long_prompt, tokenizer, context=64, target_cap=32)
+
+
 def test_external_cap_is_deterministic_and_keeps_every_source() -> None:
     merger = _merger_module()
     records = []

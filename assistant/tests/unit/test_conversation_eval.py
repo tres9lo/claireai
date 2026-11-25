@@ -15,6 +15,43 @@ SPEC.loader.exec_module(conversation_eval)
 check = conversation_eval.check
 
 
+def _result(passed: bool) -> conversation_eval.CaseResult:
+    return conversation_eval.CaseResult(
+        case_id="case",
+        turns=[
+            conversation_eval.TurnResult(
+                user="hello", reply="hi", passed=passed, reason=""
+            )
+        ],
+    )
+
+
+def test_a_case_must_pass_every_run() -> None:
+    first = _result(True)
+    second = _result(False)
+
+    selected = conversation_eval.select_run_result([first, second])
+
+    assert selected is second
+    assert not selected.passed
+
+
+def test_the_first_run_is_reported_when_every_run_passes() -> None:
+    first = _result(True)
+    second = _result(True)
+
+    assert conversation_eval.select_run_result([first, second]) is first
+
+
+def test_select_run_result_rejects_an_empty_run_list() -> None:
+    try:
+        conversation_eval.select_run_result([])
+    except ValueError as exc:
+        assert "at least one" in str(exc)
+    else:
+        raise AssertionError("an empty run list must be rejected")
+
+
 def test_exact_ignores_case_and_trailing_punctuation() -> None:
     assert check({"kind": "exact", "value": "list_files"}, "List_Files.", ())[0]
 

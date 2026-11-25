@@ -38,6 +38,19 @@ model = ["torch>=2.2,<3"]
 # av.open, so an unbounded resolution installs cleanly and then fails on the
 # first recording. Keep the decoder on a version its API supports.
 voice = ["faster-whisper>=1.1,<2", "av>=11,<16"]
+# Optional local HTTP backend. It is separate from the desktop install so a
+# headless server does not pull Tk or the GUI automation stack.
+api = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+# CUA: X11/Windows input through pyautogui, and mss for in-memory screenshots.
+cua = ["pyautogui>=0.9,<1", "mss>=9,<11", "Pillow>=10,<13"]
+# Wake word: openWakeWord inference plus microphone capture. Model files are a
+# separate explicit download, not an implicit package-install side effect.
+wakeword = [
+  "openwakeword>=0.6,<1",
+  "sounddevice>=0.4,<1",
+  "numpy>=1.26,<3",
+  "onnxruntime>=1.17,<2",
+]
 # `desktop` is the complete application, not just the widget toolkit: the
 # window is useless without the local model runtime, and its Voice page is
 # useless without faster-whisper. Installing the desktop app must not leave
@@ -45,7 +58,6 @@ voice = ["faster-whisper>=1.1,<2", "av>=11,<16"]
 # a headless install that wants one of them only.
 desktop = [
   "customtkinter>=5.2,<7",
-  "torch>=2.2,<3",
   "faster-whisper>=1.1,<2",
   "av>=11,<16",
 ]
@@ -66,6 +78,14 @@ all = [
   "customtkinter>=5.2,<7",
   "transformers>=4.40,<6",
   "Pillow>=10,<13",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "pyautogui>=0.9,<1",
+  "mss>=9,<11",
+  "openwakeword>=0.6,<1",
+  "sounddevice>=0.4,<1",
+  "numpy>=1.26,<3",
+  "onnxruntime>=1.17,<2",
 ]
 
 [project.scripts]
@@ -75,6 +95,7 @@ claireai = "claireai.app:main"
 # Through the launcher, not straight at the window: app.py imports the toolkit at
 # module level, so a core install would fail before it could explain the extra.
 claireai-desktop = "claireai.desktop.launcher:main"
+claireai-api = "claireai.api.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claireai"]

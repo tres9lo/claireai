@@ -1,137 +1,104 @@
-# Linux setup (Week 1)
+# Linux setup
 
-Verified on **Zorin OS 18.1 (Ubuntu-based), x86_64, 7.1 GiB RAM, Python 3.12.3**
-on 2026-10-29. Commands below are what were actually run, with the results
-recorded in `PROGRESS.md`.
+This is the supported path for the current runtime: **Ollama + Qwen**, not a
+checkpoint trained in this repository. The commands and setup report were
+exercised on Zorin OS 18.1 (Ubuntu-based), x86_64, 7.1 GiB RAM, Python 3.12.3,
+on 2026-11-25. Live Qwen inference still needs the two model pulls below and
+must be recorded separately; the session that made the switch did not have the
+weights installed.
 
 ## 1. Prerequisites
 
-| Tool | Needed now | Check | Notes |
-| --- | --- | --- | --- |
-| Python 3.11+ | yes | `python3 --version` | 3.12.3 was used; 3.11 and 3.12 are both supported by the pinned deps |
-| Git | yes | `git --version` | 2.43.0 |
-| PyTorch | yes, for training and inference | `python -c 'import torch; print(torch.__version__)'` | CPU build is sufficient; training is slow on low-end CPUs |
-| Node.js 20+ | later (desktop/mobile) | `node --version` | 24.20.0 present, unused so far |
-| Rust / Tauri prereqs | later (desktop) | `rustc --version` | not installed yet |
+| Tool | Check | Notes |
+| --- | --- | --- |
+| Python 3.11+ | `python3 --version` | 3.11 and 3.12 are supported |
+| Git | `git --version` | |
+| Ollama | `ollama --version` | install from <https://ollama.com/download> |
+| Tk | `python3 -c "import tkinter"` | the current desktop window uses it |
+| Piper / eSpeak NG | `command -v piper espeak-ng` | optional local speech output |
 
-## 2. Python environment
+PyTorch is **not** required for the default runtime. It is only needed if you
+deliberately run the archived `brain-lab` research code.
 
-`python3 -m venv` fails on this machine because the `python3.12-venv` system
-package is not installed (the venv is created without `pip`). Two ways forward;
-this project used the first, which needs no system-wide change:
+## 2. Install Ollama and the models
 
 ```bash
-# A. uv (already available at ~/.local/bin/uv here)
+curl -fsSL https://ollama.com/install.sh | sh   # or use the desktop installer
+ollama --version
+ollama pull qwen3:1.7b
+ollama pull qwen2.5-coder:1.5b
+curl -s http://127.0.0.1:11434/api/tags | head
+```
+
+The daemon listens on loopback only. ClaireAI uses it at
+`http://127.0.0.1:11434/api`; no API key is involved.
+
+## 3. Python environment
+
+```bash
+cd claireai
 uv venv --seed --python 3.12 assistant/.venv
-uv pip install --python assistant/.venv/bin/python -e "assistant[dev]"
-
-# B. Standard library venv, if python3-venv is installed
-python3 -m venv assistant/.venv
-source assistant/.venv/bin/activate
-python -m pip install -U pip
-pip install -e "assistant[dev]"
+uv pip install --python assistant/.venv/bin/python -e "assistant[dev,desktop]"
 ```
 
-Put `assistant/.venv/bin` on your PATH or call `assistant/.venv/bin/python`
-directly; do not rely on the current working directory for imports.
+The standard-library alternative is `python3 -m venv assistant/.venv`, then
+`assistant/.venv/bin/python -m pip install -e "assistant[dev,desktop]"`.
 
-Resolved versions from this install are frozen in `assistant/requirements.lock.txt`
-(regenerate with `uv pip freeze --python assistant/.venv/bin/python`).
-
-## 3. Install the scratch model code
-
-```bash
-uv pip install --python assistant/.venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch
-uv pip install --python assistant/.venv/bin/python -e "assistant[model]"
-uv pip install --python assistant/.venv/bin/python -e "assistant[voice]"  # optional local speech input
-uv pip install --python assistant/.venv/bin/python -e ./brain-lab
-```
-
-Use the CPU wheel for this host; PyTorch's official installer provides a CPU
-compute-platform option for pip. See [PyTorch Start Locally](https://pytorch.org/get-started/locally/).
-
-The repository includes `brain-lab/data/bootstrap-v1/`, a small synthetic MIT-
-licensed starter corpus with generated SVG workspace screens. It checks the
-training pipeline but is far too small and template-based to create a useful
-assistant. Add only licensed plain-text material under `brain-lab/data/raw/`;
-record the source and terms before using it. The split-aware trainer learns its
-tokenizer from `train/`, validates on `validation/`, and ignores `test/`.
-
-```bash
-export CLAIREAI_DATA_DIR=./runtime-data
-assistant/.venv/bin/python brain-lab/train.py brain-lab/data/bootstrap-v1/text --steps 1000
-```
-
-The resulting checkpoint is stored under `runtime-data/models/` and ignored by
-Git. Keep steps and context small on the documented 4-thread, 7 GiB machine.
+`desktop` installs the current Tk window and optional speech input. It no longer
+pulls PyTorch.
 
 ## 4. Run
 
 ```bash
-# Development data directory (git-ignored); omit to use ~/.local/share/ClaireAI
 export CLAIREAI_DATA_DIR=./runtime-data
-
-assistant/.venv/bin/python -m claireai.cli --once "Explain what a tokenizer does."
-assistant/.venv/bin/python -m claireai.cli        # interactive; /log shows the audit tail
+assistant/.venv/bin/python scripts/doctor.py
+assistant/.venv/bin/python -m claireai.cli --once "Hello"
+assistant/.venv/bin/python -m claireai.cli
+./scripts/start.sh
 ```
 
-Exit codes: `0` success, `2` invalid configuration, `3` scratch checkpoint or PyTorch unavailable.
+Without `CLAIREAI_DATA_DIR`, data lives under `~/.local/share/ClaireAI`.
 
-## 5. Diagnostics
+Exit codes: `0` success, `2` invalid configuration, `3` the model runtime or a
+tool turn failed.
 
-`scripts/doctor.py` is read-only: it reports versions, paths, database/schema
-state and local checkpoint status, never creates anything and never prints secret
-values (only the names of set `CLAIREAI_*` variables).
+## 5. File tools
 
-```bash
-export CLAIREAI_DATA_DIR=./runtime-data
-assistant/.venv/bin/python scripts/doctor.py        # exit 0 ready, 1 not ready, 2 bad config
-assistant/.venv/bin/python scripts/doctor.py --json
-```
-
-## 6. Tests
-
-```bash
-cd assistant && .venv/bin/python -m pytest
-```
-
-The unit suite does not train a model. A real inference check requires a trained
-checkpoint and must be reported separately from test results.
-
-## Checking the install end to end
-
-```bash
-# First run: detect the OS, Python, Tk and display; print every download and
-# ask before fetching it. --dry-run shows the list without changing anything.
-./install.sh
-
-assistant/.venv/bin/python scripts/smoke.py              # needs a scratch checkpoint
-assistant/.venv/bin/python scripts/smoke.py --skip-model # runtime only
-```
-
-Ten checks: settings, migrations, model reachability, a real chat turn, the tool
-loop, a refused write, the presence stream and the append-only audit log. Exit
-code 0 means everything passed.
-
-## Writing files (approval prompt)
+The allow-list is deny-by-default. The file tools can see nothing until you name
+a folder:
 
 ```bash
 CLAIREAI_ALLOWED_FOLDERS='["~/Downloads"]' \
-  assistant/.venv/bin/python -m claireai.cli --once "Create a folder called reports in my Downloads"
+  assistant/.venv/bin/python -m claireai.cli --once \
+  "List the biggest files in my Downloads folder"
 ```
 
-ClaireAI prints the exact tool, arguments, target and approval reference, then
-asks `approve? [y/N]`. Only `y`/`yes` runs it. Piped input, cron jobs and
-non-interactive shells are refused by design.
+Writes print the exact tool, arguments and target, then ask `approve? [y/N]`.
+Piped input, cron jobs and non-interactive shells cannot approve a write.
 
-## Speech output
-
-Optional speech output uses the host's eSpeak NG package and an installed audio
-player. On Ubuntu-based systems, one-time install:
+## 6. Diagnostics and tests
 
 ```bash
+assistant/.venv/bin/python scripts/doctor.py
+assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
+cd assistant && .venv/bin/python -m pytest
+```
+
+`scripts/doctor.py` is read-only and never prints secret values. The unit suite
+does not need a model. Tool and conversation evaluations need `ollama serve` and
+the pulled Qwen models.
+
+## 7. Speech
+
+```bash
+assistant/.venv/bin/python -m pip install piper-tts
 sudo apt install espeak-ng pulseaudio-utils
 ```
 
-Then enable speech, adjust pitch/rate, and use Preview from the desktop Voice
-page. If eSpeak NG is missing, the window reports that speech is unavailable.
+Piper voices go under `runtime-data/models/voice/piper/` (or
+`CLAIREAI_PIPER_DIR`); each voice needs its `.onnx` and `.onnx.json` side by
+side. eSpeak NG is the fallback. Nothing is uploaded.
+
+## 8. Windows
+
+The runtime is shared. Use [windows.md](windows.md) for PowerShell commands.

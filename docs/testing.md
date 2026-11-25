@@ -49,7 +49,7 @@ No Windows results exist yet; see `docs/platform-support.md`.
 ## Smoke check
 
 ```bash
-assistant/.venv/bin/python scripts/smoke.py              # uses a configured scratch checkpoint
+assistant/.venv/bin/python scripts/smoke.py              # uses the configured Ollama/Qwen brain
 assistant/.venv/bin/python scripts/smoke.py --skip-model # no model needed
 ```
 
@@ -170,7 +170,9 @@ against the previous checkpoint rather than against zero.
 Compare at the same run count. `conversation_eval.py` samples at temperature 0.2,
 so a single run is a sample, not a result: chat-v4 measured 11/21 in one run and
 14/21 at `--runs 3`. A one-case gap between checkpoints is noise; a four-check
-swing on `tool_call_eval.py` is not.
+swing on `tool_call_eval.py` is not. Conversation cases now require **every**
+run to pass, like the tool-call suite; the older 14/21 figure was measured under
+the previous best-of-N behaviour and is not directly comparable.
 
 The install gate is do not relax. A new checkpoint replaces
 `runtime-data/models/claire-scratch.{pt,json}` only if it beats chat-v4 on tool

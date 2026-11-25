@@ -53,6 +53,7 @@ def test_the_window_opens_by_default(monkeypatch, tmp_path) -> None:
     )
     # This test is about routing, not the host's optional model runtime.
     monkeypatch.setattr("claireai.app.missing_requirements", lambda: [])
+    monkeypatch.setattr("claireai.preflight.ollama_models_installed", lambda models: True)
     assert main(["--data-dir", str(tmp_path)]) == 0
     assert seen == [["--data-dir", str(tmp_path)]]
 
@@ -69,6 +70,7 @@ def test_desktop_flag_is_explicit_but_changes_nothing(monkeypatch) -> None:
         "claireai.models.ensure_installed_checkpoint", lambda settings: None
     )
     monkeypatch.setattr("claireai.app.missing_requirements", lambda: [])
+    monkeypatch.setattr("claireai.preflight.ollama_models_installed", lambda models: True)
     assert main(["--desktop"]) == 0
     assert len(seen) == 1
 
@@ -99,11 +101,15 @@ def test_setup_install_declining_downloads_nothing(monkeypatch, capsys, tmp_path
     settings = _settings(tmp_path)
     missing = [
         Requirement(
-            key="torch", label="local model runtime", module="torch",
-            spec="torch>=2.2,<3", download="about 200 MB",
+            key="ollama", label="Ollama runtime", module="", command="ollama",
+            spec="", download="manual install",
         )
     ]
-    monkeypatch.setattr(app, "missing_parts", lambda data_dir: missing)
+    monkeypatch.setattr(
+            app,
+            "missing_parts",
+            lambda data_dir, models=None, embedding_model=None: missing,
+        )
     monkeypatch.setattr(app, "ask_to_install", lambda requirements: False)
 
     def explode(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
@@ -115,11 +121,11 @@ def test_setup_install_declining_downloads_nothing(monkeypatch, capsys, tmp_path
     assert "Nothing was downloaded" in out
 
 
-def test_a_missing_torch_blocks_the_window_and_says_how_to_fix_it(monkeypatch, capsys) -> None:
+def test_a_missing_ollama_blocks_the_window_and_says_how_to_fix_it(monkeypatch, capsys) -> None:
     missing = [
         Requirement(
-            key="torch", label="local model runtime", module="torch",
-            spec="torch>=2.2,<3", download="about 200 MB",
+            key="ollama", label="Ollama runtime", module="",
+            spec="", command="ollama", download="manual install",
         )
     ]
     monkeypatch.setattr(app, "missing_requirements", lambda: missing)
@@ -130,5 +136,5 @@ def test_a_missing_torch_blocks_the_window_and_says_how_to_fix_it(monkeypatch, c
 
     assert app.main([]) == app.EXIT_CONFIG
     err = capsys.readouterr().err
-    assert "local model runtime" in err
+    assert "Ollama runtime" in err
     assert "--setup --install" in err

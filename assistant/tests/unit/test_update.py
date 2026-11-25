@@ -49,13 +49,13 @@ def test_with_uv_it_builds_and_reinstalls_into_this_python(tmp_path, monkeypatch
     assert "--python" in install and sys.executable in install
 
 
-def test_the_desktop_extra_includes_the_model_and_voice_runtimes() -> None:
+def test_the_desktop_extra_uses_ollama_and_does_not_install_torch() -> None:
     root = update.checkout_root()
     requirements = update.desktop_requirements(root)
 
     assert any(item.startswith("customtkinter") for item in requirements)
-    assert any(item.startswith("torch") for item in requirements)
     assert any(item.startswith("faster-whisper") for item in requirements)
+    assert not any(item.startswith("torch") for item in requirements)
 
 
 def test_a_remembered_checkout_is_found_from_another_directory(tmp_path, monkeypatch) -> None:

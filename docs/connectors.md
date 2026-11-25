@@ -1,36 +1,65 @@
-# Connectors: the local model, Claude, ChatGPT and Ollama
+# Brains: Ollama/Qwen by default
 
-ClaireAI's default brain is the checkpoint in `runtime-data/models/` — the model
-trained from scratch in this repository. It is the only brain that makes no
-network request, and it stays the default.
+ClaireAI's brain is **Qwen served by Ollama on this machine**. The default main
+model is `qwen3:1.7b`; turns whose main job is code use
+`qwen2.5-coder:1.5b`. No checkpoint has to be trained, and no hosted API is
+called.
 
-A connector is for the case where the owner decides the small model is not
-enough for a particular stretch of work. Each connector is opt-in, configured by
-the owner, and visible afterwards: the audit row for the turn names the provider
-that answered, so a conversation is never silently answered by a service the
-owner did not choose.
+The change from from-scratch training was deliberate. On the development PC
+(CPU only, 7 GB RAM), a full training run took hours, several candidates failed
+the gate, and the result was not a dependable assistant. A small pretrained
+model is the honest fit for that hardware.
 
-| Provider    | Value of `CLAIREAI_BRAIN_PROVIDER` | Where it runs                | Key needed |
-| ----------- | ---------------------------------- | ---------------------------- | ---------- |
-| Scratch     | `scratch` (default)                | this machine, on disk        | no         |
-| Ollama      | `ollama`                           | this machine, local daemon   | no         |
-| OpenAI      | `openai`                           | `api.openai.com`             | yes        |
-| Anthropic   | `anthropic`                        | `api.anthropic.com`          | yes        |
+| Provider | `CLAIREAI_BRAIN_PROVIDER` | Where it runs | Key needed |
+| --- | --- | --- | --- |
+| Ollama + Qwen | `ollama` (default) | this machine, loopback | no |
+| Archived scratch checkpoint | `scratch` | this machine, on disk | no |
+| OpenAI | `openai` | `api.openai.com` | yes |
+| Anthropic | `anthropic` | `api.anthropic.com` | yes |
 
-## What a connector sends, and what it does not
+## Default configuration
 
-Sent to the configured endpoint: the system prompt, the conversation so far, the
-tool schemas the request can reach (the same filtered set the local model gets),
-and the results of tools that already ran with the owner's approval.
+Nothing needs to be set. The defaults are:
 
-Not sent: the SQLite database, the audit log, the folder allow-list itself, the
-control-panel state, the API key of any other provider, or anything the tools
-did not return. Tool side effects stay on this machine — a remote model can only
-propose a tool call; the same approval gate and sandbox apply either way.
+```dotenv
+CLAIREAI_BRAIN_PROVIDER=ollama
+CLAIREAI_BRAIN_MODEL=qwen3:1.7b
+CLAIREAI_BRAIN_CODING_MODEL=qwen2.5-coder:1.5b
+CLAIREAI_BRAIN_BASE_URL=http://127.0.0.1:11434/api
+```
 
-## Setup
+Prepare the runtime once:
 
-Set the values in `.env` (loaded automatically) or the environment:
+```bash
+ollama serve                    # Linux; Windows starts the service
+ollama pull qwen3:1.7b
+ollama pull qwen2.5-coder:1.5b
+```
+
+Check it:
+
+```bash
+assistant/.venv/bin/python scripts/doctor.py
+```
+
+The brain section reports whether Ollama answered, whether both models are
+pulled, and the exact `ollama pull` command for anything missing.
+
+## How code routing works
+
+`OllamaBrain` reads the user text of the turn. If it clearly concerns code
+(Python, JavaScript, Rust, SQL, a function/class, a traceback, debugging,
+refactoring, tests and similar), it sends that turn to
+`CLAIREAI_BRAIN_CODING_MODEL`. Everything else uses
+`CLAIREAI_BRAIN_MODEL`. This is a model choice only; the agent loop, tool schemas,
+approvals and audit behaviour are identical.
+
+## Hosted providers (opt-in)
+
+Sent to a hosted endpoint: the system prompt, the conversation so far, the tool
+schemas the request can reach, and tool results already approved and executed.
+Not sent: the SQLite database, the audit log, the folder allow-list itself,
+control-panel state, or another provider's key.
 
 ```bash
 # Claude
@@ -42,79 +71,40 @@ CLAIREAI_BRAIN_API_KEY=sk-ant-...
 CLAIREAI_BRAIN_PROVIDER=openai
 CLAIREAI_BRAIN_MODEL=gpt-4o-mini
 CLAIREAI_BRAIN_API_KEY=sk-...
-
-# A larger model on this machine, still local
-CLAIREAI_BRAIN_PROVIDER=ollama
-CLAIREAI_BRAIN_MODEL=qwen2.5:7b
 ```
 
-Optional knobs, shared by all connectors:
-
-| Variable                    | Default             | Meaning                              |
-| --------------------------- | ------------------- | ------------------------------------ |
-| `CLAIREAI_BRAIN_BASE_URL`   | per provider        | endpoint override, e.g. vLLM or LM Studio |
-| `CLAIREAI_BRAIN_TIMEOUT_SECONDS` | `60`           | per-request timeout                  |
-| `CLAIREAI_BRAIN_MAX_TOKENS` | `1024`              | reply budget                         |
-
-Return to the local model by unsetting the provider or setting
-`CLAIREAI_BRAIN_PROVIDER=scratch`.
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CLAIREAI_BRAIN_BASE_URL` | per provider | endpoint override, e.g. vLLM or LM Studio |
+| `CLAIREAI_BRAIN_TIMEOUT_SECONDS` | `60` | per-request timeout |
+| `CLAIREAI_BRAIN_MAX_TOKENS` | `1024` | reply budget |
+| `CLAIREAI_BRAIN_CODING_MODEL` | `qwen2.5-coder:1.5b` | Ollama code model |
 
 ### Endpoint rules
 
 The endpoint must be `https`, unless it is loopback (`127.0.0.1`, `::1`,
 `localhost`). A key sent over plain `http` to another host is a credential leak,
-so configuration refuses to start rather than warn: the assistant fails loudly
-or not at all, and this is one of the failures worth having.
+so configuration refuses to start instead of warning.
 
-`CLAIREAI_BRAIN_BASE_URL` also points the OpenAI adapter at an
-OpenAI-compatible server (vLLM, LM Studio, llama.cpp), which is the way to keep
-a connector-shaped interface while the weights stay on your network.
-
-## Checking it works
-
-```bash
-assistant/.venv/bin/python scripts/doctor.py
-```
-
-The brain section prints the provider, the endpoint, whether the endpoint
-answered, and whether the configured model is actually there. For Ollama, a
-model that is not pulled is reported as such with the command that fixes it.
+## Measuring a brain
 
 ```bash
 assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
+assistant/.venv/bin/python scripts/conversation_eval.py --runs 3
 ```
 
-This scores tool-call accuracy for whatever brain is configured, using the real
-parser and the real system prompt. It is the number to compare providers on:
-a connector that chats well but emits calls the runtime cannot read is not
-usable for tasks.
-
-## How it is built
-
-- `claireai.brain.factory.build_brain` is the single construction point; the CLI,
-  the desktop runtime, the local web server and `doctor` all call it.
-- `OpenAIBrain` renders Chat Completions messages, generating the `tool_call_id`
-  values the API requires and pairing each tool result with its call.
-- `AnthropicBrain` hoists the system prompt to the top-level field the Messages
-  API expects and merges consecutive tool results into one user turn.
-- `OllamaBrain` speaks the native `/api/chat` shape, where arguments arrive as an
-  object rather than a JSON string.
-- `RemoteBrain` owns the timeout, the error mapping and the single shared HTTP
-  client. Authentication failures, rate limits and transport errors are distinct
-  `BrainError`s; none of them includes the key in its message.
+These use the real parser and system prompt. A model that chats well but emits
+calls the runtime cannot read is not usable for tasks.
 
 ## Honest limits
 
-- **No live-endpoint testing in this repository.** No API keys are committed, and
-  the tests use `httpx.MockTransport`, so they prove the wire format and the
-  parsing, not that a vendor's API is up today. `scripts/doctor.py` is the
-  check that needs credentials.
-- **No streaming, no retries, no backoff.** A failed request is reported, not
-  silently repeated: a retried tool-driving turn can double-execute a proposal.
-- **No prompt caching or conversation trimming.** Long conversations are sent in
-  full, and a long one can exceed a provider's context window; the error comes
-  back as a `BrainResponseError` with the provider's message.
-- **Tool-call format differs per provider.** The adapters normalise all three into
-  `ToolCall`, and the runtime's own validation still decides what may run.
-- **Cost is the owner's.** The local model has no marginal cost; a connector does,
-  and the runtime does not meter it.
+- **A 1.7B model is still small.** It can be wrong, invent a fact, or choose a
+  poor tool. Verify facts that matter and keep writes approval-gated.
+- **No streaming.** A request waits for the complete reply.
+- **No automatic retry.** A failed request is reported; retrying a tool-driving
+  turn can double-execute a proposal.
+- **Long conversations are sent in full.** A very long chat can exceed the
+  model's context window; the provider error is surfaced.
+- **Hosted cost is the owner's.** The local Ollama path has no marginal API cost;
+  a hosted connector does, and the runtime does not meter it.
+- **The audit trail names the model.** The model never enforces permissions.

@@ -1,8 +1,9 @@
 """Endpoint rules shared by configuration and the connector brains.
 
-The assistant is local by design; a remote brain is an explicit opt-in. These
-rules are enforced at configuration time *and* again by the adapter, so a
-hand-built settings object cannot bypass them:
+The default Ollama endpoint is loopback, so normal inference never leaves this
+machine. Hosted providers remain an explicit opt-in. These rules are enforced at
+configuration time *and* again by the adapter, so a hand-built settings object
+cannot bypass them:
 
 - the URL must be absolute http(s);
 - plain ``http`` is allowed only on loopback, because an API key sent in clear
@@ -15,7 +16,7 @@ from urllib.parse import urlparse
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "[::1]"})
 
-# Where each connector points when the owner names no base URL. The scratch
+# Where each provider points when the owner names no base URL. The scratch
 # provider has none: it reads a checkpoint from disk.
 DEFAULT_BASE_URLS = {
     "scratch": "",

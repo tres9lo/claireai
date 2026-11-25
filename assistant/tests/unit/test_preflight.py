@@ -79,7 +79,10 @@ def test_the_speech_model_is_listed_and_installed_like_anything_else(tmp_path, m
 
 
 def test_a_failed_install_is_reported_not_hidden() -> None:
-    requirement = preflight.REQUIREMENTS[0]
+    requirement = preflight.Requirement(
+        key="customtkinter", label="desktop window", module="customtkinter",
+        spec="customtkinter>=5.2,<7", download="about 2 MB",
+    )
     failed = preflight.install([requirement], runner=lambda command: 1)
 
     assert failed == [requirement]

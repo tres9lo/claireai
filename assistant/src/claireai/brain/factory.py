@@ -1,9 +1,9 @@
 """Choose the brain the configuration asks for.
 
-``scratch`` is the default and the only provider that makes no network request:
-the owner's own checkpoint, loaded from disk. Every other value is an explicit
-opt-in connector, which is why the choice is a setting the owner sets rather
-than something the assistant can switch to on its own.
+``ollama`` is the default: a local Ollama daemon serves Qwen3 1.7B, so the
+assistant no longer needs a checkpoint trained in this repository. ``scratch``
+is retained for the archived research models, and the hosted adapters remain
+opt-in. The loopback Ollama endpoint keeps inference on this machine.
 
 Callers build brains through this function instead of instantiating a class, so
 adding a provider is one entry here rather than an edit at every call site.
@@ -26,7 +26,7 @@ PROVIDER_DEFAULT_BASE_URLS = dict(DEFAULT_BASE_URLS)
 
 def build_brain(settings: Any) -> Brain:
     """Return the configured brain. Raises ``ValueError`` on a bad provider."""
-    provider = str(getattr(settings, "brain_provider", "scratch") or "scratch")
+    provider = str(getattr(settings, "brain_provider", "ollama") or "ollama")
     if provider == "scratch":
         return ScratchBrain(
             checkpoint=settings.resolved_model_checkpoint,
@@ -44,10 +44,14 @@ def build_brain(settings: Any) -> Brain:
 
     brain_class = {"ollama": OllamaBrain, "openai": OpenAIBrain, "anthropic": AnthropicBrain}[provider]
     base_url = getattr(settings, "resolved_brain_base_url", None) or PROVIDER_DEFAULT_BASE_URLS[provider]
+    options: dict[str, Any] = {}
+    if provider == "ollama":
+        options["coding_model"] = str(getattr(settings, "brain_coding_model", "") or "") or None
     return brain_class(
         model=model,
         base_url=base_url,
         api_key=getattr(settings, "brain_api_key_value", None),
         timeout=getattr(settings, "brain_timeout_seconds", 60.0),
         max_tokens=getattr(settings, "brain_max_tokens", 1024),
+        **options,
     )

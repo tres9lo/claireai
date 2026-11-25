@@ -204,6 +204,11 @@ async def ask(
             )
     except BrainError as exc:
         duration_ms = int((time.perf_counter() - started) * 1000)
+        target = (
+            str(settings.resolved_model_checkpoint)
+            if settings.brain_provider == "scratch"
+            else str(settings.brain_model or settings.brain_provider)
+        )
         with transaction(conn):
             stopped = isinstance(exc, BrainStopped)
             tasks.update_status(task.id, "cancelled" if stopped else "failed", error=str(exc))
@@ -212,8 +217,8 @@ async def ask(
                 device=device,
                 action="brain.generate",
                 status="skipped" if stopped else "failed",
-                target=str(settings.resolved_model_checkpoint),
-                detail={"model": str(settings.resolved_model_checkpoint), "duration_ms": duration_ms, "error": str(exc)},
+                target=target,
+                detail={"model": target, "duration_ms": duration_ms, "error": str(exc)},
             )
         raise
 
@@ -529,10 +534,20 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
     if applied:
         print(f"Applied migrations: {', '.join(applied)}")
     print(f"database: {database_path}")
-    print(f"brain: from-scratch model @ {settings.resolved_model_checkpoint}")
+    if settings.brain_provider == "scratch":
+        print(f"brain: scratch checkpoint @ {settings.resolved_model_checkpoint}")
+    else:
+        print(
+            f"brain: {settings.brain_provider} @ {settings.resolved_brain_base_url} "
+            f"model={settings.brain_model}"
+        )
     sandbox = Sandbox.from_settings(settings)
     controls = RuntimeControl(settings.control_state_path).read()
-    registry = default_registry(browser_enabled=controls["browser"])
+    registry = default_registry(
+        browser_enabled=controls["browser"],
+        memory_enabled=settings.memory_enabled,
+        capabilities=settings.allowed_capabilities,
+    )
     tool_label = "off (--no-tools)" if args.no_tools else f"{len(registry)} tools"
     print(f"tools: {tool_label} | browser: {'enabled' if controls['browser'] else 'off'} | allow-list: {sandbox.describe()}")
     print(f"routing: {settings.tool_routing} (narrow the tool set per request)")
@@ -665,8 +680,8 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
             if settings.brain_provider == "scratch":
                 print(f"Checkpoint: {settings.resolved_model_checkpoint}", file=sys.stderr)
                 print(
-                    "Train a checkpoint with brain-lab/train.py, or opt into a connector with "
-                    "CLAIREAI_BRAIN_PROVIDER (docs/connectors.md).",
+                    "The default runtime is Ollama + Qwen3; set "
+                    "CLAIREAI_BRAIN_PROVIDER=ollama after installing Ollama.",
                     file=sys.stderr,
                 )
             else:
@@ -674,6 +689,15 @@ async def _run(args: argparse.Namespace, settings: Settings, database_path: Path
                     f"Provider: {settings.brain_provider} at {settings.resolved_brain_base_url}",
                     file=sys.stderr,
                 )
+                print(
+                    f"Install Ollama, then run: ollama pull {settings.brain_model}",
+                    file=sys.stderr,
+                )
+                if settings.brain_coding_model:
+                    print(
+                        f"For code turns: ollama pull {settings.brain_coding_model}",
+                        file=sys.stderr,
+                    )
             return EXIT_RUNTIME
 
         if args.day_plan_run:

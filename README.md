@@ -4,6 +4,14 @@
 
 No cloud provider or API key is required by default. Network features and connectors are opt-in; nothing leaves the laptop unless you enable and approve it.
 
+> **Runtime change (2026-11-25).** ClaireAI now uses **Ollama** as its brain: **Qwen3 1.7B** for normal turns and **Qwen2.5-Coder 1.5B** for code-heavy turns. The from-scratch trainer in `brain-lab/` is kept as archived research, not as the required path. The reason is practical: this project is developed on a **budget PC (7 GB RAM, CPU only)**. Training a useful model from random initialization was slow and difficult, several candidates failed the gate, and the time cost did not produce a usable assistant. Serving a small pretrained model locally is the honest fit for that hardware.
+
+### Why the model approach changed
+
+Training from scratch asked a laptop-class CPU to do two jobs at once: learn a tokenizer and language from a corpus, then learn tool use and conversation on top. Each full run took hours, the v15 candidate failed its gate, and the next run had to be restarted. That is not a good use of the machine or the owner's time, and it delayed the parts that make the assistant useful: permissions, approvals, the audit trail, tools and a desktop surface.
+
+Ollama changes the constraint rather than hiding it. The model is pretrained, so the CPU only has to run inference. It still stays local: the daemon listens on loopback, the weights are on this disk, and the audit row records which model answered. The runtime remains the authority; a better model does not get extra permissions.
+
 
 <p align="center">
   <a href="https://github.com/tres9lo/claireai/actions/workflows/python-tests.yml"><img src="https://github.com/tres9lo/claireai/actions/workflows/python-tests.yml/badge.svg" alt="Tests"></a>
@@ -26,23 +34,24 @@ The result is an assistant you can actually point at real folders, because the b
 
 ClaireAI is built around one idea: **you should own the assistant and the data it touches.** Three things follow from that, in this order.
 
-1. **A small local model I train myself.** The default brain is a from-scratch transformer trained on this machine, in `brain-lab/`. It is small on purpose: it fits in RAM on a laptop with no GPU, it runs with the network cable unplugged, and nothing it reads is sent anywhere. Today it holds short conversations, does simple arithmetic, routes intents, extracts slots, emits tool-call JSON and refuses the unsafe requests covered in this repository. It is not a general-purpose assistant, and this README will not pretend otherwise.
-2. **Connectors, for when I want more brain than my laptop can hold.** The `Brain` interface is deliberately provider-neutral, and it now has three adapters: Claude, ChatGPT and a larger model served by Ollama. **They are opt-in and off by default.** The local checkpoint answers unless you set one, the audit row names the provider that answered, and the validation, folder allow-list, approval flow and audit log do not change, because the model was never the thing enforcing them. Setup and the honest limits are in [docs/connectors.md](docs/connectors.md).
-3. **An assistant I do not have to worry about.** Deny-by-default folders, no permanent deletes, approvals a model cannot fake, an audit log the database will not let you edit, and inference that never leaves the machine. That is the property worth having, and it is where most of the effort in this project goes.
+1. **A small pretrained model, served locally by Ollama.** Qwen3 1.7B is the main brain and Qwen2.5-Coder 1.5B handles code turns. Ollama runs on loopback, the weights stay on disk, and inference needs no API key. This is the right trade for a budget laptop: no multi-hour training run, no GPU, and a model that can actually hold a conversation.
+2. **The runtime is still the authority.** The model may only propose a tool call. `claireai.agent` validates the name, validates the arguments with Pydantic, applies the folder allow-list and risk policy, asks you before a write, executes in the sandbox, and appends the audit row. A stronger model does not get a wider permission boundary.
+3. **The trainer remains as research, not as a prerequisite.** `brain-lab/` still documents the from-scratch experiments and their failures honestly, but a fresh install no longer starts by asking you to train a checkpoint.
 
 ### On the model work, honestly
 
-I am not a model-training expert. I am learning this in public: every training run in this repository is measured, and the runs that did not work are documented in [PROGRESS.md](PROGRESS.md) rather than quietly deleted. If you know more about training small transformers than I do — data mixing, curriculum, tokenizer design, evaluation that is more than loss going down — I would genuinely like your pointers. Open an issue with what you would change, or a pull request that makes the numbers better; both are the fastest way to move this project forward.
+From-scratch training was measured, not hand-waved: the runs and failures are in [PROGRESS.md](PROGRESS.md). The conclusion on this hardware is that the effort was disproportionate. The supported runtime is now Ollama + Qwen; `brain-lab/` is kept for experiments and reproducibility, not for the normal install path.
 
 ## What works today
 
 | Capability | Status |
 | --- | --- |
-| From-scratch byte tokenizer and decoder-only transformer research model | ✅ foundation |
+| Ollama runtime with Qwen3 1.7B (main) and Qwen2.5-Coder 1.5B (code) | ✅ default |
 | SQLite storage with a versioned, checksummed migration runner | ✅ |
 | Append-only audit log (`task_log`), enforced by database triggers | ✅ |
-| Provider-neutral `Brain` interface + local scratch-checkpoint adapter | ✅ foundation |
-| Opt-in Claude, ChatGPT and Ollama connectors (local model stays the default) | ✅ scratch remains default |
+| Provider-neutral `Brain` interface + Ollama / hosted adapters | ✅ |
+| Archived from-scratch tokenizer and transformer research | 🧪 legacy research only |
+| Opt-in Claude and ChatGPT connectors | ✅ optional |
 | CLI chat that records every turn as a task plus audit entries | ✅ |
 | Read-only tools (files, calendar, day plan, image identification; browser tools when enabled) | ✅ |
 | 9 approval-gated writes (folder, file, overwrite/append, rename, move, trash, download, appointment, day plan) | ✅ |
@@ -50,7 +59,7 @@ I am not a model-training expert. I am learning this in public: every training r
 | Agent loop with schema validation, risk policy and step cap | ✅ |
 | Strict ToolACE/Hermes name mapping to real registry schemas | ✅ code path; full mapped sample pending |
 | Tokenizer-backed corpus audit (budgets, calls, duplicates, held-out overlap) | ✅ |
-| One-command post-training gate (model, conversation, standard + extended tools) | ✅ |
+| Legacy post-training gate for `brain-lab` candidates | 🧪 research only |
 | Deterministic tool routing (roughly halves prompt tokens per step) | ✅ |
 | Daily summary (Done / Failed or skipped / Still pending) from the task log | ✅ |
 | Dates and times answered from the clock; `yesterday`/`last friday` accepted by the summary | ✅ deterministic, no model call |
@@ -63,12 +72,16 @@ I am not a model-training expert. I am learning this in public: every training r
 | Stored conversation history, owner directives and preferences | ✅ first version |
 | Offline speech output with pitch/rate controls | ✅ Piper neural voice, else eSpeak NG |
 | Push-to-talk local speech transcription in the desktop Voice page | ✅ optional faster-whisper + local model |
+| Local semantic memory (SQLite vector index; Ollama or explicit hash embeddings) | ✅ `remember_note` / `search_memory`; embeddings stay local |
+| Screen reading and CUA input driver | ✅ capability-gated; screen needs approval, cursor/keyboard are `dangerous`; optional extras |
+| Wake-word engine | ✅ openWakeWord adapter + microphone listener; a pretrained model and live microphone are still required |
+| FastAPI backend/API service | ✅ loopback, bearer-token authenticated; tool writes still need a signed approval |
 | OS family detection (Linux/Windows first targets) | ✅ detection only |
 | Reproducible MIT synthetic task corpus + split-aware text training | ✅ starter data |
 | Random-init visual-grounding prototype using attributed online synthetic images | 🧪 research only; not integrated |
-| Capable scratch-trained assistant and custom trained voice | 🚧 not included yet |
-| Playwright engine · Tauri desktop shell | 🚧 planned |
-| Camera, screen, cursor and keyboard control | 🚧 specified, not built |
+| Tauri + React desktop shell | 🚧 target; current desktop is the tested Tk shell (kept deliberately) |
+| Playwright engine | 🚧 planned |
+| Camera capture and clipboard reading | 🚧 not built; screen and input control are implemented |
 
 The tool-data path is guarded now. `brain-lab/tool_mapping.py` maps a source
 name only when it normalises to a real registry tool or matches a documented
@@ -94,7 +107,7 @@ claireai.cli ──► claireai.agent.run_task
   │                 ├─ presence.emit("thinking")
   │                 ▼
   │            loop (≤ 8 steps)
-  │                 ├─ brain.generate(messages, tools) ──► locally trained PyTorch checkpoint
+  │                 ├─ brain.generate(messages, tools) ──► Ollama /api/chat (Qwen3 1.7B)
   │                 ├─ no tool call → answer, status = succeeded
   │                 └─ tool call →
   │                      1. registry lookup      unknown → refused
@@ -120,76 +133,56 @@ This is the part worth reviewing before you run it.
 - **The audit log is append-only at the database level.** Triggers reject `UPDATE` and `DELETE`; retention reports the log instead of pruning it.
 - **Nothing is deleted permanently.** `move_to_trash` relocates into ClaireAI's own recoverable bin.
 - **Task and audit logs redact secrets.** Full user and assistant messages are retained verbatim in the local conversation database so ClaireAI can show history and continue chats. The owner can review or delete conversations from the UI; the database is owner-readable only on POSIX systems.
-- **Inference is local by default.** ClaireAI loads its own checkpoint and, out of the box, calls no hosted model API. A connector is an explicit setting the owner writes (`CLAIREAI_BRAIN_PROVIDER`), it is opt-in per provider, and the audit row for the turn records which one answered. A remote model can only *propose* a tool call — approvals and the sandbox still decide what runs.
+- **Inference is local by default.** ClaireAI talks to an Ollama daemon on loopback and runs Qwen on this machine. No hosted API is called unless the owner explicitly selects one, and the audit row records which model answered. A remote model can only *propose* a tool call — approvals and the sandbox still decide what runs.
 - **Capabilities are opt-in.** Browser access starts disabled. The desktop Settings page can enable it; browser actions still use the existing approval path. Stop ends model generation between tokens, lets a current bounded tool action finish, prevents subsequent model/tool calls, and exits the interactive CLI even while it is waiting for input. The window remains open; after allowing the runtime again, start a new turn.
 
 Read [docs/architecture/threat-model.md](docs/architecture/threat-model.md) for the full boundary analysis.
 
-## Quick start (Linux)
+## Quick start (Linux and Windows)
 
-Requires **Python 3.11+**. A fresh install has no trained chat model. The included scratch checkpoint is a research prototype and will not behave like a capable assistant until a candidate is trained, gated and explicitly promoted.
+Requires **Python 3.11+** and **Ollama**. No training run is needed.
 
 ```bash
+# 1. Install Ollama: https://ollama.com/download (Linux and Windows installers)
+ollama serve                    # Linux; the Windows installer starts the service
+
+# 2. Pull the two Qwen models once. They are stored locally by Ollama.
+ollama pull qwen3:1.7b
+ollama pull qwen2.5-coder:1.5b
+
+# 3. Install ClaireAI. The installer lists every download and asks first.
 git clone https://github.com/tres9lo/claireai.git
 cd claireai
+./install.sh                     # Windows PowerShell: .\install.ps1
 
-# 1. Install. This detects the OS, architecture, Python, Tk and display, prints
-#    every download with an approximate size, and downloads nothing until you
-#    answer yes. --dry-run shows the plan; --no-speech-model skips the voice
-#    model. Re-running later only fills what is missing.
-./install.sh
-
-#    Manual alternative, only when this Python has venv and pip. The installer
-#    is the supported path and also offers the optional speech-to-text model.
-#    python3 -m venv assistant/.venv
-#    assistant/.venv/bin/python -m pip install -e "assistant[dev,desktop]"
-#    assistant/.venv/bin/claireai --setup
+# 4. Start the app and ask a question.
+./scripts/start.sh
+assistant/.venv/bin/python -m claireai.cli --once "Hello"       # terminal
+.\assistant\.venv\Scripts\python.exe -m claireai.cli --once "Hello"  # Windows
 ```
 
-The installer picks a Python whose Tk can draw antialiased fonts. Do not
+The installer picks a Python whose Tk can draw antialiased fonts on Linux. Do not
 `pip install` the app into a conda base on Linux: conda's Tk may be built for
-the old X11 bitmap font system (`fontsystem x11`), which makes the whole window
-look pixelated. `./install.sh` checks this and can use the system Python
-instead; the applications-menu entry it writes runs that environment explicitly,
-so it does not depend on which `claireai` is first on `PATH`.
+the old X11 bitmap font system, which makes the window pixelated. The installer
+checks this and can use the system Python instead.
 
 ```bash
-# continue here for training; the app itself is already installed
-
-# Speech output. Piper is a neural voice and sounds like a person; eSpeak NG is
-# the fallback and always works. Neither one sends audio anywhere.
+# Optional local speech output. Piper is a neural voice; eSpeak NG is fallback.
 assistant/.venv/bin/python -m pip install piper-tts
-sudo apt install espeak-ng pulseaudio-utils  # eSpeak fallback + paplay
+sudo apt install espeak-ng pulseaudio-utils
 
-# Voice models (~61 MB each). Download the ones you want into:
-#   ./runtime-data/models/voice/piper/  (or set CLAIREAI_PIPER_DIR)
-#   https://huggingface.co/rhasspy/piper-voices  →  en/en_US/lessac/medium,
-#   fr/fr_FR/siwis/medium. Each voice needs its .onnx and .onnx.json side by side.
+# Voice models go under runtime-data/models/voice/piper/ (or CLAIREAI_PIPER_DIR).
+# https://huggingface.co/rhasspy/piper-voices
 
-# 2. Prepare the licensed bilingual corpus, train a candidate and evaluate it.
-#    This fetches bounded OASST1, GSM8K, FineWeb-Edu, French FineWeb-2, ToolACE
-#    and Hermes samples, builds the authored English/French curriculum, merges
-#    and trains. Dolly/TinyStories are used only if already present under
-#    brain-lab/data/external/chat-sources. It never installs the candidate;
-#    promotion stays an explicit owner decision after the gate.
-export CLAIREAI_DATA_DIR=./runtime-data
-assistant/.venv/bin/python brain-lab/train_claireai.py --profile full
-# Smaller smoke run on this laptop:
-# assistant/.venv/bin/python brain-lab/train_claireai.py --profile quick
-# Start the app: chat, history, preferences, approvals, controls. One command.
-./scripts/start.sh
-
-# 3. Ask one question; the turn is logged to SQLite
-CLAIREAI_DATA_DIR=./runtime-data \
-  assistant/.venv/bin/python -m claireai.cli --once "Hello"
-
-# 4. Let the model use read-only file tools (allow-list required)
+# Give the model one read-only folder (writes still need explicit approval).
 CLAIREAI_DATA_DIR=./runtime-data \
 CLAIREAI_ALLOWED_FOLDERS='["~/Downloads"]' \
   assistant/.venv/bin/python -m claireai.cli --once "List the biggest files in my Downloads folder"
 ```
 
-Windows has the same Python and CPU training path documented in [docs/setup/windows.md](docs/setup/windows.md), but no manual Windows install has been verified; CI runs the unit suite only.
+On Windows, Ollama installs as a background service and exposes the same
+`127.0.0.1:11434` endpoint. The Python runtime, SQLite storage, allow-list and
+approval flow are shared; the setup steps are in [docs/setup/windows.md](docs/setup/windows.md).
 
 ### The desktop app
 
@@ -241,57 +234,28 @@ The window can start with your session: `claireai --install-autostart` writes
 `~/.config/autostart/claireai.desktop`, which is the only file it ever adds
 there, and `--uninstall-autostart` removes exactly that file.
 
-### Background learning and training
+### Background learning (legacy training)
 
-**Background learning** in Settings is opt-in and does two separate jobs. It
-journals exchanges locally and compiles them into training material, and at most
-once a day — only when the network check succeeds — one bounded CPU training run
-turns that material plus an authored practice curriculum into a **candidate** in
-`models/candidates/`. The curriculum covers conversation, guest service,
-reports, accounting, arithmetic and unit calculations, small coding tasks,
-routines, email and social-media drafting, research, and business margins and
-sales. Every candidate is then scored against the installed checkpoint on the
-same fixed tool and conversation suites. Only a strict tool-check win with no
-conversation regression is installed; the previous checkpoint pair is archived
-under `models/archive/`, and a rejected candidate is kept under
-`models/candidates/`. The capability suite is recorded as a diagnostic.
+> **Training is no longer part of the supported install.** The from-scratch
+> runs below are kept as documented research. They are slow on this budget CPU
+> and did not produce a dependable assistant. The Ollama + Qwen path does not
+> need a corpus, a gate or a promoted checkpoint.
 
-The checkpoint in this checkout is a **288-token** scratch model. The **v15
-candidate was rejected** on 2026-11-21: 4/13 model checks and 14/21 conversation
-cases passed, with malformed tool calls, wrong slots and repetitive replies. The
-root cause was not a sampler setting. The corpus had 17,459 external rows against
-13,440 authored rows, validation loss was dominated by web prose and math, and
-the pipeline selected the lowest validation loss instead of authored-chat
-behaviour. It also ran only two of the four gate suites.
-
-The next path is **v16**: external rows are capped to a minority of the merged
-corpus, exact duplicate authored rows are removed before the quota is computed,
-checkpoint selection uses an authored-only validation split, and
-`train_claireai.py` runs the full model, conversation, standard-tool and
-extended-tool gate. The rejected v15 files remain under `models/candidates/`.
-Inference still fits prompts to the positions the installed checkpoint actually
-learned. Only the gate and an explicit owner promotion can replace the installed
-checkpoint; the nightly worker continues from it rather than creating an
-unrelated small model.
-
-The model code now also supports a **10,240-token RoPE architecture** with
-memory-efficient causal attention. A converted candidate was measured at
-**9,734 prompt tokens in 18.7 s and 461 MB RSS** on this 4-thread i5 with 7 GB
-RAM; it still failed the long-context recall probe, so its larger window is
-capacity, not demonstrated usefulness. The candidate was not installed. Old
-learned-position checkpoints keep loading unchanged, and only the gate can
-promote a new one.
+**Background learning** in Settings remains an opt-in journal. It records
+exchanges locally for review; it does not silently rewrite the Qwen weights. The
+old training worker and gate code remain in `brain-lab/` for experiments, and
+the v15/v16 failures stay in [PROGRESS.md](PROGRESS.md) rather than being erased.
 
 Background learning no longer teaches the model its own unverified answers. An
 ordinary exchange is journaled for the owner, but only an owner-confirmed,
-source-bearing research lesson is compiled into the next corpus. If the model
-says it does not know a public factual question, the runtime can offer a
-`research_web` approval, search, read the top public result, and ask a second
-time before saving that sourced excerpt as a lesson. Private and first-person
-requests are never sent to the web automatically. The authored curriculum also
-contains multi-turn clarification and intent examples.
+source-bearing research lesson is kept as a reviewable note. It does not update
+the Qwen weights. If the model says it does not know a public factual question,
+the runtime can offer a `research_web` approval, search, read the top public
+result, and ask a second time before saving that sourced excerpt. Private and
+first-person requests are never sent to the web automatically.
 
-The worker also runs without the window through a **systemd user timer**:
+The archived training worker used to run without the window through a legacy
+**systemd user timer**:
 
 ```bash
 claireai --install-training-service    # daily, no root, no display
@@ -299,12 +263,10 @@ claireai --training-service-status     # active / next run
 claireai --uninstall-training-service
 ```
 
-The timer respects the same **Background learning** switch and emergency stop. It
-runs at most once a day, retries a candidate whose review was unavailable, and
-never starts a second training run just because a review failed. Training is
-local, it does not scrape, and it does not log into or post to any email or
-social account: those need separate connectors, credentials and explicit
-approvals. The official routes and their requirements are in
+The timer and `brain-lab` code are retained for research only. They are not part
+of the Ollama/Qwen install and are not needed for normal use. Any training code
+still stays local, does not scrape, and does not log into or post to an email or
+social account. Official routes and requirements are in
 [docs/email-and-social.md](docs/email-and-social.md).
 
 Plain arithmetic, percentages and unit conversions are answered by deterministic
@@ -330,14 +292,10 @@ of being folded into an opaque `[Errno -3]` line. Headlines and publisher
 summaries are not verified facts; the publisher link is the source to check.
 Google News is a last-resort fallback for a non-DNS Bing failure when no local
 story was found.
-The daily worker trains on `brain-lab/data/chat-v16` when present, then falls
-back to `chat-v15` and the older `chat-v13-small` licensed mix. The one-command
-`brain-lab/train_claireai.py --profile full` builds the larger bilingual
-`chat-v16` corpus instead. `fetch_corpora.py` downloads bounded external
-samples; `merge_corpora.py` combines them with the authored base, removes exact
-duplicates and train/validation overlap, caps external data at 35% of the merged
-training set, and records the counts. Neither script trains or installs a
-checkpoint.
+The old `brain-lab` pipeline remains documented for anyone who wants to rerun
+the experiment: it builds `chat-v16`, applies token budgets, deduplicates and
+gates candidates. It is not invoked by the Ollama/Qwen runtime and does not need
+to run on a fresh install.
 
 ### Granting a folder
 
@@ -456,22 +414,20 @@ assistant/.venv/bin/python scripts/smoke.py                # full run, needs a t
 
 CI runs the portable unit suite on Ubuntu and Windows across Python 3.11 and 3.12. The smoke script verifies the assembled runtime: migrations, a chat turn, tool execution, tool routing, a refused write, the presence stream, the daily summary, retention, and that the audit log rejects mutation.
 
-Model behaviour is measured, not assumed: `scripts/eval_model.py` scores the local model against fixed cases before features depend on it, `conversation_eval.py` scores multi-turn answers, and `tool_call_eval.py` scores whether the configured brain proposes tool calls the runtime can actually read. The gate wrapper runs all four suites against one checkpoint:
+Model behaviour is measured, not assumed: `scripts/eval_model.py` scores the
+configured brain against fixed cases, `conversation_eval.py` scores multi-turn
+answers, and `tool_call_eval.py` scores whether the configured brain proposes
+tool calls the runtime can actually read. With Ollama running, these exercise
+Qwen directly.
 
 ```bash
-assistant/.venv/bin/python scripts/run_gate.py \
-  --checkpoint runtime-data/models/candidates/claire-chat-v16-full.pt
+ollama serve
+assistant/.venv/bin/python scripts/doctor.py
+assistant/.venv/bin/python scripts/tool_call_eval.py --runs 3
 ```
 
-A corpus can be checked without loading the model:
-
-```bash
-assistant/.venv/bin/python brain-lab/audit_corpus.py \
-  --corpus brain-lab/data/chat-v16 --strict
-```
-
-Every gate stage must pass before a checkpoint is eligible for installation; a
-rejected candidate remains a candidate.
+The old checkpoint gate remains for archived `brain-lab` candidates and is no
+longer part of a normal install.
 
 ## Documentation
 
@@ -479,12 +435,15 @@ rejected candidate remains a candidate.
 | --- | --- |
 | [docs/setup/linux.md](docs/setup/linux.md) | Install and first run on Linux |
 | [docs/setup/windows.md](docs/setup/windows.md) | Install and first run on Windows |
+| [docs/setup/models.md](docs/setup/models.md) | Install Ollama, pull Qwen and embedding models, storage and troubleshooting |
+| [docs/setup/extras.md](docs/setup/extras.md) | Optional CUA, wake-word, memory and API setup |
+| [docs/api.md](docs/api.md) | Local FastAPI service, authentication and endpoints |
 | [docs/architecture/overview.md](docs/architecture/overview.md) | Module map and request lifecycle |
 | [docs/architecture/threat-model.md](docs/architecture/threat-model.md) | Trust boundaries and abuse cases |
 | [docs/architecture/approval-from-the-page.md](docs/architecture/approval-from-the-page.md) | Why approvals are not a web button |
 | [docs/architecture/presence-renderer.md](docs/architecture/presence-renderer.md) | The assistant's visual state contract |
 | [docs/architecture/machine-access.md](docs/architecture/machine-access.md) | Camera, screen and input policy |
-| [docs/connectors.md](docs/connectors.md) | Opt-in Claude, ChatGPT and Ollama brains |
+| [docs/connectors.md](docs/connectors.md) | Ollama/Qwen default and opt-in hosted brains |
 | [docs/platform-support.md](docs/platform-support.md) | What is verified on which OS |
 | [docs/gate-runbook.md](docs/gate-runbook.md) | Post-training gate and install rule |
 | [ROADMAP.md](ROADMAP.md) | Phased plan |

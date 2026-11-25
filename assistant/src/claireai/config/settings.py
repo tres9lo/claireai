@@ -19,6 +19,16 @@ from .endpoint import DEFAULT_BASE_URLS, check_endpoint
 
 APP_NAME = "ClaireAI"
 
+# The runtime is Ollama, not a checkpoint trained in this repository. These are
+# the model tags `ollama pull` understands; the coder tag is used for requests
+# that are clearly about writing or debugging code.
+DEFAULT_OLLAMA_MODEL = "qwen3:1.7b"
+DEFAULT_OLLAMA_CODING_MODEL = "qwen2.5-coder:1.5b"
+# A separate small embedding model keeps semantic memory local. It is only
+# pulled when the owner uses memory; the chat models are unchanged.
+DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
+DEFAULT_WAKEWORD_MODEL = "hey_jarvis"
+
 # Machine-access capabilities (docs/architecture/machine-access.md). Knowing the
 # names here lets configuration reject typos early; the tools that use them land
 # in Month 1 Week 3 and Months 2-3.
@@ -28,7 +38,10 @@ KNOWN_CAPABILITIES = frozenset({"screen", "camera", "cursor", "keyboard", "clipb
 class Settings(BaseSettings):
     """Settings sourced from ``CLAIREAI_*`` environment variables or ``.env``.
 
-    The brain is an on-disk checkpoint; inference makes no network requests.
+    The default brain is Qwen3 1.7B served by a local Ollama daemon. That is a
+    loopback HTTP call, not a cloud request: the model and the conversation stay
+    on this machine. The old from-scratch checkpoint remains available as
+    ``scratch`` for the research artifacts, but is no longer the default.
     """
 
     model_config = SettingsConfigDict(
@@ -42,12 +55,14 @@ class Settings(BaseSettings):
     max_output_tokens: int = Field(default=128, ge=8, le=1024)
     owner_name: str = "Bikorimana Ange Tresor"
 
-    # Brain provider. `scratch` is the owner's own checkpoint and the only
-    # option that makes no network request, so it is the default and nothing
-    # here switches provider on its own. The connectors are opt-in: they send
-    # the conversation and the tool schemas to the endpoint named below.
-    brain_provider: Literal["scratch", "ollama", "openai", "anthropic"] = "scratch"
+    # Brain provider. Ollama is the default because it runs the pretrained Qwen
+    # models locally without requiring this project to train anything. `scratch`
+    # is kept for the archived research checkpoints; `openai` and `anthropic`
+    # remain opt-in hosted connectors.
+    brain_provider: Literal["scratch", "ollama", "openai", "anthropic"] = "ollama"
     brain_model: str | None = None
+    # Qwen2.5-Coder is used for code-heavy turns; `brain_model` handles the rest.
+    brain_coding_model: str = DEFAULT_OLLAMA_CODING_MODEL
     brain_base_url: str | None = None
     brain_api_key: SecretStr | None = None
     brain_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
@@ -84,6 +99,27 @@ class Settings(BaseSettings):
     allowed_capabilities: list[str] = Field(default_factory=list)
     camera_device: int = Field(default=0, ge=0)
 
+    # Local semantic memory. Ollama embeddings keep the text and vectors on this
+    # machine; `hash` is an explicit offline fallback for constrained machines
+    # and tests, not a silent substitute for the embedding model.
+    memory_enabled: bool = True
+    embedding_provider: Literal["ollama", "hash"] = "ollama"
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    embedding_base_url: str | None = None
+    embedding_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+
+    # Wake-word detection is opt-in because it opens the microphone. The model
+    # name is an installed openWakeWord model; no model is downloaded implicitly.
+    wakeword_enabled: bool = False
+    wakeword_model: str = DEFAULT_WAKEWORD_MODEL
+    wakeword_threshold: float = Field(default=0.5, gt=0, le=1)
+
+    # The HTTP API binds loopback unless the owner explicitly changes the host.
+    # A bearer token is required for every route except /health.
+    api_host: str = "127.0.0.1"
+    api_port: int = Field(default=8765, ge=1, le=65535)
+    api_token: SecretStr | None = None
+
     # Offline voice output is opt-in; pitch/rate map to the local eSpeak voice.
     voice_enabled: bool = False
     voice_pitch: int = Field(default=50, ge=0, le=99)
@@ -118,6 +154,12 @@ class Settings(BaseSettings):
         object.__setattr__(self, "allowed_capabilities", list(dict.fromkeys(capabilities)))
 
         provider = self.brain_provider
+        if provider == "ollama" and not (self.brain_model or "").strip():
+            object.__setattr__(self, "brain_model", DEFAULT_OLLAMA_MODEL)
+        coding_model = (self.brain_coding_model or "").strip()
+        if provider == "ollama" and not coding_model:
+            coding_model = DEFAULT_OLLAMA_CODING_MODEL
+        object.__setattr__(self, "brain_coding_model", coding_model)
         if provider != "scratch":
             model = (self.brain_model or "").strip()
             if not model:
@@ -131,6 +173,27 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"CLAIREAI_BRAIN_API_KEY is required when CLAIREAI_BRAIN_PROVIDER={provider}"
                 )
+
+        embedding_model = (self.embedding_model or "").strip()
+        if not embedding_model:
+            embedding_model = DEFAULT_EMBEDDING_MODEL
+        object.__setattr__(self, "embedding_model", embedding_model)
+        if self.embedding_provider == "ollama":
+            endpoint = str(
+                self.embedding_base_url
+                or self.resolved_brain_base_url
+                or DEFAULT_BASE_URLS["ollama"]
+            ).strip()
+            object.__setattr__(self, "embedding_base_url", check_endpoint(endpoint))
+
+        wakeword_model = (self.wakeword_model or "").strip()
+        if not wakeword_model:
+            raise ValueError("CLAIREAI_WAKEWORD_MODEL must not be empty")
+        object.__setattr__(self, "wakeword_model", wakeword_model)
+        api_host = (self.api_host or "").strip()
+        if not api_host:
+            raise ValueError("CLAIREAI_API_HOST must not be empty")
+        object.__setattr__(self, "api_host", api_host)
         return self
 
     @property
@@ -144,6 +207,16 @@ class Settings(BaseSettings):
         if self.brain_base_url:
             return self.brain_base_url
         return DEFAULT_BASE_URLS.get(self.brain_provider, "")
+
+    @property
+    def resolved_embedding_base_url(self) -> str:
+        """Where local embeddings are requested; defaults to the Ollama endpoint."""
+        return self.embedding_base_url or self.resolved_brain_base_url
+
+    @property
+    def api_token_value(self) -> str | None:
+        """The bearer token itself, never serialised into logs."""
+        return self.api_token.get_secret_value() if self.api_token else None
 
     @property
     def brain_api_key_value(self) -> str | None:

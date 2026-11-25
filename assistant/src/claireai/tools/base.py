@@ -39,6 +39,13 @@ class ToolContext:
     # get_page_text can read what open_url fetched. None when browsing was not
     # set up for this run.
     browser: Any = None
+    # Machine capabilities enabled for this task. Empty means every camera,
+    # screen and input tool refuses before touching the device.
+    allowed_capabilities: tuple[str, ...] = ()
+    # Optional injected driver/index; production builds create them lazily. Tests
+    # use these to avoid a display or a live embedding model.
+    cua: Any = None
+    memory: Any = None
 
 
 @dataclass(frozen=True)

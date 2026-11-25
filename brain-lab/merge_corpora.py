@@ -16,6 +16,9 @@ import random
 from pathlib import Path
 from typing import Any, Iterable
 
+from claire_brain.prompt import render_prompt
+from claire_brain.tokenizer import BytePairTokenizer
+
 ROOT = Path(__file__).resolve().parent
 SEED = 20261120
 DEFAULT_EXTERNAL_SHARE = 0.35
@@ -116,6 +119,51 @@ def dedupe(
     return kept, dropped
 
 
+def load_tokenizer(path: Path) -> BytePairTokenizer:
+    """Load the merges used to measure the prompt and target budgets."""
+    payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    merges = payload.get("tokenizer_merges")
+    if not isinstance(merges, list) or not merges:
+        raise ValueError(f"{path} carries no tokenizer_merges")
+    return BytePairTokenizer([tuple(int(value) for value in pair) for pair in merges])
+
+
+def fits_budget(
+    record: dict[str, Any],
+    tokenizer: BytePairTokenizer,
+    *,
+    context: int = 512,
+    target_cap: int = 192,
+) -> bool:
+    """Would the trainer keep this record without truncating its target?
+
+    ``train_chat`` drops examples whose single prompt cannot fit and truncates
+    targets above the cap.  Filtering here keeps the corpus audit meaningful:
+    a row that fails this check is not silently counted as training data.
+    The last assistant turn is measured, matching ``audit_corpus.py``.
+    """
+    messages = record.get("messages") or []
+    assistant_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if isinstance(messages[index], dict) and messages[index].get("role") == "assistant"
+        ),
+        None,
+    )
+    if assistant_index is None:
+        return False
+    target = str(messages[assistant_index].get("content") or "").strip()
+    if not target:
+        return False
+    target_tokens = len(tokenizer.encode(target, append_eos=True))
+    if target_tokens > target_cap:
+        return False
+    prompt = render_prompt(str(record.get("system") or ""), messages[:assistant_index])
+    prompt_tokens = len(tokenizer.encode(prompt, append_eos=False))
+    return prompt_tokens + target_tokens <= context
+
+
 def cap_external(
     records: Iterable[dict[str, Any]], limit: int, *, seed: int = SEED
 ) -> list[dict[str, Any]]:
@@ -198,10 +246,21 @@ def main() -> int:
         help="maximum fraction of merged training records from external sources (default: 0.35)",
     )
     parser.add_argument("--base-limit", type=int, default=0, help="optional cap on base training records (0 = all)")
+    parser.add_argument(
+        "--tokenizer-manifest",
+        type=Path,
+        default=None,
+        help="checkpoint sidecar whose merges enforce the context and target budget",
+    )
+    parser.add_argument("--context", type=int, default=512)
+    parser.add_argument("--target-tokens", type=int, default=192)
     parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args()
     if not 0.0 <= args.external_share < 1.0:
         parser.error("--external-share must be at least 0 and below 1")
+    if args.context < 1 or args.target_tokens < 1:
+        parser.error("--context and --target-tokens must be positive")
+    tokenizer = load_tokenizer(args.tokenizer_manifest) if args.tokenizer_manifest else None
 
     base_train = read_jsonl(args.base / "train.jsonl")
     base_validation = read_jsonl(args.base / "validation.jsonl")
@@ -214,6 +273,17 @@ def main() -> int:
     # sizing the external quota; otherwise duplicates inflate the base and let
     # raw web text take more than the configured share of the final corpus.
     base_train_unique, base_duplicates = dedupe(base_train)
+    base_budget_removed = 0
+    if tokenizer is not None:
+        kept = [
+            record
+            for record in base_train_unique
+            if fits_budget(
+                record, tokenizer, context=args.context, target_cap=args.target_tokens
+            )
+        ]
+        base_budget_removed = len(base_train_unique) - len(kept)
+        base_train_unique = kept
     external, manifests = load_external(args.external, max(1, args.limit))
     if not external:
         parser.error(f"no licensed external JSONL with sidecars under {args.external}; run fetch_corpora.py")
@@ -221,6 +291,17 @@ def main() -> int:
     held_out = held_out_prompts()
     rng = random.Random(args.seed)
     clean_external, external_dropped = dedupe(external, skip_prompts=held_out)
+    external_budget_removed = 0
+    if tokenizer is not None:
+        kept = [
+            record
+            for record in clean_external
+            if fits_budget(
+                record, tokenizer, context=args.context, target_cap=args.target_tokens
+            )
+        ]
+        external_budget_removed = len(clean_external) - len(kept)
+        clean_external = kept
     # A per-source limit is not a total limit.  With the full profile, five
     # sources produced 17,459 external rows against 13,440 authored rows, and
     # validation loss was dominated by web prose rather than assistant replies.
@@ -238,7 +319,20 @@ def main() -> int:
     ext_validation, _ = dedupe(selected_external[:split])
     ext_train, _ = dedupe(selected_external[split:])
 
-    validation, validation_dropped = dedupe(base_validation + ext_validation)
+    validation, validation_dropped = dedupe(
+        base_validation + ext_validation, skip_prompts=held_out
+    )
+    validation_budget_removed = 0
+    if tokenizer is not None:
+        kept_validation = [
+            record
+            for record in validation
+            if fits_budget(
+                record, tokenizer, context=args.context, target_cap=args.target_tokens
+            )
+        ]
+        validation_budget_removed = len(validation) - len(kept_validation)
+        validation = kept_validation
     # Never train on a pair that also appears in validation: that is evaluation
     # leakage, and it makes the validation loss look better than the model is.
     validation_pairs = {_key(record) for record in validation}
@@ -265,6 +359,14 @@ def main() -> int:
         "base_train_records": len(base_train),
         "base_train_unique_records": len(base_train_unique),
         "base_duplicate_records": base_duplicates,
+        "token_budget": {
+            "tokenizer_manifest": str(args.tokenizer_manifest) if args.tokenizer_manifest else None,
+            "context": args.context,
+            "target_tokens": args.target_tokens,
+            "base_removed": base_budget_removed,
+            "external_removed": external_budget_removed,
+            "validation_removed": validation_budget_removed,
+        },
         "held_out_prompts_removed": len(held_out),
         "duplicate_or_overlap_removed": {
             "external": external_dropped,

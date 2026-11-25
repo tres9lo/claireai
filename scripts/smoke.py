@@ -28,7 +28,7 @@ from pathlib import Path
 from claireai.agent import run_task
 from claireai.approval import DenyAll
 from claireai.audit import AuditLog
-from claireai.brain import BrainResponse, ScratchBrain, ToolCall
+from claireai.brain import BrainResponse, ToolCall, build_brain
 from claireai.cli import ask
 from claireai.config import Settings
 from claireai.presence import PresenceStream
@@ -92,23 +92,6 @@ async def _run(args: argparse.Namespace) -> int:
         temporary = tempfile.TemporaryDirectory(prefix="claireai-smoke-")
         data_dir = Path(temporary.name)
 
-    # A smoke run in a fresh temporary directory has no checkpoint, which made
-    # the model check fail on every machine that does have one. Copy the active
-    # checkpoint in so the check exercises the real runtime; nothing is written
-    # back to the real data directory.
-    if temporary is not None and not args.skip_model:
-        import shutil as _shutil
-
-        candidates = [
-            Settings().resolved_model_checkpoint,
-            Path(__file__).resolve().parents[1] / "runtime-data" / "models" / "claire-scratch.pt",
-        ]
-        source = next((path for path in candidates if path.is_file()), None)
-        if source is not None:
-            destination = data_dir / "models" / "claire-scratch.pt"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            _shutil.copy2(source, destination)
-
     workspace = data_dir / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "alpha.txt").write_text("alpha", encoding="utf-8")
@@ -124,7 +107,11 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"data directory: {data_dir}")
         print(f"workspace: {workspace}\n")
 
-        results.check("settings load and validate", True, f"checkpoint={settings.resolved_model_checkpoint}")
+        results.check(
+            "settings load and validate",
+            True,
+            f"brain={settings.brain_provider}:{settings.brain_model}",
+        )
 
         applied = database.migrate()
         results.check(
@@ -133,7 +120,7 @@ async def _run(args: argparse.Namespace) -> int:
             f"applied={', '.join(applied) or 'none (already up to date)'}",
         )
 
-        brain = ScratchBrain(checkpoint=settings.resolved_model_checkpoint)
+        brain = build_brain(settings)
         health = await brain.health()
         model_ok = health.available and health.model_present
         if args.skip_model:
@@ -141,14 +128,10 @@ async def _run(args: argparse.Namespace) -> int:
         elif not health.available:
             results.check("local model runtime reachable", False, health.detail)
         elif not health.model_present:
-            results.check(
-                "scratch checkpoint ready",
-                False,
-                health.detail,
-            )
+            results.check("configured model ready", False, health.detail)
         else:
-            results.check("scratch model available", True, ", ".join(health.models))
-            results.check("scratch checkpoint ready", True, str(settings.resolved_model_checkpoint))
+            results.check("configured model available", True, ", ".join(health.models))
+            results.check("configured model ready", True, settings.brain_model or settings.resolved_model_checkpoint)
 
         if not args.skip_model and model_ok:
             turn = await ask(settings=settings, conn=conn, brain=brain, question="Say OK.")
@@ -253,7 +236,25 @@ async def _run(args: argparse.Namespace) -> int:
         routed = await run_task(
             settings=settings,
             conn=conn,
-            brain=CapturingBrain([BrainResponse(content="beta.txt is biggest.", model="scripted")]),
+            brain=CapturingBrain(
+                [
+                    # This request requires a tool, so the scripted brain has to
+                    # make the call the router exposed; otherwise the agent
+                    # correctly refuses a no-tool answer before we can check the
+                    # narrowed schema set.
+                    BrainResponse(
+                        content="",
+                        model="scripted",
+                        tool_calls=(
+                            ToolCall(
+                                name="find_largest_files",
+                                arguments={"path": str(workspace)},
+                            ),
+                        ),
+                    ),
+                    BrainResponse(content="beta.txt is biggest.", model="scripted"),
+                ]
+            ),
             request="List the biggest files in my Downloads folder",
         )
         shown = captured["tools"]

@@ -8,8 +8,12 @@ from pydantic import ValidationError
 from claireai.config import Settings
 
 
-def test_defaults_to_local_scratch_checkpoint() -> None:
+def test_defaults_to_ollama_qwen_models() -> None:
     settings = Settings(_env_file=None)
+    assert settings.brain_provider == "ollama"
+    assert settings.brain_model == "qwen3:1.7b"
+    assert settings.brain_coding_model == "qwen2.5-coder:1.5b"
+    assert settings.resolved_brain_base_url == "http://127.0.0.1:11434/api"
     assert settings.model_checkpoint is None
     assert settings.resolved_model_checkpoint == settings.resolved_data_dir / "models" / "claire-scratch.pt"
 

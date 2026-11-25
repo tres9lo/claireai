@@ -40,9 +40,11 @@ def _brain(cls, handler, **kwargs):  # noqa: ANN001, ANN202
 # -- configuration rules ----------------------------------------------------
 
 
-def test_scratch_is_the_default_provider() -> None:
+def test_ollama_qwen_is_the_default_provider() -> None:
     settings = Settings(_env_file=None)
-    assert settings.brain_provider == "scratch"
+    assert settings.brain_provider == "ollama"
+    assert settings.brain_model == "qwen3:1.7b"
+    assert settings.brain_coding_model == "qwen2.5-coder:1.5b"
     assert settings.brain_api_key_value is None
 
 
@@ -52,9 +54,11 @@ def test_openai_and_anthropic_require_a_key() -> None:
             Settings(_env_file=None, brain_provider=provider, brain_model="some-model")
 
 
-def test_a_connector_requires_a_model_name() -> None:
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, brain_provider="ollama")
+def test_ollama_defaults_its_model_but_hosted_providers_require_one() -> None:
+    assert Settings(_env_file=None, brain_provider="ollama").brain_model == "qwen3:1.7b"
+    for provider in ("openai", "anthropic"):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, brain_provider=provider, brain_api_key="k")
 
 
 def test_plain_http_is_refused_off_loopback() -> None:
@@ -93,9 +97,11 @@ def test_the_api_key_is_not_in_the_settings_repr() -> None:
 # -- factory ----------------------------------------------------------------
 
 
-def test_factory_builds_the_scratch_brain_by_default(tmp_path) -> None:  # noqa: ANN001
+def test_factory_builds_the_ollama_brain_by_default(tmp_path) -> None:  # noqa: ANN001
     brain = build_brain(Settings(_env_file=None, data_dir=tmp_path))
-    assert isinstance(brain, ScratchBrain)
+    assert isinstance(brain, OllamaBrain)
+    assert brain.model == "qwen3:1.7b"
+    assert brain.coding_model == "qwen2.5-coder:1.5b"
 
 
 def test_factory_builds_the_selected_connector() -> None:
@@ -322,6 +328,29 @@ async def test_ollama_reads_object_arguments_and_reports_tools() -> None:
     payload = seen[0]
     assert payload["stream"] is False
     assert payload["tools"][0]["function"]["name"] == "get_file_info"
+
+
+async def test_ollama_routes_code_turns_to_the_coder_model() -> None:
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    brain = _brain(
+        OllamaBrain,
+        handler,
+        api_key=None,
+        coding_model="qwen2.5-coder:1.5b",
+    )
+    await brain.generate(
+        [Message(role="user", content="Refactor this Python function and fix the bug")]
+    )
+    await brain.generate([Message(role="user", content="What is a good breakfast?")])
+    await brain.aclose()
+
+    assert seen[0]["model"] == "qwen2.5-coder:1.5b"
+    assert seen[1]["model"] == "test-model"
 
 
 async def test_ollama_health_explains_a_missing_pull() -> None:

@@ -1,10 +1,9 @@
-"""Shared plumbing for the connector brains.
+"""Shared plumbing for the HTTP-based brains.
 
-The from-scratch model is the default brain and makes no network request. These
-adapters exist for the case the owner has decided the local model is not enough
-for a task: they are opt-in, they send the conversation (and the tool schemas)
-to an endpoint the owner configured, and the audit row names the provider that
-answered. Nothing here runs unless ``CLAIREAI_BRAIN_PROVIDER`` selects it.
+The default Ollama adapter uses loopback, so normal inference stays on this
+machine. The hosted adapters are explicit opt-ins: they send the conversation
+(and the tool schemas) to an endpoint the owner configured, and the audit row
+names the provider that answered.
 
 What this module guarantees, in code rather than in a document:
 

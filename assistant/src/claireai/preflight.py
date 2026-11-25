@@ -37,16 +37,25 @@ class Requirement:
     download: str
     detail: str = ""
     index_url: str = ""
+    # A system executable (Ollama) rather than an importable Python module.
+    command: str = ""
+    # Models that `ollama pull` must fetch for this requirement.
+    models: tuple[str, ...] = ()
 
+
+OLLAMA_INSTALL_URL = "https://ollama.com/download"
+OLLAMA_MODELS_DOWNLOAD = "about 1.5 GB for both Qwen models"
+DEFAULT_OLLAMA_MODELS = ("qwen3:1.7b", "qwen2.5-coder:1.5b")
 
 REQUIREMENTS: tuple[Requirement, ...] = (
     Requirement(
-        key="torch",
-        label="local model runtime",
-        module="torch",
-        spec="torch>=2.2,<3",
-        download="about 200 MB (CPU build)",
-        detail="runs ClaireAI's own checkpoint on this machine",
+        key="ollama",
+        label="Ollama runtime",
+        module="",
+        spec="",
+        command="ollama",
+        download="manual install, about 1 GB on disk",
+        detail=f"serves Qwen locally; install from {OLLAMA_INSTALL_URL}",
     ),
     Requirement(
         key="customtkinter",
@@ -68,6 +77,7 @@ REQUIREMENTS: tuple[Requirement, ...] = (
 
 SPEECH_MODEL_DOWNLOAD = "about 75 MB"
 SPEECH_MODEL_KEY = "speech_model"
+EMBEDDING_MODEL_DOWNLOAD = "about 275 MB"
 
 
 @dataclass(frozen=True)
@@ -147,8 +157,56 @@ def detect_environment() -> Environment:
     )
 
 
+def _requirement_present(item: Requirement) -> bool:
+    if item.command and shutil.which(item.command):
+        return True
+    return bool(item.module) and _module_present(item.module)
+
+
 def missing_requirements() -> list[Requirement]:
-    return [item for item in REQUIREMENTS if not _module_present(item.module)]
+    return [item for item in REQUIREMENTS if not _requirement_present(item)]
+
+
+def ollama_models_installed(models: Sequence[str]) -> bool:
+    """Whether `ollama list` already has every configured Qwen tag."""
+    wanted = tuple(str(model).strip() for model in models if str(model).strip())
+    if not wanted:
+        return True
+    binary = shutil.which("ollama")
+    if not binary:
+        return False
+    try:
+        completed = subprocess.run(
+            [binary, "list"], capture_output=True, text=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if completed.returncode != 0:
+        return False
+    available = {
+        line.split()[0]
+        for line in (completed.stdout or "").splitlines()
+        if line.strip() and not line.lower().startswith("name")
+    }
+    return all(model in available or f"{model}:latest" in available for model in wanted)
+
+
+def ollama_model_requirement(
+    models: Sequence[str],
+    *,
+    label: str = "Qwen models",
+    download: str = OLLAMA_MODELS_DOWNLOAD,
+) -> Requirement:
+    wanted = tuple(str(model).strip() for model in models if str(model).strip())
+    return Requirement(
+        key="ollama_models",
+        label=label,
+        module="",
+        spec="",
+        download=download,
+        detail="ollama pull " + " && ollama pull ".join(wanted),
+        models=wanted,
+    )
 
 
 def speech_requirement() -> Requirement:
@@ -163,9 +221,25 @@ def speech_requirement() -> Requirement:
     )
 
 
-def missing_parts(data_dir: Path | None = None) -> list[Requirement]:
-    """Everything a full install needs, including the speech model on disk."""
+def missing_parts(
+    data_dir: Path | None = None,
+    models: Sequence[str] | None = None,
+    embedding_model: str | None = None,
+) -> list[Requirement]:
+    """Everything a full install needs, including model weights on disk."""
     parts = missing_requirements()
+    wanted = tuple(models or DEFAULT_OLLAMA_MODELS)
+    if not ollama_models_installed(wanted):
+        parts.append(ollama_model_requirement(wanted))
+    embedding = str(embedding_model or "").strip()
+    if embedding and not ollama_models_installed((embedding,)):
+        parts.append(
+            ollama_model_requirement(
+                (embedding,),
+                label="embedding model",
+                download=EMBEDDING_MODEL_DOWNLOAD,
+            )
+        )
     if data_dir is not None and not speech_model_installed(data_dir):
         parts.append(speech_requirement())
     return parts
@@ -239,6 +313,37 @@ def install(
     """Install each requirement in turn, streaming the real download lines."""
     failed: list[Requirement] = []
     for item in requirements:
+        if item.key == "ollama":
+            # Ollama is a system runtime, not a Python wheel. Do not run a
+            # platform-specific installer behind a generic consent prompt.
+            stream("")
+            stream(f"Ollama needs a manual install from {OLLAMA_INSTALL_URL}")
+            stream("Install it for this OS, then run `claireai --setup --install` again.")
+            failed.append(item)
+            continue
+        if item.key == "ollama_models":
+            binary = shutil.which("ollama")
+            if not binary:
+                stream("  Ollama is not on PATH; install it before pulling models.")
+                failed.append(item)
+                continue
+            ok = True
+            for model in item.models:
+                stream("")
+                stream(f"Pulling {model} ({item.download})")
+                command = [binary, "pull", model]
+                try:
+                    status = runner(command) if runner else _stream_command(command, stream)
+                except OSError as exc:
+                    stream(f"  could not start ollama: {exc}")
+                    ok = False
+                    continue
+                if status != 0:
+                    stream(f"  {model} was not pulled (ollama exited {status}).")
+                    ok = False
+            if not ok:
+                failed.append(item)
+            continue
         if item.key == SPEECH_MODEL_KEY:
             if data_dir is None:
                 stream(f"  {item.label} needs a data directory; skipped.")
@@ -337,8 +442,12 @@ def requirements_for(environment: Environment | None = None) -> list[Requirement
 
 
 __all__ = [
+    "DEFAULT_OLLAMA_MODELS",
+    "EMBEDDING_MODEL_DOWNLOAD",
     "Environment",
     "MINIMUM_PYTHON",
+    "OLLAMA_INSTALL_URL",
+    "OLLAMA_MODELS_DOWNLOAD",
     "REQUIREMENTS",
     "Requirement",
     "SPEECH_MODEL_DOWNLOAD",
@@ -351,6 +460,8 @@ __all__ = [
     "SPEECH_MODEL_KEY",
     "missing_parts",
     "missing_requirements",
+    "ollama_model_requirement",
+    "ollama_models_installed",
     "requirements_for",
     "speech_model_installed",
     "speech_requirement",

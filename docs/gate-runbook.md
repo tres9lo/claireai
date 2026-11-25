@@ -37,6 +37,8 @@ commands, and `--fail-fast` to stop at the first failing stage.
 The candidate passes only when every stage exits `0`:
 
 - model cases: every case stable;
+- conversation cases: every run must pass; there is no best-of-N result. The
+  gate uses three conversation runs and three model/tool runs by default.
 - conversation cases: no regression against the installed checkpoint at the
   same `--runs` count;
 - standard tool cases: every case stable;

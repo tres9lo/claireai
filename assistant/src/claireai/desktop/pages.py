@@ -325,6 +325,10 @@ class ChatPage(Page):
                 if status.get("context"):
                     facts += f" · {status['context']} context"
                 self.model_chip.configure(text=f"model {facts} · trained from scratch")
+            elif status["provider"] == "ollama":
+                self.model_chip.configure(
+                    text=f"ollama · {status.get('model') or 'Qwen'} · local"
+                )
             else:
                 self.model_chip.configure(text=f"{status['provider']} connector")
             return
@@ -357,7 +361,7 @@ class ChatPage(Page):
     def _installed(self, status: dict) -> None:
         self.refresh_model_state()
         name = status.get("name") or Path(status["checkpoint"]).stem
-        self.append("·", f"Installed {name} (trained from scratch on this machine).", "meta")
+        self.append("·", f"Installed {name} (archived scratch checkpoint on this machine).", "meta")
         self.append("ClaireAI", "Ready when you are — ask me anything, or try ‘what can you do?’.", "claire")
 
     def _install_failed(self, error: Exception) -> None:

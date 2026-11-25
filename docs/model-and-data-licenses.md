@@ -7,10 +7,23 @@ permission to redistribute it or bundle it in an installer.
 
 ## Language model
 
-No pretrained language model is used or bundled. The current transformer is
-initialized randomly and must be trained on owner-supplied data. Its tokenizer
-and checkpoint inherit the licences and permitted uses of that training data;
-track each source in `brain-lab/data/manifests/`.
+The supported runtime uses **Ollama** to serve two pretrained models locally:
+
+| Model | Role | Upstream licence | Source | Checked |
+| --- | --- | --- | --- | --- |
+| `qwen3:1.7b` | main conversation and tool-calling brain | Apache-2.0 (Qwen3 model card) | <https://huggingface.co/Qwen/Qwen3-1.7B> | 2026-11-25 |
+| `qwen2.5-coder:1.5b` | code-heavy turns | Apache-2.0 (Qwen2.5-Coder model card) | <https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B> | 2026-11-25 |
+
+Ollama is a separate local runtime and is not bundled in this repository. Its own
+licence is recorded upstream at <https://github.com/ollama/ollama>. Model weights
+are downloaded by `ollama pull` into Ollama's local store and are not
+redistributed by this project. Check the model cards before redistribution or
+commercial deployment; this table records the upstream licence, not legal advice.
+
+The archived `brain-lab/` trainer still initializes a transformer randomly and
+trains it on owner-supplied data. Its tokenizer and checkpoint inherit the
+licences and permitted uses of that training data; track each source in
+`brain-lab/data/manifests/`. It is not the supported install path.
 
 ## Optional speech output
 
@@ -32,8 +45,8 @@ are separate local features.
 The optional `assistant[voice]` extra uses `faster-whisper` (MIT) and, only when
 the owner selects **Install speech model** in the local UI, downloads
 `Systran/faster-whisper-tiny` (model card reports MIT) into ClaireAI's local
-data directory. This is an auxiliary speech-to-text model; ClaireAI's assistant
-language model remains randomly initialized and trained in `brain-lab/`. The
+data directory. This is an auxiliary speech-to-text model; the assistant's main
+brain is Qwen served by Ollama. The
 upstream sources are [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 and the [tiny multilingual model card](https://huggingface.co/Systran/faster-whisper-tiny).
 The model repository is resolved by Hugging Face at installation time and is

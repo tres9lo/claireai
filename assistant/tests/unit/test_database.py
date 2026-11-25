@@ -31,6 +31,7 @@ def test_migration_creates_expected_tables(database: Database) -> None:
             "0002_conversations_directives_preferences",
             "0003_appointments",
             "0004_day_plan",
+            "0005_memory",
         ]
         assert {"appointments", "day_plan_items"} <= _table_names(conn)
     finally:

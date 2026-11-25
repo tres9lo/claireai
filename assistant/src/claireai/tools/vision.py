@@ -10,6 +10,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from claireai import vision
+from claireai.permissions import PermissionDenied, check_capability
 from claireai.tools.base import ToolContext, ToolError, ToolResult
 
 MAX_LABELS = 40
@@ -94,6 +95,10 @@ def identify_image(context: ToolContext, arguments: IdentifyImageArgs) -> ToolRe
 
 def see_screen(context: ToolContext, arguments: SeeScreenArgs) -> ToolResult:
     """Capture the screen and identify what is on it."""
+    try:
+        check_capability("screen", getattr(context, "allowed_capabilities", ()))
+    except PermissionDenied as exc:
+        raise ToolError(str(exc)) from exc
     try:
         data = vision.capture_screen()
     except vision.VisionUnavailable as error:

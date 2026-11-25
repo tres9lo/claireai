@@ -257,6 +257,8 @@ async def test_tool_schemas_are_offered_to_the_model(
         "see_screen",
         "list_day_plan",
         "plan_day",
+        "remember_note",
+        "search_memory",
     } == names
 
 
@@ -1162,7 +1164,9 @@ async def test_routing_can_be_switched_off(
     )
 
     assert outcome.route is None
-    assert len(brain.calls[0]["tools"]) == len(default_registry())
+    assert len(brain.calls[0]["tools"]) == len(
+        default_registry(memory_enabled=settings.memory_enabled)
+    )
     assert all(entry.action != "agent.route" for entry in AuditLog(conn).for_task(outcome.task_id))
 
 
@@ -1390,5 +1394,7 @@ async def test_the_route_row_records_the_prompt_saving(
     assert row.target == "largest"
     detail = json.loads(row.detail or "{}")
     assert detail["narrowed"] is True
-    assert detail["tools_total"] == len(default_registry())
+    assert detail["tools_total"] == len(
+        default_registry(memory_enabled=agent_settings.memory_enabled)
+    )
     assert detail["schema_chars"] < detail["schema_chars_all"]

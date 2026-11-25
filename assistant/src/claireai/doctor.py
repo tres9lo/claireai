@@ -37,6 +37,7 @@ TRACKED_PACKAGES = (
 EXPECTED_TABLES = {
     "tasks", "task_log", "summaries", "notes", "schema_migrations",
     "conversations", "conversation_messages", "user_directives", "user_preferences",
+    "memory_entries",
 }
 
 OK = "ok"
@@ -94,11 +95,16 @@ def _platform_section(settings: Settings) -> Section:
 
 
 def _settings_row(settings: Settings) -> Section:
+    rows = [
+        Row("Model backend", f"{settings.brain_provider} ({settings.resolved_brain_base_url or 'local checkpoint'})"),
+        Row("Main model", str(settings.brain_model or settings.resolved_model_checkpoint)),
+    ]
+    if settings.brain_provider == "ollama":
+        rows.append(Row("Coding model", settings.brain_coding_model))
     return Section(
         title="Configuration",
         rows=(
-            Row("Model backend", "from-scratch transformer (CPU)"),
-            Row("Checkpoint", str(settings.resolved_model_checkpoint)),
+            *rows,
             Row(
                 "Data dir exists",
                 "yes" if settings.resolved_data_dir.is_dir() else "no (created on first run)",
@@ -174,18 +180,31 @@ async def _brain_section(settings: Settings) -> tuple[Section, list[str], list[s
             OK if health.available else FAIL,
         ),
         Row(
-            "Scratch checkpoint ready" if scratch else "Connector model ready",
+            "Scratch checkpoint ready" if scratch else f"{settings.brain_model} ready",
             "yes" if health.model_present else f"no - {health.detail}",
             OK if health.model_present else FAIL,
         ),
         Row("Checkpoint model" if scratch else "Reported models", ", ".join(health.models) or "(none)"),
     ]
+    coding = getattr(brain, "coding_model", None)
+    if provider == "ollama" and coding:
+        ready = coding in health.models or f"{coding}:latest" in health.models
+        rows.append(
+            Row(
+                "Coding model ready",
+                "yes" if ready else f"no - ollama pull {coding}",
+                OK if ready else FAIL,
+            )
+        )
+        if not ready and health.model_present:
+            errors.append(f"the coding model is not pulled: ollama pull {coding}")
     if not health.available:
         errors.append(f"{provider} brain unavailable: {health.detail}")
     elif not health.model_present:
         where = settings.resolved_model_checkpoint if scratch else settings.brain_model
         errors.append(f"the configured model is not ready: {where}")
-    return Section(title="Local scratch model" if scratch else "Brain connector", rows=tuple(rows)), warnings, errors
+    title = "Local scratch model" if scratch else "Ollama brain"
+    return Section(title=title, rows=tuple(rows)), warnings, errors
 
 
 async def collect(settings: Settings | None = None) -> Report:
@@ -202,20 +221,24 @@ async def collect(settings: Settings | None = None) -> Report:
         )
 
     brain_section, warnings, errors = await _brain_section(resolved)
-    checkpoint_section, checkpoint_warnings = _checkpoint_section(resolved)
-    secrets_section, secret_warnings, secret_errors = _secrets_section(resolved)
-    warnings = [*warnings, *checkpoint_warnings, *secret_warnings, *_migration_warnings(resolved)]
-    errors = [*errors, *secret_errors]
-    sections = (
+    sections: list[Section] = [
         _platform_section(resolved),
         _settings_row(resolved),
-        checkpoint_section,
+    ]
+    checkpoint_warnings: list[str] = []
+    if resolved.brain_provider == "scratch":
+        checkpoint_section, checkpoint_warnings = _checkpoint_section(resolved)
+        sections.append(checkpoint_section)
+    secrets_section, secret_warnings, secret_errors = _secrets_section(resolved)
+    sections += [
         _database_section(resolved),
         brain_section,
         secrets_section,
         _versions_section(),
-    )
-    return Report(sections=sections, warnings=tuple(warnings), errors=tuple(errors))
+    ]
+    warnings = [*warnings, *checkpoint_warnings, *secret_warnings, *_migration_warnings(resolved)]
+    errors = [*errors, *secret_errors]
+    return Report(sections=tuple(sections), warnings=tuple(warnings), errors=tuple(errors))
 
 
 def _checkpoint_section(settings: Settings) -> tuple[Section, list[str]]:
@@ -294,9 +317,9 @@ def _secrets_section(settings: Settings) -> tuple[Section, list[str], list[str]]
     provider = settings.brain_provider
     warnings: list[str] = []
     errors: list[str] = []
-    rows = [Row("Connector", provider)]
-    if provider == "scratch":
-        rows.append(Row("Key needed", "no (from-scratch model)"))
+    rows = [Row("Provider", provider)]
+    if provider in {"scratch", "ollama"}:
+        rows.append(Row("Key needed", "no (local runtime)"))
     else:
         rows.append(Row("Key set", "yes" if settings.brain_api_key_value else "no"))
         if not settings.brain_api_key_value:

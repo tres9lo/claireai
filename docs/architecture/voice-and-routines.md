@@ -1,9 +1,9 @@
 # Voice, consent and routines
 
 This document records the owner requirements and the security boundary for the
-hands-free assistant. It is a target design, not a claim that speech capture,
-wake-word detection, voice identity, spoken approvals or routine replay are
-implemented. Current speech support is optional local text-to-speech only.
+hands-free assistant. The local wake-word adapter/listener exists now; voice
+identity, spoken approvals and routine replay remain targets. Push-to-talk
+speech input is optional and local.
 
 ## Voice interaction
 
@@ -63,18 +63,24 @@ text are never captured into a routine.
 - The desktop Voice page now has opt-in push-to-talk capture and transcript
   review, and can install/use an optional local Whisper tiny speech-recognition model. The
   user still presses Send; this local chat path does not invoke computer tools.
-- There is no wake-word engine, speaker enrollment, vocal approval or routine
-  recorder/replayer yet. eSpeak NG output remains optional and separately
-  installed.
+- `claireai.wakeword` now wraps openWakeWord and a bounded microphone listener;
+  `scripts/wakeword_check.py` is an explicit check. No model is downloaded and
+  no "Hey Claire" model is bundled. On 2026-11-25 the real `hey_jarvis` ONNX
+  model loaded, scored a synthesized "hey jarvis" clip up to 0.9967 and ignored
+  silence; the listener opened ALSA `arecord` capture for a 3-second run. A
+  human-spoken microphone acceptance test is still pending. Speaker enrollment,
+  vocal approval and routine replay are still unimplemented. eSpeak NG output
+  remains optional and separately installed.
 - The active development host is a Wayland session. The session portal advertises
   ScreenCast and Screenshot, but no screenshot tool is implemented. The normal
   screen-observation path should use the user-granted ScreenCast stream so frames
   stay transient; the portal Screenshot method returns a file URI and is not an
   appropriate default for ephemeral observation.
-- This host has no `/dev/snd` capture device, and the project environment currently
-  has no speech-recognition or wake-word packages. UI/runtime audio behavior must
-  be manually tested on a host with a microphone; mocked tests are not platform
-  evidence.
+- This host exposes an ALSA capture device (`/dev/snd/pcmC0D0c`). `sounddevice`
+  is installed but PortAudio is absent, which is why the wake-word listener uses
+  the `arecord` fallback here. Speech recognition and wake-word packages are
+  installed; actual human speech still needs a manual acceptance run, because a
+  synthesized clip and mocked tests are not full platform evidence.
 
 The implementation sequence is: live microphone acceptance on Linux and
 Windows; wake-word detection and false-activation evaluation; voice enrollment
