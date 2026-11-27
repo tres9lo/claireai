@@ -27,6 +27,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
     registry = default_registry(browser_enabled=True)
     assert registry.names() == (
         "add_appointment",
+        "create_canvas",
         "create_folder",
         "create_text_file",
         "download_file",
@@ -35,6 +36,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "get_page_text",
         "identify_image",
         "list_appointments",
+        "list_canvases",
         "list_day_plan",
         "list_folder",
         "move_file",
@@ -43,6 +45,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "plan_day",
         "read_text_file",
         "rename_file",
+        "replace_in_file",
         "search_files",
         "search_web",
         "see_screen",
@@ -56,6 +59,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "get_page_text",  # reads a page already fetched in this task
         "identify_image",  # reads one file inside the allow-list
         "list_appointments",  # reads the local calendar only
+        "list_canvases",  # reads the local canvas index only
         "list_day_plan",  # reads local plan rows only
         "list_folder",
         "read_text_file",
@@ -73,6 +77,7 @@ def test_enabled_registry_has_read_only_and_approval_gated_tools() -> None:
         "move_file",
         "move_to_trash",
         "rename_file",
+        "replace_in_file",
         "write_to_file",
     }
     # No permanent deletion exists in this build.

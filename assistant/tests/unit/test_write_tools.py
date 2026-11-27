@@ -20,12 +20,14 @@ from claireai.tools.files_write import (
     MoveFileArgs,
     MoveToTrashArgs,
     RenameFileArgs,
+    ReplaceInFileArgs,
     WriteToFileArgs,
     create_folder,
     create_text_file,
     move_file,
     move_to_trash,
     rename_file,
+    replace_in_file,
     write_to_file,
 )
 
@@ -125,6 +127,83 @@ def test_write_to_file_requires_an_existing_file(context: ToolContext, root: Pat
 def test_write_to_file_refuses_a_directory(context: ToolContext, root: Path) -> None:
     with pytest.raises(ToolError, match="not a regular file"):
         write_to_file(context, WriteToFileArgs(path=str(root / "sub"), content="x"))
+
+
+def test_replace_in_file_changes_only_the_exact_text(context: ToolContext, root: Path) -> None:
+    target = root / "note.txt"
+    target.write_text("alpha beta gamma", encoding="utf-8")
+    result = replace_in_file(
+        context,
+        ReplaceInFileArgs(path=str(target), old_text="beta", new_text="BETA"),
+    )
+    assert target.read_text(encoding="utf-8") == "alpha BETA gamma"
+    assert result.detail["occurrences"] == 1
+
+
+def test_replace_in_file_can_delete_text(context: ToolContext, root: Path) -> None:
+    target = root / "note.txt"
+    target.write_text("keep remove keep", encoding="utf-8")
+    replace_in_file(
+        context,
+        ReplaceInFileArgs(path=str(target), old_text=" remove", new_text=""),
+    )
+    assert target.read_text(encoding="utf-8") == "keep keep"
+
+
+def test_replace_in_file_refuses_missing_text(context: ToolContext, root: Path) -> None:
+    with pytest.raises(ToolError, match="was not found"):
+        replace_in_file(
+            context,
+            ReplaceInFileArgs(path=str(root / "note.txt"), old_text="absent", new_text="x"),
+        )
+    assert (root / "note.txt").read_text(encoding="utf-8") == "original"
+
+
+def test_replace_in_file_requires_a_unique_match(context: ToolContext, root: Path) -> None:
+    target = root / "note.txt"
+    target.write_text("same same", encoding="utf-8")
+    with pytest.raises(ToolError, match="appears 2 times"):
+        replace_in_file(
+            context,
+            ReplaceInFileArgs(path=str(target), old_text="same", new_text="new"),
+        )
+    assert target.read_text(encoding="utf-8") == "same same"
+
+
+def test_replace_in_file_can_replace_every_occurrence(context: ToolContext, root: Path) -> None:
+    target = root / "note.txt"
+    target.write_text("same same", encoding="utf-8")
+    result = replace_in_file(
+        context,
+        ReplaceInFileArgs(
+            path=str(target), old_text="same", new_text="new", replace_all=True
+        ),
+    )
+    assert target.read_text(encoding="utf-8") == "new new"
+    assert result.detail["occurrences"] == 2
+
+
+def test_replace_in_file_refuses_binary_content(context: ToolContext, root: Path) -> None:
+    target = root / "blob.dat"
+    target.write_bytes(b"abc\x00def")
+    with pytest.raises(ToolError, match="binary"):
+        replace_in_file(
+            context,
+            ReplaceInFileArgs(path=str(target), old_text="abc", new_text="x"),
+        )
+
+
+def test_replace_in_file_needs_a_readable_regular_file(context: ToolContext, root: Path) -> None:
+    with pytest.raises(ToolError, match="does not exist"):
+        replace_in_file(
+            context,
+            ReplaceInFileArgs(path=str(root / "missing.txt"), old_text="x", new_text="y"),
+        )
+    with pytest.raises(ToolError, match="not a regular file"):
+        replace_in_file(
+            context,
+            ReplaceInFileArgs(path=str(root / "sub"), old_text="x", new_text="y"),
+        )
 
 
 def test_rename_file_stays_in_the_same_folder(context: ToolContext, root: Path) -> None:

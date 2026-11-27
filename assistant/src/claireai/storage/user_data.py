@@ -25,7 +25,12 @@ EDITABLE_PREFERENCES = frozenset({
     "voice_enabled",
     "voice_pitch",
     "voice_rate",
+    "wakeword_enabled",
+    "wakeword_engine",
+    "wakeword_phrase",
+    "memory_auto_embed",
     "allowed_folders",
+    "allowed_capabilities",
     "tool_routing",
 })
 

@@ -13,6 +13,7 @@ from claireai.memory import (
     OllamaEmbedder,
     embedder_for,
     memory_index,
+    remember_completed_turn,
 )
 from claireai.permissions import Sandbox
 from claireai.tools.base import ToolContext, ToolError
@@ -127,3 +128,42 @@ def test_ollama_embedder_reports_a_missing_model() -> None:
 def test_hash_embedder_is_selected_explicitly() -> None:
     settings = Settings(_env_file=None, embedding_provider="hash")
     assert isinstance(embedder_for(settings), HashingEmbedder)
+
+
+def test_a_completed_turn_can_be_embedded_explicitly(conn: sqlite3.Connection) -> None:
+    settings = Settings(
+        _env_file=None,
+        embedding_provider="hash",
+        memory_enabled=True,
+        memory_auto_embed=True,
+    )
+    entry_id = remember_completed_turn(
+        settings,
+        conn,
+        task_id="task-42",
+        question="What do I use for local inference?",
+        answer="Ollama with Qwen.",
+    )
+    assert entry_id is not None
+    index = MemoryIndex(conn, HashingEmbedder())
+    hits = index.search("local inference")
+    assert hits and "Ollama" in hits[0].text
+
+
+def test_turn_embedding_is_off_without_the_opt_in(conn: sqlite3.Connection) -> None:
+    settings = Settings(
+        _env_file=None,
+        embedding_provider="hash",
+        memory_enabled=True,
+        memory_auto_embed=False,
+    )
+    assert (
+        remember_completed_turn(
+            settings,
+            conn,
+            task_id="task-43",
+            question="hello",
+            answer="hi",
+        )
+        is None
+    )

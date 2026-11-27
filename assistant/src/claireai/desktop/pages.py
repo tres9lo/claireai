@@ -12,9 +12,11 @@ because message tags and fast appends matter there, and tables keep
 
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING
@@ -24,6 +26,7 @@ import customtkinter as ctk
 from claireai.brain import BrainUnavailable
 from claireai.desktop import theme
 from claireai.desktop.runtime import ModelMissingError
+from claireai.tools.canvas import list_canvases
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from claireai.desktop.app import ClaireDesktop
@@ -436,12 +439,19 @@ class ChatPage(Page):
     # -- flow ------------------------------------------------------------
 
     def send(self) -> None:
-        if self.busy:
-            return
         text = self.entry.get("1.0", "end").strip()
+        if text:
+            self.entry.delete("1.0", "end")
+            self.send_text(text)
+
+    def send_text(self, text: str) -> None:
+        """Send text from the composer or a transcribed wake-word turn."""
+        text = str(text).strip()
         if not text:
             return
-        self.entry.delete("1.0", "end")
+        if self.busy:
+            self.append("·", "Still answering the previous turn; say it again in a moment.", "meta")
+            return
         self.append("You", text, "you")
         self._set_busy(True, "thinking …")
         conversation = self.conversation_id
@@ -495,6 +505,242 @@ class ChatPage(Page):
     def on_show(self) -> None:
         self.speak_replies.set(bool(self.runtime.preferences().get("voice_enabled")))
         self.refresh_model_state()
+
+
+class PresencePage(Page):
+    title = "Presence"
+    glyph = "◉"
+    subtitle = "A local intelligence, awake on this machine. Nothing leaves it."
+
+    def build(self) -> None:
+        self.heading(self.title, self.subtitle)
+        hero = ctk.CTkFrame(
+            self.frame, corner_radius=24, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        hero.pack(fill="both", expand=True, padx=theme.GUTTER, pady=(0, 12))
+
+        self.stage = tk.Canvas(
+            hero, height=300, background=theme.SURFACE,
+            highlightthickness=0, borderwidth=0,
+        )
+        self.stage.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        self.stage.bind("<Configure>", lambda _event: self._draw())
+        self._phase = 0.0
+        self._pulse = 0.0
+
+        self.status = ctk.CTkLabel(
+            hero, text="Present · local only", text_color=theme.ACCENT,
+            font=ctk.CTkFont(family=theme.FONT, size=12, weight="bold"),
+        )
+        self.status.pack(pady=(0, 2))
+        self.wake_note = ctk.CTkLabel(
+            hero, text="", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        self.wake_note.pack(pady=(0, 10))
+
+        mode_row = ctk.CTkFrame(hero, fg_color="transparent")
+        mode_row.pack(pady=(0, 14))
+        self.mode = ctk.CTkSegmentedButton(
+            mode_row, values=["Presence", "Chat"], command=self._switch_mode,
+            selected_color=theme.ACCENT_DEEP, selected_hover_color=theme.ACCENT_DEEP,
+            unselected_color=theme.SURFACE_HIGH,
+            unselected_hover_color=theme.SURFACE_HOVER, text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=11), width=220,
+        )
+        self.mode.set("Presence")
+        self.mode.pack()
+
+        actions = ctk.CTkFrame(self.frame, fg_color="transparent")
+        actions.pack(fill="x", padx=theme.GUTTER, pady=(0, 10))
+        self.button(actions, "Talk to Claire", self._chat, primary=True).pack(side="left")
+        self.button(actions, "Make a canvas", self._canvas).pack(side="left", padx=8)
+        self.button(actions, "Open apps", self._apps).pack(side="left")
+        self._animate()
+
+    def _switch_mode(self, value: str) -> None:
+        if value == "Chat":
+            self.app.show(ChatPage)
+
+    def _chat(self) -> None:
+        self.app.show(ChatPage)
+
+    def _canvas(self) -> None:
+        self.app.show(CanvasPage)
+
+    def _apps(self) -> None:
+        self.app.show(ChatPage)
+        chat = self.app.pages.get(ChatPage)
+        if chat is not None and hasattr(chat, "entry"):
+            chat.entry.delete("1.0", "end")
+            chat.entry.insert("1.0", "Open ")
+            chat.entry.focus_set()
+
+    def _animate(self) -> None:
+        try:
+            if not self.frame.winfo_exists():
+                return
+            if self.frame.winfo_ismapped():
+                self._phase += 0.055
+                self._pulse = (self._pulse + 0.03) % 1.0
+                self._draw()
+            self.frame.after(70, self._animate)
+        except tk.TclError:  # pragma: no cover - window closing
+            return
+
+    def _draw(self) -> None:
+        try:
+            width = max(200, self.stage.winfo_width())
+            height = max(220, self.stage.winfo_height())
+        except tk.TclError:
+            return
+        self.stage.delete("all")
+        cx, cy = width / 2, height / 2
+        breathe = 1.0 + math.sin(self._pulse * math.tau) * 0.045
+
+        for ring, colour in ((118, theme.BORDER), (92, theme.ACCENT_DEEP), (66, theme.ACCENT)):
+            radius = ring * breathe
+            self.stage.create_oval(
+                cx - radius, cy - radius, cx + radius, cy + radius,
+                outline=colour, width=1,
+            )
+        for index in range(24):
+            angle = self._phase + index * math.tau / 24
+            orbit = (72 + (index % 4) * 15) * breathe
+            x = cx + math.cos(angle) * orbit
+            y = cy + math.sin(angle) * orbit
+            self.stage.create_line(cx, cy, x, y, fill=theme.BORDER, width=1)
+            size = 1.8 + (index % 3)
+            self.stage.create_oval(
+                x - size, y - size, x + size, y + size,
+                fill=theme.ACCENT if index % 5 else theme.ACCENT_ALT, outline="",
+            )
+        for index in range(3):
+            angle = -self._phase * (0.7 + index * 0.15) + index * math.tau / 3
+            x = cx + math.cos(angle) * 44
+            y = cy + math.sin(angle) * 44
+            self.stage.create_oval(
+                x - 5, y - 5, x + 5, y + 5, fill=theme.ACCENT, outline="",
+            )
+        self.stage.create_oval(
+            cx - 24 * breathe, cy - 24 * breathe, cx + 24 * breathe, cy + 24 * breathe,
+            fill=theme.ACCENT_DEEP, outline=theme.ACCENT, width=2,
+        )
+        self.stage.create_text(
+            cx, cy, text="C", fill=theme.ACCENT,
+            font=(theme.FONT, 24, "bold"),
+        )
+        self.stage.create_text(
+            cx, cy + 74, text="LOCAL INTELLIGENCE", fill=theme.MUTED,
+            font=(theme.FONT, 8, "bold"),
+        )
+
+    def on_show(self) -> None:
+        self.mode.set("Presence")
+        status = self.runtime.wakeword_status()
+        if status.get("running"):
+            self.wake_note.configure(
+                text=f"Listening for ‘{status.get('label') or 'hey claire'}’ · say it, then your command"
+            )
+        else:
+            self.wake_note.configure(text="Hands-free is off · open Voice to enable it")
+        self._draw()
+
+
+class CanvasPage(Page):
+    title = "Canvas"
+    glyph = "▧"
+    subtitle = "Visual explainers made locally. Ask for a canvas; open it here."
+
+    def build(self) -> None:
+        self.heading(self.title, self.subtitle)
+        bar = ctk.CTkFrame(self.frame, fg_color="transparent")
+        bar.pack(fill="x", padx=theme.GUTTER, pady=(0, 10))
+        self.canvas_note = ctk.CTkLabel(
+            bar, text="", text_color=theme.MUTED, anchor="w",
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        self.canvas_note.pack(side="left")
+        self.button(bar, "Refresh", self.refresh).pack(side="right")
+        self.button(
+            bar, "Open folder", self._open_folder
+        ).pack(side="right", padx=8)
+
+        self.list = ctk.CTkScrollableFrame(self.frame, fg_color="transparent")
+        self.list.pack(fill="both", expand=True, padx=theme.GUTTER - 6, pady=(0, 12))
+        self.refresh()
+
+    def refresh(self) -> None:
+        for child in self.list.winfo_children():
+            child.destroy()
+        rows = list_canvases(getattr(self.runtime, "data_dir", None))
+        self.canvas_note.configure(
+            text="No canvases yet" if not rows else f"{len(rows)} canvas page(s)",
+            text_color=theme.MUTED if not rows else theme.OK,
+        )
+        if not rows:
+            empty = ctk.CTkLabel(
+                self.list,
+                text=(
+                    "Ask ClaireAI for a canvas, for example:\n"
+                    "“Make a canvas explaining how a bicycle gear works.”\n"
+                    "“Create a canvas from today’s world news with links and video.”\n"
+                    "Canvases can include live news links, YouTube/Vimeo embeds and images."
+                ),
+                text_color=theme.MUTED, justify="left", anchor="w",
+                font=ctk.CTkFont(family=theme.FONT, size=12),
+            )
+            empty.pack(anchor="w", padx=12, pady=18)
+            return
+        for row in rows:
+            card = ctk.CTkFrame(
+                self.list, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+                border_width=1, border_color=theme.BORDER,
+            )
+            card.pack(fill="x", padx=6, pady=6)
+            ctk.CTkLabel(
+                card, text=str(row["title"]), text_color=theme.TEXT, anchor="w",
+                font=ctk.CTkFont(family=theme.FONT, size=15, weight="bold"),
+            ).pack(anchor="w", padx=16, pady=(13, 2))
+            if row["summary"]:
+                ctk.CTkLabel(
+                    card, text=str(row["summary"]), text_color=theme.MUTED,
+                    anchor="w", justify="left", wraplength=760,
+                    font=ctk.CTkFont(family=theme.FONT, size=11),
+                ).pack(anchor="w", padx=16, pady=(0, 4))
+            row_line = ctk.CTkFrame(card, fg_color="transparent")
+            row_line.pack(fill="x", padx=16, pady=(2, 12))
+            ctk.CTkLabel(
+                row_line, text=str(row["created"]).replace("T", " "),
+                text_color=theme.MUTED, anchor="w",
+                font=ctk.CTkFont(family=theme.FONT, size=10),
+            ).pack(side="left")
+            self.button(
+                row_line, "Open canvas", lambda path=row["path"]: self._open(path),
+                primary=True,
+            ).pack(side="right")
+
+    def _open(self, path: Path) -> None:
+        try:
+            opened = webbrowser.open(path.as_uri())
+        except Exception as error:  # noqa: BLE001 - report it in the page
+            opened = False
+            self.canvas_note.configure(text=str(error), text_color=theme.DANGER)
+            return
+        if not opened:
+            self.canvas_note.configure(
+                text="No default browser accepted the canvas; the HTML file is still saved.",
+                text_color=theme.WARN,
+            )
+
+    def _open_folder(self) -> None:
+        folder = Path(self.runtime.data_dir) / "canvases"
+        folder.mkdir(parents=True, exist_ok=True)
+        webbrowser.open(folder.as_uri())
+
+    def on_show(self) -> None:
+        self.refresh()
 
 
 class ActivityPage(Page):
@@ -733,11 +979,20 @@ class ApprovalsPage(Page):
 
     def refresh(self) -> None:
         pending = self.runtime.pending_approvals()
+        selected = self.tree.selection()
+        wanted = selected[0] if selected else None
         self.tree.delete(*self.tree.get_children())
         for item in pending:
             self.tree.insert("", "end", iid=str(item["ref"]),
                              values=(item["tool"], item.get("target") or "", item.get("risk", ""),
                                      f"{item.get('expires_in', 0)}s"))
+        # The page polls every 1.5s. Rebuilding the rows used to clear the
+        # owner's selection a second after they clicked it, so Approve then said
+        # "Select an action first." Keep the same ref selected while it exists.
+        if wanted and any(str(item["ref"]) == wanted for item in pending):
+            self.tree.selection_set(wanted)
+            self.tree.focus(wanted)
+            self._show_preview()
         self.note.configure(
             text="nothing waiting" if not pending else f"{len(pending)} waiting",
             text_color=theme.MUTED if not pending else theme.WARN,
@@ -935,6 +1190,66 @@ class VoicePage(Page):
             ctk.CTkLabel(line, textvariable=variable, width=40, text_color=theme.TEXT,
                          font=ctk.CTkFont(family=theme.FONT, size=11)).pack(side="left")
 
+        wake = self.card(body)
+        ctk.CTkLabel(
+            wake, text="Wake word", text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=13, weight="bold"), anchor="w",
+        ).pack(anchor="w", padx=16, pady=(14, 2))
+        self.wake_note = ctk.CTkLabel(
+            wake, text="", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11), anchor="w",
+            justify="left", wraplength=760,
+        )
+        self.wake_note.pack(anchor="w", padx=16)
+        config_row = ctk.CTkFrame(wake, fg_color="transparent")
+        config_row.pack(fill="x", padx=16, pady=(8, 0))
+        ctk.CTkLabel(
+            config_row, text="Recognition", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        ).pack(side="left")
+        selected_engine = preferences.get("wakeword_engine", "openwakeword")
+        self.wake_engine = tk.StringVar(
+            value="Local speech (Hey Claire)" if selected_engine == "stt" else "openWakeWord model"
+        )
+        ctk.CTkOptionMenu(
+            config_row,
+            values=["Local speech (Hey Claire)", "openWakeWord model"],
+            variable=self.wake_engine,
+            fg_color=theme.SURFACE_HIGH,
+            button_color=theme.SURFACE_HOVER,
+            button_hover_color=theme.ACCENT_DEEP,
+            text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+            width=190,
+        ).pack(side="left", padx=(8, 18))
+        ctk.CTkLabel(
+            config_row, text="Phrase", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        ).pack(side="left")
+        self.wake_phrase = tk.StringVar(
+            value=str(preferences.get("wakeword_phrase", "hey claire"))
+        )
+        ctk.CTkEntry(
+            config_row, textvariable=self.wake_phrase, width=180,
+            fg_color=theme.SURFACE_HIGH, border_color=theme.SURFACE_HOVER,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=11),
+        ).pack(side="left", padx=(8, 0))
+        wake_row = ctk.CTkFrame(wake, fg_color="transparent")
+        wake_row.pack(fill="x", padx=16, pady=(10, 0))
+        self.wake_switch = ctk.CTkSwitch(
+            wake_row, text="Listen for the wake word", progress_color=theme.ACCENT,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=12),
+            command=self.toggle_wakeword,
+        )
+        self.wake_switch.pack(side="left")
+        self.button(wake_row, "Start", self.start_wakeword, primary=True).pack(side="left", padx=(16, 6))
+        self.button(wake_row, "Stop", self.stop_wakeword).pack(side="left")
+        ctk.CTkLabel(
+            wake, text="Detection is local. Audio is held only for the command turn and is never saved.",
+            text_color=theme.MUTED, font=ctk.CTkFont(family=theme.FONT, size=10),
+            anchor="w", justify="left", wraplength=760,
+        ).pack(anchor="w", padx=16, pady=(8, 14))
+
         input_box = self.card(body, pady=(0, 12))
         ctk.CTkLabel(
             input_box, text="Speech input", text_color=theme.TEXT,
@@ -1020,10 +1335,75 @@ class VoicePage(Page):
     def save(self) -> None:
         # Saving pitch/rate is not permission to speak. The old unconditional
         # ``voice_enabled: True`` overrode the Chat switch and the Settings page.
+        engine_variable = getattr(self, "wake_engine", None)
+        phrase_variable = getattr(self, "wake_phrase", None)
+        engine = (
+            "stt"
+            if engine_variable is not None
+            and engine_variable.get().startswith("Local speech")
+            else "openwakeword"
+        )
+        phrase = (
+            phrase_variable.get().strip()
+            if phrase_variable is not None
+            else ""
+        ) or "hey claire"
         self.runtime.update_preferences(
-            {"voice_pitch": int(self.pitch.get()), "voice_rate": int(self.rate.get())}
+            {
+                "voice_pitch": int(self.pitch.get()),
+                "voice_rate": int(self.rate.get()),
+                "wakeword_engine": engine,
+                "wakeword_phrase": phrase,
+            }
         )
         self.transcript_note.configure(text="Voice settings saved.", text_color=theme.OK)
+
+    def toggle_wakeword(self) -> None:
+        if self.wake_switch.get():
+            self.start_wakeword()
+        else:
+            self.stop_wakeword()
+
+    def start_wakeword(self) -> None:
+        try:
+            self.save()
+            self.app.start_wakeword(announce=False)
+        except Exception as error:  # noqa: BLE001 - reported below
+            self.wake_note.configure(text=f"Could not start: {error}", text_color=theme.DANGER)
+        self.refresh_wakeword()
+
+    def stop_wakeword(self) -> None:
+        self.app.stop_wakeword()
+        self.refresh_wakeword()
+
+    def refresh_wakeword(self) -> None:
+        status = self.runtime.wakeword_status()
+        running = bool(status["running"])
+        label = status.get("label") or status["model"].replace("_", " ")
+        engine = status.get("engine", "openwakeword")
+        if running:
+            self.wake_switch.select()
+            detail = (
+                f"Say ‘{label}’ in your own voice, then your command."
+                if engine == "stt"
+                else f"Say ‘{label}’ at threshold {status['threshold']:.2f}, then your command."
+            )
+            self.wake_note.configure(
+                text=f"Listening locally for ‘{label}’. {detail}", text_color=theme.OK
+            )
+        else:
+            self.wake_switch.deselect()
+            if status["error"]:
+                self.wake_note.configure(text=status["error"], text_color=theme.DANGER)
+            else:
+                detail = (
+                    "Local speech recognizes your voice; no custom wake-word model is needed."
+                    if engine == "stt"
+                    else "openWakeWord uses a trained model name or path."
+                )
+                self.wake_note.configure(
+                    text=f"Off · {label}. {detail}", text_color=theme.MUTED
+                )
 
     def on_show(self) -> None:
         voices = self.runtime.status()["voices"]
@@ -1033,6 +1413,115 @@ class VoicePage(Page):
             else "No local speech engine found (install espeak-ng)"
         )
         self.mic_note.configure(text=self._microphone_note())
+        self.refresh_wakeword()
+
+
+class MemoryPage(Page):
+    title = "Memory"
+    glyph = "◈"
+    subtitle = "Local notes and completed turns. Text and vectors stay in this SQLite file."
+
+    def build(self) -> None:
+        self.heading(self.title, self.subtitle)
+        body = ctk.CTkFrame(self.frame, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=theme.GUTTER, pady=(0, 10))
+
+        controls = self.card(body)
+        row = ctk.CTkFrame(controls, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(14, 8))
+        self.query = ctk.CTkEntry(
+            row, placeholder_text="Search memory by meaning", height=32,
+            fg_color=theme.SURFACE_HIGH, border_color=theme.BORDER,
+            text_color=theme.TEXT,
+        )
+        self.query.pack(side="left", fill="x", expand=True)
+        self.query.bind("<Return>", lambda _event: self.refresh(query=True))
+        self.button(row, "Search", lambda: self.refresh(query=True), primary=True).pack(side="left", padx=8)
+        self.button(row, "Refresh", self.refresh).pack(side="left")
+        self.button(row, "Delete selected", self.delete_selected).pack(side="left", padx=(8, 0))
+
+        row2 = ctk.CTkFrame(controls, fg_color="transparent")
+        row2.pack(fill="x", padx=16, pady=(0, 12))
+        self.auto_embed = tk.BooleanVar(value=bool(self.runtime.memory_status()["auto_embed"]))
+        ctk.CTkSwitch(
+            row2, text="Embed completed chat turns automatically", variable=self.auto_embed,
+            progress_color=theme.ACCENT, text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=12), command=self.save_auto_embed,
+        ).pack(side="left")
+        self.memory_note = ctk.CTkLabel(
+            row2, text="", text_color=theme.MUTED, anchor="e",
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        self.memory_note.pack(side="right")
+
+        table = ctk.CTkFrame(
+            body, corner_radius=theme.RADIUS, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        table.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(
+            table, columns=("time", "kind", "text"), show="headings",
+            style="Claire.Treeview", selectmode="browse",
+        )
+        self.tree.heading("time", text="Saved")
+        self.tree.heading("kind", text="Kind")
+        self.tree.heading("text", text="Entry")
+        self.tree.column("time", width=140, stretch=False)
+        self.tree.column("kind", width=70, stretch=False)
+        self.tree.column("text", width=700, stretch=True)
+        scroll = ctk.CTkScrollbar(table, command=self.tree.yview, fg_color="transparent")
+        self.tree.configure(yscrollcommand=scroll.set)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        scroll.pack(side="right", fill="y", padx=(0, 6), pady=6)
+
+    def save_auto_embed(self) -> None:
+        try:
+            status = self.runtime.set_memory_auto_embed(bool(self.auto_embed.get()))
+        except Exception as error:  # noqa: BLE001 - shown to the owner
+            self.memory_note.configure(text=f"Could not save: {error}", text_color=theme.DANGER)
+            return
+        self.memory_note.configure(
+            text=("Automatic local embeddings on" if status["auto_embed"] else "Automatic embeddings off"),
+            text_color=theme.OK,
+        )
+
+    def refresh(self, *, query: bool = False) -> None:
+        text = self.query.get().strip() if query else ""
+        try:
+            entries = self.runtime.memory_entries(query=text or None, limit=100)
+            status = self.runtime.memory_status()
+        except Exception as error:  # noqa: BLE001 - shown to the owner
+            self.memory_note.configure(text=f"Memory error: {error}", text_color=theme.DANGER)
+            return
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for entry in entries:
+            preview = " ".join(entry["text"].split())
+            if len(preview) > 170:
+                preview = preview[:169] + "…"
+            self.tree.insert(
+                "", "end", iid=entry["id"],
+                values=(entry["created_at"][:16].replace("T", " "), entry["kind"], preview),
+            )
+        self.memory_note.configure(
+            text=f"{status['count']} entries · {status['embedder']}", text_color=theme.MUTED
+        )
+
+    def delete_selected(self) -> None:
+        selected = self.tree.selection()
+        if not selected:
+            self.memory_note.configure(text="Select an entry to delete.", text_color=theme.WARN)
+            return
+        if not messagebox.askyesno("Delete memory", "Delete this local memory entry?", parent=self.frame):
+            return
+        if self.runtime.delete_memory(selected[0]):
+            self.refresh()
+            self.memory_note.configure(text="Memory entry deleted.", text_color=theme.OK)
+        else:
+            self.memory_note.configure(text="That entry no longer exists.", text_color=theme.WARN)
+
+    def on_show(self) -> None:
+        self.refresh()
 
 
 class SettingsPage(Page):
@@ -1059,6 +1548,14 @@ class SettingsPage(Page):
         self.max_tokens = tk.IntVar(value=int(preferences["max_output_tokens"]))
         self.max_steps = tk.IntVar(value=int(preferences["agent_max_steps"]))
         self.voice_enabled = tk.BooleanVar(value=bool(preferences["voice_enabled"]))
+        capabilities = {
+            str(item).strip().lower()
+            for item in (preferences.get("allowed_capabilities") or [])
+        }
+        self.screen_access = tk.BooleanVar(value="screen" in capabilities)
+        self.cursor_access = tk.BooleanVar(value="cursor" in capabilities)
+        self.keyboard_access = tk.BooleanVar(value="keyboard" in capabilities)
+        self.apps_access = tk.BooleanVar(value="apps" in capabilities)
 
         self._field(form, "Owner name", lambda row: ctk.CTkEntry(
             row, textvariable=self.owner, width=280, height=32,
@@ -1093,6 +1590,22 @@ class SettingsPage(Page):
             row, text="journal exchanges and build training material", variable=self.improvement,
             progress_color=theme.ACCENT, text_color=theme.TEXT,
             font=ctk.CTkFont(family=theme.FONT, size=11)))
+        self._field(switches, "Screen access", lambda row: ctk.CTkSwitch(
+            row, text="let screen tools see the display (asks each time)",
+            variable=self.screen_access, progress_color=theme.ACCENT,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=11)))
+        self._field(switches, "Pointer control", lambda row: ctk.CTkSwitch(
+            row, text="move and click the pointer (always asks)",
+            variable=self.cursor_access, progress_color=theme.ACCENT,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=11)))
+        self._field(switches, "Keyboard control", lambda row: ctk.CTkSwitch(
+            row, text="type and press keys (always asks)",
+            variable=self.keyboard_access, progress_color=theme.ACCENT,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=11)))
+        self._field(switches, "Open apps", lambda row: ctk.CTkSwitch(
+            row, text="launch apps and show pages in the browser (always asks)",
+            variable=self.apps_access, progress_color=theme.ACCENT,
+            text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=11)))
         self.learning_note = ctk.CTkLabel(
             switches, text="", text_color=theme.MUTED, anchor="w", justify="left",
             wraplength=780, font=ctk.CTkFont(family=theme.FONT, size=11),
@@ -1281,6 +1794,16 @@ class SettingsPage(Page):
                     "agent_max_steps": int(self.max_steps.get()),
                     "voice_enabled": bool(self.voice_enabled.get()),
                     "allowed_folders": self.allowed_folders,
+                    "allowed_capabilities": [
+                        name
+                        for name, variable in (
+                            ("screen", self.screen_access),
+                            ("cursor", self.cursor_access),
+                            ("keyboard", self.keyboard_access),
+                            ("apps", self.apps_access),
+                        )
+                        if variable.get()
+                    ],
                 }
             )
             self.runtime.set_control(
@@ -1365,6 +1888,14 @@ class SettingsPage(Page):
         self.improvement.set(bool(control["self_improvement"]))
         self.shutdown.set(bool(control["shutdown"]))
         preferences = self.runtime.preferences()
+        capabilities = {
+            str(item).strip().lower()
+            for item in (preferences.get("allowed_capabilities") or [])
+        }
+        self.screen_access.set("screen" in capabilities)
+        self.cursor_access.set("cursor" in capabilities)
+        self.keyboard_access.set("keyboard" in capabilities)
+        self.apps_access.set("apps" in capabilities)
         saved_folders = preferences.get("allowed_folders")
         if saved_folders is None:
             saved_folders = self.runtime.status().get("allowed_folders", [])
@@ -1402,19 +1933,22 @@ class AboutPage(Page):
             "",
             f"Data directory   {status['data_dir']}",
             f"Database         {status['database']}",
-            f"Model checkpoint {status['checkpoint']}",
-            f"Model trained    {'yes' if status['model_ready'] else 'no — train with brain-lab/train.py'}",
+            f"Brain            {status.get('provider', 'unknown')}",
+            f"Main model       {status.get('model') or status['checkpoint']}",
+            f"Coding model     {status.get('coding_model') or 'same as main'}",
+            f"Model ready      {'yes' if status['model_ready'] else 'no'}",
             f"Speech voices    {', '.join(status['voices'].values()) or 'none'}",
             f"Web tools        {'on' if status['browser'] else 'off'}",
+            f"Machine access   {', '.join(status.get('capabilities', [])) or 'off'}",
             f"Learning         {'on' if status['self_improvement'] else 'off'}",
             f"Emergency stop   {'engaged' if status['shutdown'] else 'not engaged'}",
             "",
             "Identity and capability questions are answered from this configuration,",
             "so they stay accurate even before a model is installed.",
             "",
-            "The language model is trained from scratch on this machine. It is a",
-            "small research prototype, not a general assistant: expect short,",
-            "repetitive answers until it is trained on a much larger corpus.",
+            "The model is served locally by Ollama; conversations do not leave this",
+            "machine. The runtime still validates every tool call, enforces the folder",
+            "allow-list, and asks before every write.",
         ]
         self.body.configure(state="normal")
         self.body.delete("1.0", "end")
@@ -1423,12 +1957,15 @@ class AboutPage(Page):
 
 
 PAGES: list[type[Page]] = [
+    PresencePage,
     ChatPage,
+    CanvasPage,
     ActivityPage,
     DayPlanPage,
     ApprovalsPage,
     ConversationsPage,
     VoicePage,
+    MemoryPage,
     SettingsPage,
     AboutPage,
 ]

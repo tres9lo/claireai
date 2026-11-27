@@ -47,11 +47,12 @@ def build_brain(settings: Any) -> Brain:
     options: dict[str, Any] = {}
     if provider == "ollama":
         options["coding_model"] = str(getattr(settings, "brain_coding_model", "") or "") or None
+        options["think"] = bool(getattr(settings, "brain_think", False))
     return brain_class(
         model=model,
         base_url=base_url,
         api_key=getattr(settings, "brain_api_key_value", None),
-        timeout=getattr(settings, "brain_timeout_seconds", 60.0),
+        timeout=getattr(settings, "brain_timeout_seconds", 180.0),
         max_tokens=getattr(settings, "brain_max_tokens", 1024),
         **options,
     )

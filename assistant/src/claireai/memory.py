@@ -6,10 +6,10 @@ API key. A deterministic hashing embedder is available as an explicit offline
 provider for tests and machines that cannot run the model; it is not silently
 mixed with model vectors.
 
-Memory is only written when the owner invokes ``remember_note`` (which needs
-approval) or code explicitly adds an entry. Ordinary chat text is already stored
-as conversation history under the normal retention rules; it is not embedded in
-the background.
+Memory is written when the owner invokes ``remember_note`` (which needs approval),
+when code explicitly adds an entry, or when the owner opts into
+``memory_auto_embed``. Ordinary chat text is otherwise kept only as conversation
+history under the normal retention rules.
 """
 
 from __future__ import annotations
@@ -265,9 +265,66 @@ class MemoryIndex:
             self.conn.execute("SELECT COUNT(*) AS n FROM memory_entries").fetchone()["n"]
         )
 
+    def list_entries(
+        self, *, limit: int = 50, offset: int = 0, kind: str | None = None
+    ) -> list[MemoryHit]:
+        """Newest local entries, for the owner-facing memory manager."""
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("limit must be from 1 to 200")
+        if type(offset) is not int or offset < 0:
+            raise ValueError("offset must be zero or greater")
+        query = (
+            "SELECT id, created_at, kind, source_id, text, dimensions, model "
+            "FROM memory_entries"
+        )
+        params: list[object] = []
+        if kind is not None:
+            if kind not in {"note", "turn"}:
+                raise ValueError("memory kind must be note or turn")
+            query += " WHERE kind = ?"
+            params.append(kind)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend((limit, offset))
+        return [
+            MemoryHit(
+                id=row["id"],
+                text=row["text"],
+                kind=row["kind"],
+                source_id=row["source_id"],
+                created_at=row["created_at"],
+                score=0.0,
+                model=row["model"],
+            )
+            for row in self.conn.execute(query, params)
+        ]
+
     def delete(self, entry_id: str) -> bool:
         cursor = self.conn.execute("DELETE FROM memory_entries WHERE id = ?", (entry_id,))
         return cursor.rowcount == 1
+
+
+def remember_completed_turn(
+    settings: Settings,
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    question: str,
+    answer: str,
+) -> str | None:
+    """Best-effort local embedding of a completed chat turn.
+
+    This is opt-in through ``memory_auto_embed``. A missing Ollama model must
+    never turn a delivered answer into a failed turn, so callers treat errors as
+    a skipped memory write.
+    """
+    if not settings.memory_enabled or not settings.memory_auto_embed:
+        return None
+    text = f"User: {question.strip()}\nAssistant: {answer.strip()}".strip()
+    if not text:
+        return None
+    return MemoryIndex(conn, embedder_for(settings)).add(
+        text[:MAX_NOTE_CHARS], kind="turn", source_id=task_id
+    )
 
 
 def memory_index(settings: Settings, conn: sqlite3.Connection) -> MemoryIndex | None:

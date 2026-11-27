@@ -32,7 +32,7 @@ DEFAULT_WAKEWORD_MODEL = "hey_jarvis"
 # Machine-access capabilities (docs/architecture/machine-access.md). Knowing the
 # names here lets configuration reject typos early; the tools that use them land
 # in Month 1 Week 3 and Months 2-3.
-KNOWN_CAPABILITIES = frozenset({"screen", "camera", "cursor", "keyboard", "clipboard"})
+KNOWN_CAPABILITIES = frozenset({"screen", "camera", "cursor", "keyboard", "clipboard", "apps"})
 
 
 class Settings(BaseSettings):
@@ -65,8 +65,16 @@ class Settings(BaseSettings):
     brain_coding_model: str = DEFAULT_OLLAMA_CODING_MODEL
     brain_base_url: str | None = None
     brain_api_key: SecretStr | None = None
-    brain_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+    # CPU prompt processing is the dominant cost on the target machine. A
+    # file-path request once sent 25 schemas because routing missed the
+    # extension, and a 39-token call took 112.8 s. Routing now narrows that
+    # case, but 60 s was still too close to the real generation budget.
+    brain_timeout_seconds: float = Field(default=180.0, gt=0, le=600)
     brain_max_tokens: int = Field(default=1024, ge=1, le=16384)
+    # Qwen3 emits hidden reasoning by default. On this CPU that turned a 2-token
+    # answer into 7.5 s instead of 1.8 s, and tool calls are already structured.
+    # The owner can opt back in for deliberately difficult reasoning.
+    brain_think: bool = False
 
     # Tool sandbox (roadmap 7.2). Empty by default: file tools can reach nothing
     # until the owner names the folders. Set as a JSON array, e.g.
@@ -103,6 +111,10 @@ class Settings(BaseSettings):
     # machine; `hash` is an explicit offline fallback for constrained machines
     # and tests, not a silent substitute for the embedding model.
     memory_enabled: bool = True
+    # Off by default: ordinary chat is already kept as conversation history.
+    # When enabled, each completed turn is embedded locally as a `turn` entry so
+    # semantic search can find it without a separate remember action.
+    memory_auto_embed: bool = False
     embedding_provider: Literal["ollama", "hash"] = "ollama"
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_base_url: str | None = None
@@ -113,6 +125,11 @@ class Settings(BaseSettings):
     wakeword_enabled: bool = False
     wakeword_model: str = DEFAULT_WAKEWORD_MODEL
     wakeword_threshold: float = Field(default=0.5, gt=0, le=1)
+    # openWakeWord only knows its trained phrases (the default model is
+    # "hey_jarvis"). "stt" uses the local faster-whisper model to hear an
+    # arbitrary phrase such as "Hey Claire" in the owner's own voice.
+    wakeword_engine: Literal["openwakeword", "stt"] = "stt"
+    wakeword_phrase: str = "hey claire"
 
     # The HTTP API binds loopback unless the owner explicitly changes the host.
     # A bearer token is required for every route except /health.
@@ -190,6 +207,10 @@ class Settings(BaseSettings):
         if not wakeword_model:
             raise ValueError("CLAIREAI_WAKEWORD_MODEL must not be empty")
         object.__setattr__(self, "wakeword_model", wakeword_model)
+        wakeword_phrase = (self.wakeword_phrase or "").strip()
+        if not wakeword_phrase:
+            raise ValueError("CLAIREAI_WAKEWORD_PHRASE must not be empty")
+        object.__setattr__(self, "wakeword_phrase", wakeword_phrase)
         api_host = (self.api_host or "").strip()
         if not api_host:
             raise ValueError("CLAIREAI_API_HOST must not be empty")

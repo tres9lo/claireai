@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import tkinter as tk
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,11 @@ def _runtime(tmp_path: Path) -> DesktopRuntime:
 
 
 def test_the_database_is_migrated_and_status_is_honest(tmp_path) -> None:
-    runtime = _runtime(tmp_path)
+    # Use the archived provider so this assertion does not depend on whether the
+    # host happens to have the Ollama tags pulled.
+    runtime = DesktopRuntime(
+        Settings(_env_file=None, data_dir=tmp_path / "data", brain_provider="scratch")
+    )
     status = runtime.status()
 
     assert Path(status["database"]).is_file()
@@ -54,8 +59,14 @@ def test_preferences_are_validated_like_the_runtime(tmp_path) -> None:
     runtime.update_preferences({"owner_name": "Ange", "voice_rate": 200})
     assert runtime.preferences()["owner_name"] == "Ange"
 
+    runtime.update_preferences({"allowed_capabilities": ["screen", "keyboard"]})
+    assert runtime.preferences()["allowed_capabilities"] == ["screen", "keyboard"]
+    assert runtime.status()["capabilities"] == ["screen", "keyboard"]
+
     with pytest.raises(ValueError):
         runtime.update_preferences({"max_output_tokens": 100000})
+    with pytest.raises(ValueError):
+        runtime.update_preferences({"allowed_capabilities": ["teleport"]})
     with pytest.raises(ValueError):
         runtime.update_preferences({"not_a_setting": 1})
 
@@ -126,15 +137,18 @@ class FakeRuntime:
         return {
             "owner_name": "Tester", "response_style": "balanced", "max_output_tokens": 128,
             "agent_max_steps": 8, "voice_enabled": False, "voice_pitch": 50, "voice_rate": 175,
-            "allowed_folders": [],
+            "wakeword_engine": "stt", "wakeword_phrase": "hey claire",
+            "allowed_folders": [], "allowed_capabilities": [],
         }
 
     def status(self):
         return {
             "data_dir": str(self.data_dir), "database": str(self.data_dir / "db.sqlite3"),
+            "provider": "scratch", "model": None, "coding_model": None,
             "checkpoint": str(self.data_dir / "model.pt"), "model_ready": False,
             "voices": {"en": "English", "fr": "French"}, "browser": False,
             "shutdown": False, "self_improvement": False, "allowed_folders": [],
+            "capabilities": [],
         }
 
     def control(self):
@@ -179,6 +193,26 @@ class FakeRuntime:
 
     def stop_speaking(self):
         self.speech_stops += 1
+
+    def wakeword_status(self):
+        return {
+            "running": False,
+            "engine": "stt",
+            "phrase": "hey claire",
+            "label": "hey claire",
+            "model": "hey_jarvis",
+            "threshold": 0.5,
+            "error": "",
+        }
+
+    def memory_entries(self, query="", limit=20):
+        return []
+
+    def memory_status(self):
+        return {"count": 0, "embedder": "hash", "auto_embed": False}
+
+    def set_memory_auto_embed(self, enabled):
+        return {"auto_embed": bool(enabled)}
 
     def start_background_learning(self):
         return None
@@ -252,7 +286,12 @@ def test_saving_voice_tuning_does_not_turn_speech_on(tmp_path) -> None:
     page.transcript_note = SimpleNamespace(configure=lambda **_kwargs: None)
     page.save()
 
-    assert page.runtime.preference_updates == [{"voice_pitch": 60, "voice_rate": 190}]
+    updates = page.runtime.preference_updates[-1]
+    assert updates["voice_pitch"] == 60
+    assert updates["voice_rate"] == 190
+    assert "voice_enabled" not in updates
+    assert updates["wakeword_engine"] == "openwakeword"
+    assert updates["wakeword_phrase"] == "hey claire"
 
 
 def test_turning_speak_replies_off_persists_and_stops_audio(tmp_path) -> None:
@@ -312,6 +351,58 @@ def test_approvals_page_shows_pending_actions_immediately(tmp_path, tk_root) -> 
     page = app.pages[ApprovalsPage]
     assert page.tree.get_children() == ("ref-1",)
     assert "1 waiting" in page.note.cget("text")
+
+    # The page repolls every 1.5s. A rebuild must not clear the owner's click.
+    page.tree.selection_set("ref-1")
+    page.refresh()
+    assert page.tree.selection() == ("ref-1",)
+    assert "create_folder" in page.preview.get("1.0", "end")
+
+
+def test_permission_card_opens_without_leaving_the_window(tmp_path, tk_root) -> None:
+    pytest.importorskip("customtkinter")
+    from claireai.desktop.app import ClaireDesktop
+    from claireai.desktop.pages import ChatPage
+
+    class PendingRuntime(FakeRuntime):
+        def pending_approvals(self):
+            return [
+                {
+                    "ref": "ref-card",
+                    "task_id": "task-1",
+                    "tool": "create_text_file",
+                    "risk": "needs_approval",
+                    "target": "/tmp/example.txt",
+                    "description": "ClaireAI wants to write a note.",
+                    "expires_in": 120,
+                }
+            ]
+
+    app = ClaireDesktop(tk_root, PendingRuntime(tmp_path))  # type: ignore[arg-type]
+    app.show(ChatPage)
+    app._poll_approvals()
+
+    assert app.current is ChatPage
+    assert app._approval_dialog is not None
+    assert app._approval_dialog.title() == "ClaireAI permission"
+    assert app._approval_dialog.resizable() == (1, 1)
+
+    def labels(widget):
+        found = []
+        for child in widget.winfo_children():
+            try:
+                text = child.cget("text")
+            except (ValueError, tk.TclError):
+                text = ""
+            if text:
+                found.append(text)
+            found.extend(labels(child))
+        return found
+
+    assert "Allow once" in labels(app._approval_dialog)
+    assert "Deny" in labels(app._approval_dialog)
+    app._approval_dialog.destroy()
+    app._approval_dialog = None
 
 
 def test_day_plan_page_adds_and_lists_a_task(tmp_path, tk_root) -> None:

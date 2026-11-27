@@ -22,7 +22,7 @@ from typing import Any, Callable
 import customtkinter as ctk
 
 from claireai.desktop import theme
-from claireai.desktop.pages import PAGES, Page
+from claireai.desktop.pages import PAGES, ChatPage, Page, VoicePage
 from claireai.desktop.runtime import DesktopRuntime
 
 
@@ -42,6 +42,8 @@ class ClaireDesktop:
         self.current: type[Page] | None = None
         self.animator = theme.Animator(root)
         self._closing = False
+        self._approval_dialog: ctk.CTkToplevel | None = None
+        self._approval_prompted: set[str] = set()
 
         self._sidebar_width = 0
         self._window_icon = None
@@ -51,6 +53,10 @@ class ClaireDesktop:
         self.show(PAGES[0])
         self.root.after(60, self._pump)
         self.root.after(400, self._poll_approvals)
+        self.root.after(700, self._restore_wakeword)
+        # First token on this CPU can include a full model load. Do that while
+        # the owner is looking at the window, not after they press Send.
+        self.root.after(1400, self._warm_model)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     # -- construction ----------------------------------------------------
@@ -157,6 +163,11 @@ class ClaireDesktop:
             anchor="w",
         )
         self.status_text.pack(side="left", padx=(6, 0))
+        self.mic_badge = ctk.CTkLabel(
+            footer, text="", text_color=theme.ACCENT,
+            font=ctk.CTkFont(family=theme.FONT, size=10, weight="bold"),
+        )
+        self.mic_badge.pack(side="left", padx=(8, 0))
 
         self.badge = ctk.CTkLabel(
             self.sidebar,
@@ -343,29 +354,227 @@ class ClaireDesktop:
         self.flash_badge(f"{type(error).__name__}: {error}"[:200])
         self.set_status("problem", theme.DANGER)
 
+    def _warm_model(self) -> None:
+        if self._closing:
+            return
+        warm = getattr(self.runtime, "warm_model", None)
+        if not callable(warm):
+            return
+        self.submit("warm", warm, lambda _result: None)
+
     def _poll_approvals(self) -> None:
         try:
             pending = self.runtime.pending_approvals()
         except Exception as error:  # noqa: BLE001 - keep polling
             pending = []
             self.report_error(error)
+        wake = self.runtime.wakeword_status()
+        self.mic_badge.configure(
+            text="● mic" if wake["running"] else "",
+            text_color=theme.ACCENT if wake["running"] else theme.MUTED,
+        )
         if pending:
             self.flash_badge(f"{len(pending)} action(s) waiting for approval")
             self.set_status("needs you", theme.WARN)
+            first = pending[0]
+            ref = str(first.get("ref") or "")
+            if (
+                ref
+                and self._approval_dialog is None
+                and ref not in self._approval_prompted
+            ):
+                self._show_approval_dialog(first)
         elif self.runtime.stopped():
             self.flash_badge("")
             self.set_status("stopped", theme.DANGER)
+        elif wake["running"]:
+            self.flash_badge(f"Wake word on · say {wake.get('label') or wake['model'].replace('_', ' ')}")
+            self.set_status("listening", theme.ACCENT)
+        elif wake["enabled"] and wake["error"]:
+            self.flash_badge(wake["error"][:200])
+            self.set_status("wake word error", theme.DANGER)
         else:
             self.flash_badge("")
             self.set_status("ready", theme.OK)
+        if not pending:
+            self._approval_prompted.clear()
         if not self._closing:
             self.root.after(1200, self._poll_approvals)
+
+    def _show_approval_dialog(self, item: dict[str, Any]) -> None:
+        """A modern, in-window confirmation for one exact action."""
+        if self._approval_dialog is not None or self._closing:
+            return
+        ref = str(item.get("ref") or "")
+        if not ref:
+            return
+        self._approval_prompted.add(ref)
+
+        dialog = ctk.CTkToplevel(self.root)
+        self._approval_dialog = dialog
+        dialog.title("ClaireAI permission")
+        dialog.configure(fg_color=theme.BACKGROUND)
+        # A normal decorated window: the title bar must keep its minimise and
+        # close controls. The old fixed, non-resizable, transient dialog clipped
+        # the action row on smaller screens and could not be minimised.
+        dialog.resizable(True, True)
+        dialog.minsize(520, 430)
+        dialog.geometry("580x500")
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - 580) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - 500) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        shell = ctk.CTkFrame(
+            dialog, corner_radius=22, fg_color=theme.SURFACE,
+            border_width=1, border_color=theme.BORDER,
+        )
+        shell.pack(fill="both", expand=True, padx=14, pady=14)
+
+        # Reserve the action row at the bottom before long descriptions can
+        # claim the height. This is what keeps Allow/Deny visible.
+        actions = ctk.CTkFrame(shell, fg_color="transparent")
+        actions.pack(side="bottom", fill="x", padx=22, pady=(12, 18))
+
+        top = ctk.CTkFrame(shell, fg_color="transparent")
+        top.pack(fill="x", padx=22, pady=(20, 0))
+        orb = ctk.CTkLabel(
+            top, text="◈", width=44, height=44, corner_radius=22,
+            fg_color=theme.ACCENT_DEEP, text_color=theme.ACCENT,
+            font=ctk.CTkFont(family=theme.FONT, size=22),
+        )
+        orb.pack(side="left")
+        heading = ctk.CTkFrame(top, fg_color="transparent")
+        heading.pack(side="left", padx=12)
+        ctk.CTkLabel(
+            heading, text="Permission needed", anchor="w", text_color=theme.ACCENT,
+            font=ctk.CTkFont(family=theme.FONT, size=11, weight="bold"),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            heading, text=str(item.get("tool") or "action").replace("_", " "),
+            anchor="w", text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=20, weight="bold"),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            top, text=str(item.get("risk") or "needs approval").replace("_", " "),
+            text_color=theme.WARN, fg_color=theme.SURFACE_HIGH, corner_radius=10,
+            padx=10, pady=3, font=ctk.CTkFont(family=theme.FONT, size=10, weight="bold"),
+        ).pack(side="right", pady=10)
+
+        target = str(item.get("target") or "")
+        if target:
+            ctk.CTkLabel(
+                shell, text=target, anchor="w", justify="left", wraplength=480,
+                text_color=theme.TEXT, font=ctk.CTkFont(family=theme.FONT, size=12, weight="bold"),
+            ).pack(fill="x", padx=26, pady=(18, 0))
+
+        description = str(item.get("description") or item.get("preview") or "")
+        detail = ctk.CTkLabel(
+            shell, text=description, anchor="w", justify="left", wraplength=500,
+            height=58, text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=11),
+        )
+        detail.pack(fill="x", padx=26, pady=(8, 0))
+
+        expires = int(item.get("expires_in") or 0)
+        ctk.CTkLabel(
+            shell,
+            text=f"This exact action expires in {expires}s. Nothing else is approved.",
+            anchor="w", text_color=theme.MUTED,
+            font=ctk.CTkFont(family=theme.FONT, size=10),
+        ).pack(fill="x", padx=26, pady=(14, 0))
+
+        def finish(approved: bool) -> None:
+            try:
+                self.runtime.decide_approval(ref, approved=approved)
+            except ValueError as error:
+                self.flash_badge(str(error)[:200])
+                self.set_status("approval expired", theme.WARN)
+            else:
+                self.flash_badge("Approved" if approved else "Denied")
+                self.set_status("ready", theme.OK)
+            close()
+
+        def close() -> None:
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            if dialog.winfo_exists():
+                dialog.destroy()
+            if self._approval_dialog is dialog:
+                self._approval_dialog = None
+
+        ctk.CTkButton(
+            actions, text="Deny", command=lambda: finish(False), height=38,
+            corner_radius=12, fg_color=theme.SURFACE_HIGH,
+            hover_color=theme.SURFACE_HOVER, text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT, size=12, weight="bold"),
+        ).pack(side="left")
+        ctk.CTkButton(
+            actions, text="Allow once", command=lambda: finish(True), height=38,
+            corner_radius=12, fg_color=theme.ACCENT, hover_color=theme.ACCENT_ALT,
+            text_color=theme.BACKGROUND,
+            font=ctk.CTkFont(family=theme.FONT, size=12, weight="bold"),
+        ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        dialog.lift()
+        dialog.focus_force()
+
+    # -- wake word -------------------------------------------------------
+
+    def _restore_wakeword(self) -> None:
+        if not self._closing and self.runtime.wakeword_requested():
+            self.start_wakeword(announce=False)
+
+    def start_wakeword(self, *, announce: bool = True) -> None:
+        try:
+            self.runtime.start_wakeword(self._voice_command_ready)
+        except Exception as error:  # noqa: BLE001 - the Voice page explains the fix
+            self.flash_badge(f"Wake word: {error}"[:200])
+            self.set_status("wake word error", theme.DANGER)
+            if VoicePage in self.pages:
+                self.pages[VoicePage].refresh_wakeword()
+            return
+        wake = self.runtime.wakeword_status()
+        self.flash_badge(
+            f"Wake word on · say {wake.get('label') or wake['model'].replace('_', ' ')}"
+        )
+        self.set_status("listening", theme.ACCENT)
+        if announce:
+            self.show(ChatPage)
+        if VoicePage in self.pages:
+            self.pages[VoicePage].refresh_wakeword()
+
+    def stop_wakeword(self) -> None:
+        self.runtime.stop_wakeword()
+        self.flash_badge("Wake word off")
+        self.set_status("ready", theme.OK)
+        if VoicePage in self.pages:
+            self.pages[VoicePage].refresh_wakeword()
+
+    def _voice_command_ready(self, text: str) -> None:
+        """Called by the listener thread; hand Tk work to the main-loop queue.
+
+        ``root.after`` is not safe from a non-Tk thread. ``_pump`` already drains
+        this queue on the main loop, so a recognized command uses the same path
+        as every other background result.
+        """
+        self.queue.put((self._deliver_voice_command, text))
+
+    def _deliver_voice_command(self, text: str) -> None:
+        if self._closing:
+            return
+        self.show(ChatPage)
+        page = self.pages[ChatPage]
+        page.send_text(text)
 
     # -- lifecycle -------------------------------------------------------
 
     def close(self) -> None:
         self._closing = True
         self.animator.stop_all()
+        self.runtime.stop_wakeword(persist=False)
         self.runtime.stop_background_learning()
         self.runtime.stop_speaking()
         self.root.destroy()

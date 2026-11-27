@@ -12,8 +12,15 @@ and the tool is ``dangerous``, so every call still goes through approval.
 
 from __future__ import annotations
 
+import atexit
 import io
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 MAX_COORDINATE = 100_000
@@ -25,19 +32,105 @@ class CuaError(RuntimeError):
     """The desktop could not perform this action."""
 
 
-def _backend() -> Any:
+_AUTH_TEMP: Path | None = None
+
+
+def _display_auth_file(display: str, source: str | Path | None) -> Path | None:
+    """Give pyautogui an Xauthority file that names the active display.
+
+    Xwayland here stores its cookie under ``hostname/unix:`` while ``DISPLAY``
+    is ``:0``. Python-Xlib sends no cookie for the display and the server
+    answers "Authorization required" even though the session cookie is valid.
+    Copy the existing cookie into a private temporary file under the active
+    display name. Nothing is added to the owner's real Xauthority file.
+    """
+    global _AUTH_TEMP
+    xauth = shutil.which("xauth")
+    if not xauth or not display or not source:
+        return None
+    source_path = Path(source)
+    if not source_path.is_file():
+        return None
     try:
-        import pyautogui  # type: ignore[import-not-found]
-    except Exception as exc:  # ImportError, and pyautogui's display probe
-        raise CuaError(
-            "computer control is not installed or no graphical session is available; "
-            "install the optional cua extra (pyautogui) and run inside the desktop session"
-        ) from exc
-    # pyautogui's fail-safe is valuable: moving the pointer to a screen corner
-    # aborts the next action. Keep it explicitly on.
+        listed = subprocess.run(
+            [xauth, "-f", str(source_path), "list"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    cookie = None
+    for line in (listed.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == "MIT-MAGIC-COOKIE-1":
+            cookie = parts[2]
+            break
+    if not cookie:
+        return None
+    try:
+        descriptor, name = tempfile.mkstemp(prefix="claireai-xauth-", suffix=".auth")
+        os.close(descriptor)
+        target = Path(name)
+        os.chmod(target, 0o600)
+        added = subprocess.run(
+            [xauth, "-f", str(target), "add", display, ".", cookie],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if added.returncode != 0:
+        target.unlink(missing_ok=True)
+        return None
+    _AUTH_TEMP = target
+    atexit.register(lambda: target.unlink(missing_ok=True))
+    return target
+
+
+def _import_gui() -> Any:
+    import pyautogui  # type: ignore[import-not-found]
+
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE = 0.03
     return pyautogui
+
+
+def _backend() -> Any:
+    try:
+        return _import_gui()
+    except Exception as first:  # ImportError, and pyautogui's display probe
+        message = str(first)
+        if "Authorization required" not in message and "authorization" not in message.lower():
+            raise CuaError(
+                "computer control is not installed or no graphical session is available; "
+                "install the optional cua extra (pyautogui) and run inside the desktop session"
+            ) from first
+        target = _display_auth_file(
+            os.environ.get("DISPLAY", ""), os.environ.get("XAUTHORITY")
+        )
+        if target is None:
+            raise CuaError(
+                "the display refused the session cookie; run ClaireAI inside the "
+                "signed-in desktop session or grant XWayland access"
+            ) from first
+        os.environ["XAUTHORITY"] = str(target)
+        # A failed import leaves partial pyautogui/Xlib modules cached; retry
+        # from a clean module state after setting the corrected auth file.
+        for name in tuple(sys.modules):
+            if name in {"pyautogui", "mouseinfo", "Xlib"} or name.startswith(
+                ("pyautogui.", "mouseinfo.", "Xlib.")
+            ):
+                sys.modules.pop(name, None)
+        try:
+            return _import_gui()
+        except Exception as exc:
+            raise CuaError(
+                "the desktop session is reachable but input control was refused"
+            ) from exc
 
 
 def _coordinate(value: int, name: str) -> int:
@@ -57,7 +150,7 @@ class CuaDriver:
         if self._backend is not None:
             return True
         try:
-            import pyautogui  # noqa: F401
+            self._backend = _backend()
         except Exception:
             return False
         return True

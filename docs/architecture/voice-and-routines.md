@@ -1,9 +1,9 @@
 # Voice, consent and routines
 
 This document records the owner requirements and the security boundary for the
-hands-free assistant. The local wake-word adapter/listener exists now; voice
-identity, spoken approvals and routine replay remain targets. Push-to-talk
-speech input is optional and local.
+hands-free assistant. A local “Hey Claire” speech listener and the optional
+openWakeWord adapter exist now; voice identity, spoken approvals and routine
+replay remain targets. Push-to-talk speech input is optional and local.
 
 ## Voice interaction
 
@@ -11,9 +11,10 @@ The voice pipeline is local and visible:
 
 1. The owner explicitly enables the microphone and sees a persistent listening
    indicator plus a one-action mute/stop control.
-2. A local wake-word detector recognizes the configurable phrase (initial target:
-   “Hey Claire”) from a rolling in-memory audio window. It does not save or upload
-   that window.
+2. A local phrase detector recognizes “Hey Claire” from a rolling in-memory
+   audio window. The default `stt` engine uses the local faster-whisper model with
+   a hotword and pre-roll; openWakeWord remains an alternative. It does not save
+   or upload that window.
 3. The system records a bounded command, transcribes it locally, and shows the
    recognized text before executing a consequential task. Push-to-talk remains
    available if wake detection is disabled or unavailable.
@@ -60,17 +61,28 @@ text are never captured into a routine.
 
 ## Current implementation evidence
 
-- The desktop Voice page now has opt-in push-to-talk capture and transcript
-  review, and can install/use an optional local Whisper tiny speech-recognition model. The
-  user still presses Send; this local chat path does not invoke computer tools.
-- `claireai.wakeword` now wraps openWakeWord and a bounded microphone listener;
-  `scripts/wakeword_check.py` is an explicit check. No model is downloaded and
-  no "Hey Claire" model is bundled. On 2026-11-25 the real `hey_jarvis` ONNX
-  model loaded, scored a synthesized "hey jarvis" clip up to 0.9967 and ignored
-  silence; the listener opened ALSA `arecord` capture for a 3-second run. A
-  human-spoken microphone acceptance test is still pending. Speaker enrollment,
-  vocal approval and routine replay are still unimplemented. eSpeak NG output
-  remains optional and separately installed.
+- The desktop Voice page has opt-in push-to-talk capture and transcript review,
+  and the wake listener uses the local Whisper model for “Hey Claire.” On
+  2026-11-27 a synthesized “Hey Claire, open the notes” clip was detected as
+  `('hey claire', 'open the nose')`: phrase detection works end-to-end, but the
+  small ASR misheard one command and a human-spoken acceptance run is still
+  pending. Start/stop returned `running False`, `state stopped`.
+- A detection only starts a turn. It does not grant a capability, and this local
+  chat path does not invoke computer tools without the normal approval.
+- `claireai.wakeword` has two local listeners. The default `stt` engine uses the
+  installed faster-whisper model with a `hey claire` hotword and 0.45 s pre-roll,
+  so it does not need a custom trained model; the alternative wraps
+  openWakeWord. `scripts/wakeword_check.py` is an explicit openWakeWord check.
+  The Tk **Voice** page starts and stops hands-free mode, persists the choice,
+  shows a sidebar microphone indicator and turns a detection into the next chat
+  turn. Audio is held in memory; detection grants no capability. On 2026-11-27 a
+  synthesized “Hey Claire, open the notes” clip was detected end-to-end, and
+  start/stop returned `running False`, `state stopped`. On 2026-11-25 the real
+  `hey_jarvis` ONNX model scored a synthesized clip up to 0.9967 and ignored
+  silence. A human-spoken acceptance test remains pending; openWakeWord still
+  needs a matching custom model. Speaker enrollment, vocal approval and routine
+  replay are unimplemented. eSpeak NG output remains optional and separately
+  installed.
 - The active development host is a Wayland session. The session portal advertises
   ScreenCast and Screenshot, but no screenshot tool is implemented. The normal
   screen-observation path should use the user-granted ScreenCast stream so frames

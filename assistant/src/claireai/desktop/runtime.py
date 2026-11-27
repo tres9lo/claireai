@@ -13,6 +13,7 @@ import os
 import shutil
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -101,6 +102,12 @@ class DesktopRuntime:
         self.journal = LearningJournal(self.settings.resolved_data_dir)
         self._learner: BackgroundLearner | None = None
         self._trainer: TrainingWorker | None = None
+        self._wakeword_service = None
+        self._wakeword_on_command: Any = None
+        self._wakeword_state = "stopped"
+        self._wakeword_error: str | None = None
+        self._wakeword_available: bool | None = None
+        self._wakeword_last: dict[str, Any] | None = None
 
     # -- plumbing ---------------------------------------------------------
 
@@ -220,8 +227,28 @@ class DesktopRuntime:
         allowed = lambda: bool(self.control()["self_improvement"])  # noqa: E731
         self._learner = BackgroundLearner(self.journal, enabled=allowed)
         self._learner.start()
-        self._trainer = TrainingWorker(self.data_dir, enabled=allowed)
-        self._trainer.start()
+        # The trainer belongs to the same opt-in lifecycle as the journal
+        # compiler. It used to be started from warm_model(), where `allowed`
+        # was undefined; that raised on every Ollama startup.
+        if self._trainer is None:
+            self._trainer = TrainingWorker(self.data_dir, enabled=allowed)
+            self._trainer.start()
+
+    def warm_model(self) -> None:
+        """Load and pin the local model before the first message arrives."""
+        if self.settings.brain_provider != "ollama":
+            return
+
+        async def run() -> None:
+            brain = build_brain(self.settings)
+            try:
+                warm = getattr(brain, "warm", None)
+                if callable(warm):
+                    await warm()
+            finally:
+                await brain.aclose()
+
+        asyncio.run(run())
 
     def stop_background_learning(self) -> None:
         for worker in (self._learner, self._trainer):
@@ -233,11 +260,13 @@ class DesktopRuntime:
     def status(self) -> dict[str, Any]:
         checkpoint = self.settings.resolved_model_checkpoint
         control = self.control()
+        preferences = self.preferences()
         return {
             "data_dir": str(self.data_dir),
             "database": str(self.settings.database_path),
             "provider": self.settings.brain_provider,
             "model": self.settings.brain_model,
+            "coding_model": self.settings.brain_coding_model,
             "checkpoint": str(checkpoint),
             "model_ready": self.model_status()["ready"],
             "voices": available_voices(),
@@ -245,6 +274,10 @@ class DesktopRuntime:
             "shutdown": control["shutdown"],
             "self_improvement": control["self_improvement"],
             "allowed_folders": [str(path) for path in self.settings.allowed_folder_roots],
+            "capabilities": list(
+                preferences.get("allowed_capabilities")
+                or self.settings.allowed_capabilities
+            ),
         }
 
     # -- preferences and directives --------------------------------------
@@ -296,11 +329,202 @@ class DesktopRuntime:
     def recent_tasks(self, limit: int = 60) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT id, created_at, status, request, error FROM tasks"
-                " ORDER BY created_at DESC LIMIT ?",
+                "SELECT id, created_at, updated_at, finished_at, status, request, error"
+                " FROM tasks ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # -- local memory ------------------------------------------------------
+
+    def memory_entries(
+        self, *, query: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """The owner-facing view of local memory; never writes."""
+        from claireai.memory import memory_index
+
+        with self._conn() as conn:
+            index = memory_index(self.settings, conn)
+            if index is None:
+                return []
+            hits = (
+                index.search(query, limit=min(limit, 10))
+                if query
+                else index.list_entries(limit=limit)
+            )
+        return [
+            {
+                "id": hit.id,
+                "created_at": hit.created_at,
+                "kind": hit.kind,
+                "source_id": hit.source_id,
+                "text": hit.text,
+                "score": round(hit.score, 4),
+                "model": hit.model,
+            }
+            for hit in hits
+        ]
+
+    def memory_status(self) -> dict[str, Any]:
+        from claireai.memory import embedder_for, memory_index
+
+        with self._conn() as conn:
+            index = memory_index(self.settings, conn)
+            count = index.count() if index is not None else 0
+        return {
+            "enabled": self.settings.memory_enabled,
+            "auto_embed": bool(self.preferences().get("memory_auto_embed", False)),
+            "count": count,
+            "embedder": embedder_for(self.settings).name,
+        }
+
+    def delete_memory(self, entry_id: str) -> bool:
+        from claireai.memory import memory_index
+
+        with self._conn() as conn:
+            index = memory_index(self.settings, conn)
+            if index is None:
+                return False
+            return index.delete(entry_id)
+
+    def set_memory_auto_embed(self, enabled: bool) -> dict[str, Any]:
+        if type(enabled) is not bool:
+            raise ValueError("memory auto-embed must be true or false")
+        self.update_preferences({"memory_auto_embed": enabled})
+        return self.memory_status()
+
+    # -- wake word ---------------------------------------------------------
+
+    def wakeword_requested(self) -> bool:
+        """Whether the owner left hands-free mode enabled for this data dir."""
+        return bool(
+            self.preferences().get("wakeword_enabled", self.settings.wakeword_enabled)
+        )
+
+    def _on_wakeword_status(self, state: str, detail: dict[str, Any]) -> None:
+        self._wakeword_state = state
+        self._wakeword_error = detail.get("error")
+        if detail.get("phrase"):
+            self._wakeword_last = {
+                "phrase": detail["phrase"],
+                "score": detail.get("score"),
+                "at": time.time(),
+            }
+        if state in {"listening", "recording", "transcribing"}:
+            self.presence.emit(
+                "listening",
+                detail={
+                    "wake_word": getattr(
+                        self, "_wakeword_label", self.settings.wakeword_model
+                    ),
+                    "phase": state,
+                },
+                active={"microphone": True},
+            )
+        elif state == "error":
+            self.presence.emit(
+                "error",
+                detail={"wake_word": detail.get("error", "wake-word error")},
+                active={"microphone": False},
+            )
+        elif state == "stopped":
+            self.presence.emit("idle", active={"microphone": False})
+
+    def wakeword_status(self) -> dict[str, Any]:
+        service = self._wakeword_service
+        preferences = self.preferences()
+        engine = str(preferences.get("wakeword_engine", self.settings.wakeword_engine))
+        phrase = str(preferences.get("wakeword_phrase", self.settings.wakeword_phrase))
+        model = self.settings.wakeword_model
+        label = phrase if engine == "stt" else model.replace("_", " ")
+        return {
+            "enabled": self.wakeword_requested(),
+            "running": bool(service is not None and service.running),
+            "state": self._wakeword_state,
+            "engine": engine,
+            "phrase": phrase,
+            "label": label,
+            "model": model,
+            "threshold": self.settings.wakeword_threshold,
+            "available": self._wakeword_available,
+            "last": self._wakeword_last,
+            "error": self._wakeword_error,
+        }
+
+    def start_wakeword(self, on_command: Any) -> dict[str, Any]:
+        """Start hands-free listening and persist the owner's choice."""
+        from claireai.wakeword import (
+            SpeechWakeWordListener,
+            WakeWordService,
+            WakeWordUnavailable,
+        )
+
+        preferences = self.preferences()
+        engine = str(preferences.get("wakeword_engine", self.settings.wakeword_engine))
+        phrase = str(preferences.get("wakeword_phrase", self.settings.wakeword_phrase)).strip()
+        model = self.settings.wakeword_model
+        config = (engine, phrase, model, self.settings.wakeword_threshold)
+        try:
+            if self._wakeword_service is None or getattr(self, "_wakeword_config", None) != config:
+                if self._wakeword_service is not None:
+                    self._wakeword_service.stop()
+                if engine == "stt":
+                    from claireai.voice_input import transcriber_for
+
+                    transcriber = transcriber_for(
+                        str(self.data_dir / "models" / "voice" / "asr")
+                    )
+                    if not transcriber.runtime_available:
+                        raise WakeWordUnavailable(
+                            "wake phrase recognition needs the local speech extra "
+                            "(pip install faster-whisper) or choose openWakeWord"
+                        )
+                    if not transcriber.installed:
+                        raise WakeWordUnavailable(
+                            "wake phrase recognition needs the local speech model; "
+                            "install it from the Voice page"
+                        )
+                    self._wakeword_service = WakeWordService(
+                        model=phrase,
+                        threshold=self.settings.wakeword_threshold,
+                        data_dir=self.data_dir,
+                        engine_factory=lambda: object(),
+                        listener_factory=lambda _engine: SpeechWakeWordListener(
+                            phrase=phrase,
+                            transcribe=lambda audio: transcriber.transcribe(
+                                audio, content_type="audio/wav", hotwords=phrase
+                            ),
+                        ),
+                        on_status=self._on_wakeword_status,
+                    )
+                else:
+                    self._wakeword_service = WakeWordService(
+                        model=model,
+                        threshold=self.settings.wakeword_threshold,
+                        data_dir=self.data_dir,
+                        on_status=self._on_wakeword_status,
+                    )
+                self._wakeword_config = config
+            self._wakeword_label = phrase if engine == "stt" else model.replace("_", " ")
+            self._wakeword_service.start(on_command)
+        except WakeWordUnavailable as exc:
+            self._wakeword_available = False
+            self._wakeword_error = str(exc)
+            self._wakeword_state = "error"
+            raise
+        self._wakeword_available = True
+        self._wakeword_on_command = on_command
+        self.update_preferences({"wakeword_enabled": True})
+        return self.wakeword_status()
+
+    def stop_wakeword(self, *, persist: bool = True) -> dict[str, Any]:
+        if self._wakeword_service is not None:
+            self._wakeword_service.stop()
+        self._wakeword_state = "stopped"
+        self.presence.set_active(microphone=False)
+        if persist:
+            self.update_preferences({"wakeword_enabled": False})
+        return self.wakeword_status()
 
     # -- day plan ---------------------------------------------------------
 

@@ -7,9 +7,11 @@ dangerous capabilities in the product.
 
 Status: **partly implemented**. `see_screen` reads the display behind the
 `screen` capability and approval; `computer_control` moves/clicks/types/scrolls
-behind `cursor` or `keyboard`, is `dangerous`, and always asks. Camera capture and
-clipboard reading are still not built. No per-task grant object exists yet: the
-capability allow-list plus the per-action approval are the current boundary.
+behind `cursor` or `keyboard`, is `dangerous`, and always asks. `list_apps`,
+`open_app` and `open_in_browser` launch installed desktop entries behind the
+separate opt-in `apps` capability and approval. Camera capture and clipboard
+reading are still not built. No per-task grant object exists yet: the capability
+allow-list plus the per-action approval are the current boundary.
 
 ## Why this is separate from file tools
 
@@ -27,6 +29,8 @@ So machine access is denied by default, granted per task, and always visible.
 | `clipboard` | read clipboard text | `needs_approval` | off | clipboard notice |
 | `cursor` | move, click, drag, scroll | `dangerous` | off | pointer badge + "controlling input" |
 | `keyboard` | type text, press keys/hotkeys | `dangerous` | off | keyboard badge |
+| `apps` | launch an installed desktop application, show an approved URL, and arrange its window | `needs_approval` | off | app/URL/window name in the approval card |
+| `keyboard` (tab reorder) | focus a browser window and send the reorder-tab shortcut | `dangerous` | off | tab action in the approval card |
 
 `CLAIREAI_ALLOWED_CAPABILITIES` is a JSON array of capability names. **Empty is
 the default and means every machine-access tool is refused in code**, exactly
@@ -36,8 +40,15 @@ like an empty folder allow-list disables file tools:
 CLAIREAI_ALLOWED_CAPABILITIES='["screen", "camera"]'
 ```
 
-Being listed is permission for the capability to *exist*; each use still needs
-its own approval while no named pattern is trusted.
+The desktop **Settings → Capabilities** page can persist the same list for
+`screen`, `cursor`, `keyboard` and `apps`. Being listed is permission for the
+capability to *exist*; each use still needs its own approval while no named
+pattern is trusted. App launch resolves a desktop entry and never accepts an
+arbitrary shell command; browser URLs use the same `apps` gate. Window
+arrangement is X11/XWayland only, lists normal application windows, excludes the
+ClaireAI process from `tile_all`, and reports an empty list rather than guessing
+on a native-Wayland window. Browser tab reorder additionally requires
+`keyboard` and sends the standard reorder shortcut to the focused window.
 
 ## Grants
 
@@ -77,8 +88,11 @@ A grant is a record, not a boolean:
 
 This development machine runs **Wayland** (`XDG_SESSION_TYPE=wayland`) with
 `/dev/video0`–`/dev/video1` present and no `ydotool`, `xdotool` or `grim`
-installed. That is recorded here so nobody promises Linux cursor control on this
-laptop before testing the portal path.
+installed. Xwayland does provide XTest here, but its session cookie is stored
+under `hostname/unix:` while `DISPLAY=:0`. The driver now maps that cookie into a
+private temporary authority file, so pointer movement and keyboard input were
+verified without editing the owner's Xauthority file. A compositor that does not
+provide Xwayland still has no live cursor path on this host.
 
 ## Dependencies and licences
 

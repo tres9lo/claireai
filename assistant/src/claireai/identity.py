@@ -112,7 +112,10 @@ def capability_lines(
 
     if folders:
         shown = ", ".join(folders[:3]) + (" …" if len(folders) > 3 else "")
-        lines.append(f"Files: I can read inside the folders you allowed ({shown}).")
+        lines.append(
+            f"Files: inside {shown} I can list, search, read, create, edit with exact "
+            "replacements, rename and move files or folders."
+        )
     else:
         lines.append("Files: no folders are allowed yet, so file tools can reach nothing.")
 
@@ -121,9 +124,19 @@ def capability_lines(
         "the runtime answers date and agenda questions itself."
     )
     lines.append(
-        "Actions: anything that writes asks you first, the allow-list is deny-by-default, "
-        "and nothing is deleted permanently."
+        "Actions: every write and every move-to-trash asks you first. The allow-list is "
+        "deny-by-default, and removal uses a recoverable trash folder rather than "
+        "permanent deletion."
     )
+    capabilities = {str(item).strip().lower() for item in getattr(settings, "allowed_capabilities", ())}
+    if capabilities:
+        lines.append(
+            "Machine access: enabled for "
+            + ", ".join(sorted(capabilities))
+            + ". Every screen, pointer or keyboard action still asks for approval."
+        )
+    else:
+        lines.append("Machine access: off; screen, pointer and keyboard tools are refused.")
     lines.append("Web: browsing and downloads are " + ("on." if control.get("browser") else "off."))
 
     voices = []

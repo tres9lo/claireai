@@ -230,16 +230,20 @@ async def test_tool_schemas_are_offered_to_the_model(
 ) -> None:
     RuntimeControl(agent_settings.control_state_path).update({"browser": True})
     brain = ScriptedBrain([answer()])
-    await run_task(settings=agent_settings, conn=conn, brain=brain, request="hi")
+    # An unrecognised request still gets the whole catalog; a greeting no
+    # longer does, because the conversation route deliberately sends none.
+    await run_task(settings=agent_settings, conn=conn, brain=brain, request="something")
 
     tools = brain.calls[0]["tools"]
     names = {tool["function"]["name"] for tool in tools}
     assert {
-        "add_appointment",
-        "list_appointments",
+        "add_appointment",            "create_canvas",
+            "list_canvases",
+            "list_appointments",
         "list_folder",
         "get_file_info",
         "read_text_file",
+        "replace_in_file",
         "search_files",
         "find_largest_files",
         "world_news",
@@ -740,6 +744,24 @@ async def test_an_approved_action_records_the_same_reference_twice(
     assert '"approved": true' in (decision.detail or "")
 
 
+async def test_conversation_gets_no_tools_and_a_short_prompt(
+    conn: sqlite3.Connection, agent_settings: Settings
+) -> None:
+    brain = ScriptedBrain([answer("Hello.")])
+    await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="hello, how are you?",
+    )
+
+    assert brain.calls[0]["tools"] == []
+    system = brain.calls[0]["messages"][0]
+    assert system.role == "system"
+    assert len(system.content) < 300
+    assert "Allowed folders" not in system.content
+
+
 async def test_a_routed_task_answered_without_a_tool_gets_one_corrective_turn(
     conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
 ) -> None:
@@ -861,7 +883,7 @@ async def test_a_read_in_one_folder_does_not_verify_a_write_in_another(
     assert '"reason": "verify_first"' in (refused.detail or "")
 
 
-@pytest.mark.parametrize("operation", ["rename", "move", "trash"])
+@pytest.mark.parametrize("operation", ["rename", "move"])
 async def test_mutation_sources_need_exact_file_evidence(
     operation: str,
     conn: sqlite3.Connection,
@@ -876,9 +898,7 @@ async def test_mutation_sources_need_exact_file_evidence(
     def proposal() -> BrainResponse:
         if operation == "rename":
             return tool_call("rename_file", path=str(source), new_name="renamed.txt")
-        if operation == "move":
-            return tool_call("move_file", source=str(source), destination=str(destination))
-        return tool_call("move_to_trash", path=str(source))
+        return tool_call("move_file", source=str(source), destination=str(destination))
 
     settings = agent_settings.model_copy(update={"tool_routing": "off"})
     broker = FixedBroker(approved=True)
@@ -908,11 +928,97 @@ async def test_mutation_sources_need_exact_file_evidence(
     if operation == "rename":
         assert renamed.read_text(encoding="utf-8") == "tiny"
         assert not source.exists()
-    elif operation == "move":
+    else:
         assert destination.read_text(encoding="utf-8") == "tiny"
         assert not source.exists()
-    else:
-        assert not source.exists()
+
+
+async def test_trash_reads_the_exact_file_before_asking_for_approval(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    source = downloads / "small.txt"
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain(
+        [tool_call("move_to_trash", path=str(source)), answer("Moved.")]
+    )
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="move the small file to the trash",
+        approvals=broker,
+    )
+
+    assert [step.status for step in outcome.steps] == ["done"]
+    assert not source.exists()
+    assert len(broker.requests) == 1
+
+
+async def test_a_skipped_mutation_can_be_corrected_and_completed(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    """A prose "Moved" after verify-first must not end the task.
+
+    The model gets one explicit correction; this scripted run then reads the
+    source and retries the move successfully.
+    """
+    source = downloads / "small.txt"
+    destination = downloads / "moved.txt"
+    broker = FixedBroker(approved=True)
+    brain = ScriptedBrain(
+        [
+            tool_call("move_file", source=str(source), destination=str(destination)),
+            answer("Moved."),
+            tool_call("get_file_info", path=str(source)),
+            tool_call("move_file", source=str(source), destination=str(destination)),
+            answer("Moved."),
+        ]
+    )
+    outcome = await run_task(
+        settings=agent_settings,
+        conn=conn,
+        brain=brain,
+        request="move the small file",
+        approvals=broker,
+    )
+
+    assert [step.status for step in outcome.steps] == ["skipped", "done", "done"]
+    assert not source.exists()
+    assert destination.read_text(encoding="utf-8") == "tiny"
+    assert len(brain.calls) == 5
+    assert "has not completed" in brain.calls[2]["messages"][-1].content
+    rows = trail(AuditLog(conn).for_task(outcome.task_id))
+    assert any(row.action == "agent.mutation_required" for row in rows)
+
+
+async def test_a_skipped_mutation_that_is_never_completed_fails_honestly(
+    conn: sqlite3.Connection, agent_settings: Settings, downloads: Path
+) -> None:
+    source = downloads / "small.txt"
+    destination = downloads / "moved.txt"
+    brain = ScriptedBrain(
+        [
+            tool_call("move_file", source=str(source), destination=str(destination)),
+            answer("Moved."),
+            answer("Moved anyway."),
+        ]
+    )
+    with pytest.raises(AgentToolRequired, match="did not complete"):
+        await run_task(
+            settings=agent_settings,
+            conn=conn,
+            brain=brain,
+            request="move the small file",
+        )
+
+    assert source.exists()
+    task = TaskRepository(conn).recent(1)[0]
+    assert task.status == "failed"
+    assert "no success is being reported" in (task.error or "")
+    rows = trail(AuditLog(conn).for_task(task.id))
+    assert any(row.action == "agent.mutation_required" for row in rows)
+    assert rows[-1].action == "agent.answer"
+    assert rows[-1].status == "failed"
 
 
 async def test_a_destination_folder_can_be_inspected_without_listing_it(

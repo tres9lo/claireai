@@ -35,10 +35,12 @@ plan and `PROGRESS.md` holds what is proven and what is not.
             └─ result text back into messages, next step ────┘
 ```
 
-Every loop iteration re-sends the conversation *and all tool schemas* to the
-model. That is the dominant cost on a CPU-only machine (see "Performance"
-below), which is why schema size and tool count are treated as product
-constraints rather than cosmetics.
+Every tool-using loop iteration re-sends the conversation and its selected tool
+schemas to the model. That is the dominant cost on a CPU-only machine (see
+"Performance" below), which is why schema size and tool count are treated as
+product constraints rather than cosmetics. Conversation and explanation routes
+send no schemas and a compact system prompt, so a short reply does not pay that
+cost.
 
 ## Modules
 
@@ -57,15 +59,18 @@ constraints rather than cosmetics.
 | `tools/base.py` | `Tool` (name, description, risk, pydantic args, handler), registry, schema stripping | Execute side effects |
 | `tools/files.py` | Five read-only file tools | Write anything |
 | `tools/files_write.py` | Six mutating tools, all `needs_approval` | Delete permanently, bypass the sandbox |
+| `tools/canvas.py` | Structured local HTML canvases with news cards, video embeds, images and links | Let the model author scripts or upload anything |
+| `tools/apps.py` | Launch installed desktop entries, open approved URLs, and arrange windows | Accept arbitrary shell commands |
+| `windows.py` | X11/XWayland EWMH window enumeration, move/resize and tiling | Touch a native-Wayland window that XWayland cannot see |
 | `approval.py` | `ApprovalRequest`, per-task grants, `DenyAll` default | Decide on the owner's behalf |
 | `agent.py` | The loop: validate, authorize, run, log, feed back | Trust model output |
 | `routing.py` | Narrow the tool set per request (deterministic, no model call) | Remove the fallback to all tools |
 | `memory.py` | Local Ollama/hash embeddings and SQLite cosine search | Upload text or vectors |
 | `cua.py` | Optional pyautogui/mss screen and input driver | Decide its own permission; the agent does that |
-| `wakeword.py` | openWakeWord frame scoring and microphone listener | Download a model or save audio |
+| `wakeword.py` | Local speech (“Hey Claire”) and openWakeWord microphone listeners with phrase pre-roll | Download a model, save audio, or grant a capability |
 | `api/` | Loopback FastAPI service with bearer-token auth, reusing the same agent/approval path | Approve a write with only an HTTP token |
 | `presence.py` | `PresenceEvent` stream (idle, thinking, tool_running, …) | Hold any capability |
-| `desktop/` | Native Tk/customtkinter window: Chat, Activity, Approvals, History, Voice, Settings, About | Open a network listener or run a tool without approval |
+| `desktop/` | Native Tk/customtkinter window: Presence, Chat, Canvas, Activity, Approvals, History, Voice, Memory, Settings, About | Open a network listener or run a tool without approval |
 | `preflight.py` | OS/Python/Tk/display/package checks, a sized download plan and consent before `pip` runs | Download anything without an explicit yes |
 | `training.py` | Opt-in daily practice curriculum and one bounded local training run; writes a candidate only | Promote a candidate, log into accounts, or post |
 | `gate.py` | Scores candidate and installed checkpoints on fixed suites; archives the old pair before a strict-gate promotion | Promote on a tie, a regression, or a failed/missing suite |
@@ -144,6 +149,12 @@ Three changes took one representative request from 126.8 s to 71.7 s:
 The remaining lever is sending fewer tools per call (`routing.py`): classify
 locally by keyword, send only the reachable tools, and fall back to the full
 registry whenever the router is unsure or the model asks for a filtered-out tool.
+The 2026-11-27 measurements made this concrete: the same short answer took
+118.05 s with 30 schemas, 37.8 s with the full tool policy and no schemas, and
+**4.9 s** with the compact conversation prompt. The runtime now keeps Qwen
+resident with a startup warmup and `keep_alive=30m`. A mechanism canvas now sends
+one tool instead of three; a news canvas sends only the news fetch plus the
+canvas/list pair.
 
 Decoding temperature is chosen per phase rather than fixed: an assistant has two
 different jobs in one turn. While no step has succeeded it is *deciding* what to
@@ -158,6 +169,8 @@ disables the one bounded retry (identical input, identical reply).
 ## Deliberate non-decisions
 
 - **The API is opt-in and loopback-first.** `claireai --api` / `claireai-api`
+  exposes chat, background tasks, devices, approvals, audit, summaries,
+  settings, memory and SSE. The same runtime, allow-list and approval policy
   starts an authenticated FastAPI service for other local clients. The Tk window
   still calls the runtime directly and remains the desktop UI. A bearer token
   authorizes API calls, not file writes; those still use signed one-action
@@ -171,9 +184,10 @@ disables the one bounded retry (identical input, identical reply).
   `screen` capability and approval; `computer_control` needs `cursor` or
   `keyboard` plus approval, and reports unsupported Wayland sessions honestly.
   Camera capture and clipboard reading are still not built.
-- **The wake-word engine is not a wake phrase claim.** The adapter and listener
-  are implemented, but no "Hey Claire" model is bundled. The owner must supply
-  a matching openWakeWord model and test it on their microphone.
+- **The wake phrase uses local speech, not a custom model.** The default `stt`
+  engine hears “Hey Claire” with the installed faster-whisper model, a hotword
+  and pre-roll. openWakeWord is an alternative and still needs a matching model
+  for an arbitrary phrase. A human-spoken acceptance run remains pending.
 - **No Tauri shell yet.** The tested desktop is Tk/customtkinter and is kept
   deliberately for this phase. Tauri + React is a later target.
 - **No hosted inference by default.** Ollama + Qwen is local; hosted providers

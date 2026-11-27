@@ -25,6 +25,7 @@ Nothing needs to be set. The defaults are:
 CLAIREAI_BRAIN_PROVIDER=ollama
 CLAIREAI_BRAIN_MODEL=qwen3:1.7b
 CLAIREAI_BRAIN_CODING_MODEL=qwen2.5-coder:1.5b
+CLAIREAI_BRAIN_THINK=false
 CLAIREAI_BRAIN_BASE_URL=http://127.0.0.1:11434/api
 ```
 
@@ -54,6 +55,17 @@ refactoring, tests and similar), it sends that turn to
 `CLAIREAI_BRAIN_MODEL`. This is a model choice only; the agent loop, tool schemas,
 approvals and audit behaviour are identical.
 
+Qwen3 can emit hidden reasoning before its answer. On this CPU that measured
+7.5 s for a 32-token probe versus 1.8 s with thinking off, so
+`CLAIREAI_BRAIN_THINK` defaults to `false`. Tool calls are already structured;
+enable thinking only when a turn genuinely needs deeper reasoning. The flag is
+sent only to Qwen3 tags, because other Ollama models do not declare it.
+
+The default 180-second request timeout is a backstop for slow CPU prompt
+processing, not a target. Routing narrows file-path requests to the relevant
+schemas; if a request does time out, the task fails with a clear
+`Ollama did not answer within 180s` error rather than hanging.
+
 ## Hosted providers (opt-in)
 
 Sent to a hosted endpoint: the system prompt, the conversation so far, the tool
@@ -76,9 +88,10 @@ CLAIREAI_BRAIN_API_KEY=sk-...
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CLAIREAI_BRAIN_BASE_URL` | per provider | endpoint override, e.g. vLLM or LM Studio |
-| `CLAIREAI_BRAIN_TIMEOUT_SECONDS` | `60` | per-request timeout |
-| `CLAIREAI_BRAIN_MAX_TOKENS` | `1024` | reply budget |
+| `CLAIREAI_BRAIN_TIMEOUT_SECONDS` | `180` | per-request timeout; CPU tool calls can legitimately exceed a minute |
+| `CLAIREAI_BRAIN_MAX_TOKENS` | `1024` | initial provider reply budget; the saved **Max answer tokens** preference becomes the per-turn cap |
 | `CLAIREAI_BRAIN_CODING_MODEL` | `qwen2.5-coder:1.5b` | Ollama code model |
+| `CLAIREAI_BRAIN_THINK` | `false` | Qwen3 hidden reasoning |
 
 ### Endpoint rules
 

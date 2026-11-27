@@ -5,6 +5,72 @@ nothing has been released yet.
 
 ## [Unreleased]
 
+### Added — presence, canvases, app control and faster local replies
+
+- **Rich internet canvases.** Canvas media now supports live-news cards (headline, standfirst, publisher and real link), YouTube/Vimeo embeds or direct mp4/webm/ogg video, public https images, and source-link cards. The model supplies structured data; the renderer owns the markup and never executes scripts. A live canvas with a news card and a YouTube no-cookie embed was verified on 2026-11-27.
+- **Window arrangement and tab reorder.** Approved `list_windows` / `arrange_windows` tools focus, move, resize, center, tile left/right, maximize and tile all X11/XWayland app windows through EWMH. `tab_left` / `tab_right` focus a window and send the browser reorder-tab shortcut behind the `keyboard` capability. A mapped Tk window was live-tiled to 640×679 and resized to 500×300.
+- **Learning startup fixed.** `warm_model()` referenced an `allowed` callback defined only in `start_background_learning()` and started the trainer from the wrong lifecycle. The trainer now starts with the journal learner, and the Ollama warmup no longer raises during startup. Self-improvement remains opt-in and gated.
+- **Presence-first desktop and permission card.** The opening page is an animated
+  local neural-presence view with a **Presence / Chat** switch. Approvals can be
+  handled in a modern in-window card; its action row is always visible, it can be
+  resized or minimised, and it no longer takes an input grab. The Approvals page
+  preserves the owner's selected action while its countdown refreshes.
+- **“Hey Claire” speech wake engine.** The default `stt` engine uses the local
+  faster-whisper model, a `hey claire` hotword and pre-roll, then sends the same
+  utterance as the chat command. The openWakeWord adapter remains optional. A
+  synthesized clip matched the phrase end-to-end; a human-spoken run is pending.
+- **Visual canvases.** `create_canvas` accepts structured sections, steps,
+  metrics and sources and renders a self-contained local HTML page with the
+  modern canvas style. `list_canvases` and the native Canvas page list and open
+  them. The model writes data, not scripts.
+- **App and browser control.** `list_apps`, `open_app` and `open_in_browser` are
+  registered behind the opted-in `apps` capability and every launch needs its own
+  approval. Desktop entries only; arbitrary shell commands are not accepted.
+- **Response time.** A compact conversation prompt and zero schemas cut a live
+  `qwen3:1.7b` reply from 37.8 s to **4.9 s** (118.05 s with the full schema
+  catalog). Startup warmup and `keep_alive=30m` keep the model resident.
+
+### Added — agent editing and local-model efficiency
+
+- **Surgical file editing:** `replace_in_file` changes one exact text block in a
+  UTF-8 file without asking the model to rewrite the whole file. A non-unique
+  match is refused unless `replace_all` is explicit; the write is atomic and
+  keeps the file mode. Tool routing gives edit requests the new tool plus a read.
+- **Qwen3 thinking is off by default.** A measured 32-token probe took 7.5 s with
+  hidden reasoning and 1.8 s without it. `CLAIREAI_BRAIN_THINK=true` opts back in;
+  the flag is sent only to Qwen3 tags. Normal turns still use `qwen3:1.7b`, code
+  turns use `qwen2.5-coder:1.5b`, and both were verified live with tool calls.
+- **Machine capabilities are owner-editable.** The desktop Settings page now
+  persists `screen`, `cursor` and `keyboard`; absent switches still deny the
+  tools in code, and every use still needs approval.
+- **The saved answer-token cap now reaches Ollama.** The desktop/API preference
+  previously changed only the archived scratch brain. HTTP brains expose the
+  same cap, so “Max answer tokens” actually bounds local generation.
+
+### Added — capability completion pass
+
+- **Wake word is now wired into the desktop.** The Tk **Voice** page starts and
+  stops openWakeWord, persists the choice, shows a sidebar microphone indicator
+  and turns a detection into one bounded local command recording and transcript.
+  The command becomes the next chat turn; detection grants no capability. Audio
+  stays in memory. Python 3.12 gets a reproducible no-deps ONNX install path via
+  `claireai-install-wakeword`; the package marker no longer asks pip for the
+  unavailable `tflite-runtime` wheel. The bundled/default phrase remains
+  `hey_jarvis`; a trained custom "Hey Claire" model and a human-spoken acceptance
+  run are still pending.
+- **CUA input works on this host.** `claireai.cua` detects the Xwayland cookie
+  stored under a different auth family, creates a private temporary authority
+  file for the active display, and retries. Live pointer movement, a real Tk
+  entry receiving typed text and screen capture were verified. The fallback
+  never edits the owner's Xauthority file.
+- **API expanded.** Background task creation/status/cancel, per-device pairing
+  and revocation, signed-approval inspection/denial/expiry, audit, summaries,
+  editable non-secret settings, memory list/delete and SSE are implemented. An
+  API token still cannot approve a write.
+- **Memory management.** The desktop now has a Memory page for semantic search,
+  listing and deletion, plus opt-in automatic embedding of completed turns
+  (`CLAIREAI_MEMORY_AUTO_EMBED`). Memory failures never fail a delivered answer.
+
 ### Added — CUA, wake word, local vector memory and the API service
 
 - **CUA driver:** `claireai.cua` drives the pointer, clicks, scrolling, typing
@@ -24,8 +90,9 @@ nothing has been released yet.
 - **Local semantic memory:** migration `0005_memory` adds `memory_entries`;
   `claireai.memory` provides Ollama embeddings (`nomic-embed-text`), an explicit
   hash fallback, exact cosine search and the `remember_note`/`search_memory`
-  tools. Text and vectors stay in SQLite; no background embedding of chat.
-  Verified live with Ollama `nomic-embed-text`: 768-dimension vectors and the
+  tools. Text and vectors stay in SQLite; embedding completed chat turns is
+  opt-in and off by default. Verified live with Ollama `nomic-embed-text`:
+  768-dimension vectors and the
   correct top semantic hit for a paraphrase with no shared keywords.
 - **FastAPI backend:** `claireai --api` / `claireai-api` serves a loopback,
   bearer-token-authenticated API (`/health`, status/models, chat, conversations,

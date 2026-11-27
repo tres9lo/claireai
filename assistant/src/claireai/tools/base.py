@@ -45,6 +45,7 @@ class ToolContext:
     # Optional injected driver/index; production builds create them lazily. Tests
     # use these to avoid a display or a live embedding model.
     cua: Any = None
+    windows: Any = None
     memory: Any = None
 
 

@@ -14,6 +14,8 @@ def test_defaults_to_ollama_qwen_models() -> None:
     assert settings.brain_model == "qwen3:1.7b"
     assert settings.brain_coding_model == "qwen2.5-coder:1.5b"
     assert settings.resolved_brain_base_url == "http://127.0.0.1:11434/api"
+    assert settings.brain_think is False
+    assert settings.brain_timeout_seconds == 180.0
     assert settings.model_checkpoint is None
     assert settings.resolved_model_checkpoint == settings.resolved_data_dir / "models" / "claire-scratch.pt"
 

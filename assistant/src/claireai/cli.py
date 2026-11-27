@@ -40,7 +40,6 @@ from claireai.brain import (
     BrainResponse,
     BrainStopped,
     Message,
-    ScratchBrain,
     build_brain,
 )
 from claireai.dates import answer_date_question, parse_when
@@ -126,10 +125,11 @@ async def ask(
     question: str,
     device: str = "desktop",
     conversation_id: str | None = None,
+    existing_task_id: str | None = None,
 ) -> ChatTurn:
     """Ask one question, recording the task and audit rows for the turn."""
     settings = apply_preferences(settings, conn)
-    if isinstance(brain, ScratchBrain):
+    if hasattr(brain, "max_output_tokens"):
         brain.max_output_tokens = settings.max_output_tokens
     control = RuntimeControl(settings.control_state_path).read()
     if control["shutdown"]:
@@ -143,7 +143,14 @@ async def ask(
             conversation_id = conversations.create()
         elif not conversations.exists(conversation_id):
             raise ValueError("conversation does not exist")
-        task = tasks.create(request=redact(question), kind="chat", device=device)
+        if existing_task_id is None:
+            task = tasks.create(request=redact(question), kind="chat", device=device)
+        else:
+            task = tasks.get(existing_task_id)
+            if task is None:
+                raise ValueError("task does not exist")
+            if task.status != "queued":
+                raise ValueError("only a queued task can be started")
         conversations.add_message(conversation_id, role="user", content=question, task_id=task.id)
     with transaction(conn):
         tasks.update_status(task.id, "running")
@@ -251,6 +258,14 @@ async def ask(
             )
         except (LearningError, OSError):
             pass
+    try:
+        from claireai.memory import remember_completed_turn
+
+        remember_completed_turn(
+            settings, conn, task_id=task.id, question=question, answer=response.content
+        )
+    except Exception:  # noqa: BLE001 - memory is best-effort, never the answer
+        pass
     return ChatTurn(
         task_id=task.id,
         conversation_id=conversation_id,

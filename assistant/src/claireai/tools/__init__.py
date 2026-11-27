@@ -41,6 +41,25 @@ from claireai.tools.files import (
     read_text_file,
     search_files,
 )
+from claireai.tools.apps import (
+    ArrangeWindowsArgs,
+    ListAppsArgs,
+    ListWindowsArgs,
+    OpenAppArgs,
+    OpenInBrowserArgs,
+    arrange_windows,
+    list_apps,
+    list_windows,
+    open_app,
+    open_in_browser,
+)
+from claireai.tools.canvas import (
+    CanvasArgs,
+    CanvasMedia,
+    ListCanvasesArgs,
+    create_canvas,
+    list_canvases_tool,
+)
 from claireai.tools.calendar import (
     AddAppointmentArgs,
     ListAppointmentsArgs,
@@ -65,12 +84,14 @@ from claireai.tools.files_write import (
     MoveFileArgs,
     MoveToTrashArgs,
     RenameFileArgs,
+    ReplaceInFileArgs,
     WriteToFileArgs,
     create_folder,
     create_text_file,
     move_file,
     move_to_trash,
     rename_file,
+    replace_in_file,
     write_to_file,
 )
 
@@ -136,6 +157,18 @@ WRITE_TOOLS: tuple[Tool, ...] = (
         risk="needs_approval",
         args_model=WriteToFileArgs,
         handler=write_to_file,
+        mutates=True,
+    ),
+    Tool(
+        name="replace_in_file",
+        description=(
+            "Replace one exact text block in an existing UTF-8 file. Use this for "
+            "surgical edits; read the file first and include enough context to make "
+            "old_text unique. Needs approval."
+        ),
+        risk="needs_approval",
+        args_model=ReplaceInFileArgs,
+        handler=replace_in_file,
         mutates=True,
     ),
     Tool(
@@ -289,6 +322,90 @@ CALENDAR_TOOLS: tuple[Tool, ...] = (
 )
 
 
+APP_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="list_windows",
+        description=(
+            "List open desktop windows with title, size and id. Use this before "
+            "moving or tiling an app window."
+        ),
+        risk="safe",
+        args_model=ListWindowsArgs,
+        handler=list_windows,
+    ),
+    Tool(
+        name="arrange_windows",
+        description=(
+            "Move, resize, focus, center, or tile open application windows. "
+            "Actions: focus, move, resize, tile_left, tile_right, maximize, "
+            "center, tile_all, tab_left, tab_right. Needs approval; use "
+            "list_windows first. tab_left/tab_right focus the window and send "
+            "the browser's reorder-tab shortcut; they need keyboard capability."
+        ),
+        risk="needs_approval",
+        args_model=ArrangeWindowsArgs,
+        handler=arrange_windows,
+        mutates=False,
+    ),
+    Tool(
+        name="list_apps",
+        description="List installed desktop apps by name and desktop id.",
+        risk="safe",
+        args_model=ListAppsArgs,
+        handler=list_apps,
+    ),
+    Tool(
+        name="open_app",
+        description=(
+            "Open an installed desktop app by id or name. Dangerous: needs "
+            "approval. Use computer_control afterwards to operate it."
+        ),
+        risk="dangerous",
+        args_model=OpenAppArgs,
+        handler=open_app,
+    ),
+    Tool(
+        name="open_in_browser",
+        description=(
+            "Show an http(s) URL in the owner's default browser. Needs approval. "
+            "Use open_url instead when only the page text is needed."
+        ),
+        risk="needs_approval",
+        args_model=OpenInBrowserArgs,
+        handler=open_in_browser,
+        mutates=False,
+    ),
+)
+
+
+CANVAS_TOOLS: tuple[Tool, ...] = (
+    Tool(
+        name="list_canvases",
+        description="List recent local visual canvases so an earlier one can be reopened.",
+        risk="safe",
+        args_model=ListCanvasesArgs,
+        handler=list_canvases_tool,
+    ),
+    Tool(
+        name="create_canvas",
+        description=(
+            "Create a visual local canvas page for a news briefing, a mechanism, "
+            "a comparison or an explainer. Supply a title, short summary, "
+            "sections with points, optional ordered steps, sources, and media. "
+            "For live news, call world_news first and pass each headline as a "
+            "media item kind=news with its real publisher URL. media kind=video "
+            "embeds YouTube/Vimeo or a direct mp4/webm/ogg; kind=image and "
+            "kind=link make internet source cards. Needs approval."
+        ),
+        risk="needs_approval",
+        args_model=CanvasArgs,
+        handler=create_canvas,
+        # It writes only inside ClaireAI's own data folder, never an owner path.
+        mutates=False,
+    ),
+)
+
+
 MEMORY_TOOLS: tuple[Tool, ...] = (
     Tool(
         name="remember_note",
@@ -343,6 +460,8 @@ def default_registry(
         *DAY_PLAN_TOOLS,
         *CALENDAR_TOOLS,
         *VISION_TOOLS,
+        *CANVAS_TOOLS,
+        *(APP_TOOLS if "apps" in enabled_caps else ()),
         *(BROWSER_TOOLS if browser_enabled else ()),
         *(MEMORY_TOOLS if memory_enabled else ()),
         *(COMPUTER_TOOLS if enabled_caps & {"cursor", "keyboard"} else ()),
@@ -352,8 +471,25 @@ def default_registry(
 
 __all__ = [
     "AddAppointmentArgs",
+    "APP_TOOLS",
     "BROWSER_TOOLS",
     "CALENDAR_TOOLS",
+    "CANVAS_TOOLS",
+    "CanvasArgs",
+    "CanvasMedia",
+    "ListCanvasesArgs",
+    "create_canvas",
+    "list_canvases_tool",
+    "ArrangeWindowsArgs",
+    "ListWindowsArgs",
+    "arrange_windows",
+    "list_windows",
+    "ListAppsArgs",
+    "OpenAppArgs",
+    "OpenInBrowserArgs",
+    "list_apps",
+    "open_app",
+    "open_in_browser",
     "COMPUTER_TOOLS",
     "ComputerControlArgs",
     "DAY_PLAN_TOOLS",

@@ -20,7 +20,11 @@ from claireai.tools import default_registry
 
 @pytest.fixture()
 def registry():
-    return default_registry(browser_enabled=True)
+    return default_registry(
+        browser_enabled=True,
+        memory_enabled=True,
+        capabilities=("apps", "cursor", "keyboard"),
+    )
 
 
 @pytest.mark.parametrize(
@@ -35,10 +39,16 @@ def registry():
         ("move quarterly-report.pdf into my Documents folder", "move", "move_file"),
         ("rename report.pdf to final.pdf", "rename", "rename_file"),
         ("delete everything in my Documents folder", "trash", "move_to_trash"),
+        ("move /tmp/agent-note.txt to the trash", "trash", "move_to_trash"),
+        ("delete /tmp/scratch-dir", "trash", "move_to_trash"),
+        ("move /tmp/agent-note.txt to /tmp/archive/agent-note.txt", "move", "move_file"),
         ("write a file called todo.txt in my Documents folder saying buy milk", "write", "create_text_file"),
         ("create a folder called reports in Downloads", "create_folder", "create_folder"),
         ("organise my Downloads folder into folders by file type", "organize", "move_file"),
         ("read the file notes.txt and summarise it", "read", "read_text_file"),
+        ("edit the function in app.py", "edit", "replace_in_file"),
+        ("arrange the windows side by side", "windows", "arrange_windows"),
+        ("resize the browser window", "windows", "arrange_windows"),
     ],
 )
 def test_routes_real_requests_to_the_tool_that_matters(
@@ -47,6 +57,20 @@ def test_routes_real_requests_to_the_tool_that_matters(
     result = route(request_text, registry)
     assert result.intent == expected_intent
     assert must_include in result.tools
+
+
+def test_window_request_offers_window_tools_but_screen_question_does_not(registry) -> None:
+    arranged = route("arrange my windows side by side", registry)
+    assert arranged.intent == "windows"
+    assert {"list_windows", "arrange_windows"} <= set(arranged.tools)
+
+    seen = route("show me my screen", registry)
+    assert seen.intent == "see"
+    assert "arrange_windows" not in seen.tools
+
+    launched = route("open chrome", registry)
+    assert launched.intent == "apps"
+    assert "arrange_windows" not in launched.tools
 
 
 def test_organizing_needs_the_whole_plan_not_one_tool(registry) -> None:
@@ -59,11 +83,14 @@ def test_organizing_needs_the_whole_plan_not_one_tool(registry) -> None:
 
 def test_conversation_gets_every_tool(registry) -> None:
     # Nothing to go on means nothing may be hidden.
-    for text in ("thanks, that is all for now", "what is a tokenizer?", ""):
+    for text in ("thanks, that is all for now", ""):
         result = route(text, registry)
         assert result.intent == "unrouted"
         assert set(result.tools) == set(registry.names())
         assert result.narrowed is False
+    explained = route("what is a tokenizer?", registry)
+    assert explained.intent == "explain"
+    assert explained.tools == ()
 
 
 def test_writing_about_a_journal_is_not_a_write_request(registry) -> None:
@@ -196,14 +223,20 @@ def test_route_is_json_serialisable_for_the_audit_detail(registry) -> None:
         ("show me what ~/Pictures/slides.pptx says", "read_contents", "read_text_file"),
         ("show me what is in ~/Documents/archive", "list", "list_folder"),
         ("what is in Pictures", "list", "list_folder"),
-        ("replace the contents of notes.txt with a new list", "write", "write_to_file"),
+        ("replace the contents of notes.txt with a new list", "edit", "replace_in_file"),
         ("add milk to notes.txt", "write", "write_to_file"),
         ("please show me the text of that page again", "browse", "get_page_text"),
         ("repeat the page contents", "browse", "get_page_text"),
         ("open https://example.com and tell me what it says", "browse", "open_url"),
+        ("make a canvas explaining how a bicycle gear works", "canvas", "create_canvas"),
+        ("make a canvas from today's world news", "canvas_news", "world_news"),
+        ("open Firefox", "apps", "open_app"),
+        ("remember that my sister is called Ana", "memory", "remember_note"),
+        ("hello, how are you?", "conversation", ""),
     ],
 )
 def test_the_request_reaches_the_tool_that_can_answer_it(registry, text, intent, tool) -> None:
     result = route(text, registry)
     assert result.intent == intent, text
-    assert tool in result.tools, text
+    if tool:
+        assert tool in result.tools, text

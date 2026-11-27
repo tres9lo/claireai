@@ -2,7 +2,9 @@
 
 This is ClaireAI's default brain. Ollama serves Qwen3 1.7B on this machine, so
 inference stays local without training a model from scratch. A second model,
-Qwen2.5-Coder 1.5B, is used for clearly code-focused turns.
+Qwen2.5-Coder 1.5B, is used for clearly code-focused turns. Qwen3's hidden
+thinking is disabled by default because it is expensive on CPU; see
+``Settings.brain_think``.
 
 The native API differs from the OpenAI shape in that tool arguments come back as
 an object rather than a JSON string, and a tool message carries ``tool_name``
@@ -23,6 +25,10 @@ class OllamaBrain(RemoteBrain):
     provider = "Ollama"
     default_base_url = "http://127.0.0.1:11434/api"
     requires_api_key = False
+    # Ollama unloads an idle model after five minutes by default. Reloading a
+    # 1.7B model on this CPU was measured at over a minute before the first
+    # token, which made a short chat feel broken. Keep it resident between turns.
+    keep_alive = "30m"
 
     # Keep this conservative: an ordinary question that merely mentions "API"
     # should stay on the general model. The coder model is for turns whose main
@@ -34,9 +40,17 @@ class OllamaBrain(RemoteBrain):
         re.IGNORECASE,
     )
 
-    def __init__(self, *, model: str, coding_model: str | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        coding_model: str | None = None,
+        think: bool = False,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(model=model, **kwargs)
         self.coding_model = str(coding_model or "").strip() or None
+        self.think = bool(think)
 
     def _model_for(self, messages: Iterable[Any]) -> str:
         """Route code-heavy turns to Qwen2.5-Coder, when it is configured."""
@@ -51,6 +65,20 @@ class OllamaBrain(RemoteBrain):
 
     def headers(self) -> dict[str, str]:
         return {"Content-Type": "application/json"}
+
+    async def warm(self) -> None:
+        """Load the main model once in the background; one token is enough."""
+        await self._request(
+            "POST",
+            "/chat",
+            payload={
+                "model": self.model,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": False,
+                "keep_alive": self.keep_alive,
+                "options": {"num_predict": 1},
+            },
+        )
 
     async def health(self) -> BrainHealth:
         try:
@@ -89,7 +117,13 @@ class OllamaBrain(RemoteBrain):
             "messages": _wire_messages(messages),
             "stream": False,
             "options": options,
+            "keep_alive": self.keep_alive,
         }
+        # Qwen3's hidden reasoning is expensive on CPU and is not needed for
+        # ordinary chat or structured tool calls. Only send the flag to a model
+        # that declares the capability; other tags reject unknown fields.
+        if "qwen3" in model.lower():
+            payload["think"] = self.think
         schemas = [
             {
                 "type": "function",

@@ -119,6 +119,96 @@ def issue(
     return path
 
 
+def _load_pending(path: Path, key: bytes) -> dict[str, Any] | None:
+    """Return a verified, unexpired token payload, or None for a bad file."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    payload, mac = raw.get("payload"), raw.get("mac")
+    if not isinstance(payload, dict) or not isinstance(mac, str):
+        return None
+    if payload.get("v") != TOKEN_VERSION:
+        return None
+    try:
+        expected = hmac.new(key, canonical_payload(payload), sha256).hexdigest()
+    except ApprovalFileError:
+        return None
+    if not hmac.compare_digest(mac, expected):
+        return None
+    expires_at = payload.get("expires_at")
+    if not isinstance(expires_at, (int, float)) or expires_at < time.time():
+        return None
+    return payload
+
+
+def pending_approvals(data_dir: str | Path) -> list[dict[str, Any]]:
+    """Metadata for currently valid signed tokens, without approving anything."""
+    directory = Path(data_dir)
+    pending = directory / PENDING
+    if not pending.is_dir():
+        return []
+    try:
+        key = _key(directory, create=False)
+    except ApprovalFileError:
+        return []
+    items: list[dict[str, Any]] = []
+    for path in sorted(pending.glob("*.json")):
+        payload = _load_pending(path, key)
+        if payload is None:
+            continue
+        items.append(
+            {
+                "ref": str(payload.get("nonce") or path.stem),
+                "tool": payload.get("tool"),
+                "arguments": payload.get("arguments") or {},
+                "target": payload.get("target"),
+                "issued_at": payload.get("issued_at"),
+                "expires_at": payload.get("expires_at"),
+                "hint": token_hint(
+                    ApprovalRequest(
+                        ref=str(payload.get("nonce") or path.stem),
+                        task_id="preauthorize",
+                        tool=str(payload.get("tool") or ""),
+                        risk="needs_approval",
+                        arguments=payload.get("arguments") or {},
+                        target=payload.get("target"),
+                    )
+                ),
+            }
+        )
+    return items
+
+
+def revoke_approval(data_dir: str | Path, ref: str) -> bool:
+    """Remove one pending token. This is a deny, never an approval."""
+    directory = Path(data_dir)
+    pending = directory / PENDING
+    if not pending.is_dir():
+        return False
+    try:
+        key = _key(directory, create=False)
+    except ApprovalFileError:
+        return False
+    for path in pending.glob("*.json"):
+        payload = _load_pending(path, key)
+        if payload is None:
+            continue
+        nonce = str(payload.get("nonce") or path.stem)
+        if nonce != str(ref):
+            continue
+        revoked = directory / "approvals" / "revoked"
+        revoked.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(path, revoked / path.name)
+        except FileNotFoundError:
+            return False
+        return True
+    return False
+
+
 def _matches(payload: Mapping[str, Any], request: ApprovalRequest) -> bool:
     if payload.get("tool") != request.tool:
         return False

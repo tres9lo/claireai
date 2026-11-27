@@ -1,5 +1,90 @@
 # Progress log
 
+## 2026-11-27 — Presence, “Hey Claire”, canvases and response time
+
+- **“Hey Claire” works without a custom model.** The desktop defaults to the
+  `stt` wake engine: the installed faster-whisper model matches the phrase with a
+  hotword and 0.45 s pre-roll, then sends the same utterance as the command. The
+  Voice page starts/stops the listener and persists the choice. On this PC a
+  synthesized “Hey Claire, open the notes” clip was detected as
+  `('hey claire', 'open the nose')`; the phrase match is proven, the small ASR
+  misheard one command. A human-spoken acceptance run is still pending.
+- **Ordinary replies are no longer minutes long.** A short conversation turn now
+  sends a compact system prompt and zero tool schemas. Measured live on
+  `qwen3:1.7b`: 4.9 s, versus 37.8 s with the full tool policy and 118.05 s with
+  the full schema catalog. Startup warmup and a 30-minute `keep_alive` keep the
+  model resident. Live action turns after the fix: edit 29.3 s, trash 18.0 s,
+  create 42.6 s, canvas 87.9 s.
+- **Approval UX fixed.** The permission card now reserves its action row, so
+  **Allow once** and **Deny** are always visible; it is resizable, keeps the
+  window-manager minimize control, and no longer grabs input. The Approvals page
+  also preserves the selected action across its 1.5 s countdown rebuilds, so the
+  timer no longer unselects the owner's choice.
+- **Presence, canvases and apps.** The first screen is a local neural-presence
+  orb with a Presence/Chat switch.  `create_canvas` renders structured model
+  output into a modern local HTML page (news explainers, mechanisms, sources,
+  video embeds and internet link cards);
+  the Canvas page lists and opens them. `list_apps` / `open_app` /
+  `open_in_browser` are opt-in `apps` tools gated by approval, and desktop input
+  can then operate the opened window. Canvas creation and opening were verified
+  live; app launch and browser control are unit-tested against installed desktop
+  entries.
+- **Internet media and window control added (later 2026-11-27).** Canvas media
+  now renders news cards, YouTube/Vimeo or direct video, images and links from
+  structured model output; a live canvas with a news card and YouTube no-cookie
+  embed rendered with no scripts. Approved `list_windows` / `arrange_windows`
+  tools tile, move, resize, focus and maximize X11/XWayland windows, and
+  `tab_left` / `tab_right` send the browser reorder shortcut behind keyboard
+  permission. A temporary mapped window was live-tiled to 640×679 and resized to
+  500×300. The startup learning bug was fixed: `warm_model()` no longer
+  references an undefined callback, and the journal learner and trainer both
+  start under the enabled self-improvement flag (live probe: `learner True`,
+  `trainer True`). Not verified live: native Wayland windows outside XWayland,
+  a browser tab reorder, and model-orchestrated live-news canvas creation.
+- **Verification (2026-11-27):** full suite passes, **892 tests**; live edit and
+  trash moved the exact target; the permission card's Allow/Deny controls are
+  asserted by the desktop test; wake listener start/stop returned `running False`
+  and `state stopped`. Not yet verified: a human-spoken wake phrase, live
+  `open_app`/browser operation, and a visual pass on every desktop page.
+
+## 2026-11-25 (capability completion) — integration, input, API and memory
+
+- **Wake word reached the UI.** The Tk Voice page now starts/stops openWakeWord,
+  persists the choice, shows a sidebar microphone badge and uses the existing
+  push-to-talk transcriber after a detection. The listener releases the
+  microphone, records one five-second command in memory and sends the transcript
+  as the next chat turn; no audio is saved. `WakeWordService` has a fake-driven
+  service test. A human-spoken run and a custom "Hey Claire" model are still
+  outside this evidence.
+- **Python 3.12 wake-word install is reproducible.** The `wakeword` extra no
+  longer asks pip for `openwakeword` on 3.12, where its unconditional
+  `tflite-runtime` requirement has no wheel. `claireai-install-wakeword`
+  installs the ONNX-only package with `--no-deps`; the adapter already stubs its
+  training-only scipy imports.
+- **CUA input is live on this host.** The Xwayland cookie is stored under
+  `hostname/unix:` while `DISPLAY=:0`; `cua.py` maps it into a private temporary
+  authority file and retries. Live checks moved the pointer, typed `claire` into
+  a real Tk entry and captured a 1280x720 frame. The owner's Xauthority file is
+  untouched; Windows remains unit-only.
+- **API completed beyond the initial chat surface.** Background task
+  create/list/get/cancel, device pairing/claim/revocation with hashed tokens,
+  signed-approval list/deny/expire, audit, summary, editable non-secret settings,
+  memory list/delete and SSE are in `api/app.py`; migration `0006_api_devices`
+  adds device and pairing tables. A bearer token still cannot approve a write.
+- **Memory management and optional turn embedding.** `memory.py` can list
+  entries and best-effort embed a completed turn; the Tk Memory page searches,
+  deletes and toggles `memory_auto_embed`. Automatic embedding remains off by
+  default so a missing Ollama model cannot add latency or fail a delivered
+  answer.
+- **Verification (2026-11-25):** the full suite passes, **848 tests**. A real
+  loopback listener returned health, admin status, pairing/device-token status,
+  settings, audit and SSE frames; a live `/v1/chat` turn with the installed
+  `qwen2.5-coder:1.5b` returned HTTP 200 and `ready` in 9.8 s. Live CUA
+  pointer/keyboard/screen checks pass. The editable install now resolves to the
+  checkout and the three console scripts open. `qwen3:1.7b` was still absent
+  after the check, so the default-model chat path remains unverified until that
+  pull finishes.
+
 ## 2026-11-25 (capability pass) — CUA, wake word, memory and API
 
 - **Added the four missing runtime pieces without replacing Tk.** The desktop

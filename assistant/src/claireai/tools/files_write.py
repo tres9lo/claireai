@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -100,6 +102,22 @@ class WriteToFileArgs(_Args):
     )
 
 
+class ReplaceInFileArgs(_Args):
+    path: str = Field(description="Absolute path of an existing UTF-8 text file.")
+    old_text: str = Field(
+        min_length=1,
+        description=(
+            "Exact text to find, including enough surrounding context to make it "
+            "unique. A literal match, not a regular expression."
+        ),
+    )
+    new_text: str = Field(description="Replacement text. Empty removes old_text.")
+    replace_all: bool = Field(
+        default=False,
+        description="Replace every occurrence. The default refuses when old_text is not unique.",
+    )
+
+
 class RenameFileArgs(_Args):
     path: str = Field(description="Absolute path of the file or folder to rename.")
     new_name: str = Field(description="New name only, without folders. Stays in the same folder.")
@@ -126,6 +144,49 @@ def _check_text(content: str) -> bytes:
             f"content is {_human_size(len(payload))}; the limit is {_human_size(MAX_WRITE_BYTES)}"
         )
     return payload
+
+
+def _read_editable_text(target: Path) -> str:
+    """Read a bounded UTF-8 file for an in-place edit."""
+    if not target.exists():
+        raise ToolError(f"{target} does not exist")
+    if not target.is_file():
+        raise ToolError(f"{target} is not a regular file")
+    size = target.stat().st_size
+    if size > MAX_WRITE_BYTES:
+        raise ToolError(
+            f"{target} is {_human_size(size)}; in-place edits are limited to "
+            f"{_human_size(MAX_WRITE_BYTES)}. Use a smaller file or a dedicated script."
+        )
+    raw = target.read_bytes()
+    if b"\x00" in raw:
+        raise ToolError(f"{target} looks like a binary file, not text")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ToolError(f"{target} is not valid UTF-8 text (byte {exc.start})") from exc
+
+
+def _atomic_write(target: Path, payload: bytes) -> None:
+    """Replace a file without leaving a half-written edit after a crash."""
+    mode = stat.S_IMODE(target.stat().st_mode)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".claireai-tmp", dir=target.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, target)
+    except BaseException:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def create_folder(context: ToolContext, arguments: CreateFolderArgs) -> ToolResult:
@@ -179,6 +240,43 @@ def write_to_file(context: ToolContext, arguments: WriteToFileArgs) -> ToolResul
             "bytes": len(payload),
             "mode": arguments.mode,
             "bytes_after": target.stat().st_size,
+        },
+    )
+
+
+def replace_in_file(context: ToolContext, arguments: ReplaceInFileArgs) -> ToolResult:
+    """Make one surgical text replacement instead of rewriting a whole file."""
+    target = context.sandbox.resolve(arguments.path)
+    original = _read_editable_text(target)
+    occurrences = original.count(arguments.old_text)
+    if occurrences == 0:
+        raise ToolError(
+            f"old_text was not found in {target}; read the file and copy the exact "
+            "text you want to replace"
+        )
+    if occurrences > 1 and not arguments.replace_all:
+        raise ToolError(
+            f"old_text appears {occurrences} times in {target}; include more "
+            "surrounding context, or set replace_all=true if every occurrence should change"
+        )
+
+    replacements = occurrences if arguments.replace_all else 1
+    updated = original.replace(
+        arguments.old_text, arguments.new_text, -1 if arguments.replace_all else 1
+    )
+    payload = _check_text(updated)
+    _atomic_write(target, payload)
+    return ToolResult(
+        text=(
+            f"replaced {replacements} occurrence(s) in {target} "
+            f"({_human_size(len(original.encode('utf-8')))} -> {_human_size(len(payload))})"
+        ),
+        detail={
+            "path": str(target),
+            "occurrences": replacements,
+            "bytes_before": len(original.encode("utf-8")),
+            "bytes_after": len(payload),
+            "replace_all": arguments.replace_all,
         },
     )
 

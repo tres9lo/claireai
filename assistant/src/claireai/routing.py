@@ -31,8 +31,12 @@ from claireai.tools.base import ToolRegistry
 _VERB = 1
 _OBJECT = 2
 
-# A path-ish noun, including a bare extension ("rename report.pdf").
+# A path-ish noun, including a bare extension ("rename report.pdf") or an
+# absolute path with no extension ("delete /tmp/scratch-dir"). Without the path
+# form, a real trash request was unrouted and received all 25 schemas; one CPU
+# call then took 112.8 s and hit the old 60 s timeout.
 _FILE_NOUN = r"\b(file|files|folder|folders|document|documents|name|pdf|txt|doc)\b|\.\w{1,5}\b"
+_PATH_NOUN = r"(?:^|\s)(?:~[/\\]|/|[A-Za-z]:[/\\])[^\s]+"
 
 INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     # Invariant, enforced by a test: **an intent that can write must also offer
@@ -42,6 +46,52 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     # offering only write tools, a small model answered with
     # `/Users/yourname/quarterly-report.pdf` and the sandbox refused it, twice.
     # Reads come after the tool that owns the intent, because order is a prior.
+    (
+        "conversation",
+        r"^\s*(?:(?:hi|hello|hey)(?:[,.! ]+how are you)?|good (?:morning|afternoon|evening)|"
+        r"how are you|who are you|what can you do|thanks|thank you|nice to meet you)"
+        r"[\s,.!?]*$",
+        r".*",
+        ("search_memory",),
+        "ordinary conversation; no tool schema is needed for a greeting",
+    ),
+    (
+        "memory",
+        r"\b(remember|memorize|memorise|learn|keep in mind|note that|save this)\b",
+        r"\b(that|this|fact|facts|preference|preferences|note|notes|memory|remember|know)\b",
+        ("remember_note", "search_memory"),
+        "asking the assistant to keep or recall a durable local note",
+    ),
+    (
+        "canvas_news",
+        r"\b(canvas|visual|briefing|infographic|illustrate)\b",
+        r"\b(news|headlines?|briefing|top stories|current events)\b",
+        ("world_news", "create_canvas", "list_canvases"),
+        "asking for a visual news briefing, which needs headlines before it is drawn",
+    ),
+    (
+        "canvas",
+        r"\b(canvas|diagram|infographic|flowchart|visuali[sz]e|illustrate|draw|sketch|chart)\b",
+        r"\b(canvas|diagram|infographic|flowchart|visual|process|mechanism|system|how .* works|news|explainer)\b",
+        ("create_canvas", "list_canvases"),
+        "asking for a visual page; the list read lets the model reuse an earlier canvas",
+    ),
+    (
+        "windows",
+        r"\b(arrange|rearrange|tile|resize|move|maximize|minimize|snap|center|"
+        r"side by side|layout)\b",
+        r"\b(window|windows|desktop|screen|side by side|layout|tab|tabs|app|apps)\b",
+        ("list_windows", "arrange_windows", "computer_control"),
+        "asking to arrange or resize open application windows",
+    ),
+    (
+        "apps",
+        r"\b(open|launch|start|switch to|show)\b",
+        r"\b(app|apps|application|applications|browser|firefox|chrome|chromium|edge|"
+        r"libreoffice|spotify|calculator|terminal|notes|gedit|settings)\b",
+        ("list_apps", "open_app", "open_in_browser", "computer_control"),
+        "asking to open or operate a desktop app, not to fetch a page",
+    ),
     (
         "calendar",
         r"\b(schedule|scheduled|appointment|appointments|meeting|meetings|agenda|calendar|what's on|what is on)\b",
@@ -84,9 +134,10 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     (
         "trash",
         r"\b(delete|trash|discard|remove|get rid of|throw away|bin)\b",
-        r"\b(file|files|folder|folders|item|items|everything|document|documents|it)\b",
-        ("move_to_trash", "get_file_info"),
-        "asking to remove something; the only removal that exists is the recoverable trash",
+        r"\b(file|files|folder|folders|item|items|everything|document|documents|it)\b|"
+        + _FILE_NOUN + "|" + _PATH_NOUN,
+        ("get_file_info", "move_to_trash"),
+        "asking to remove something; read the exact path, then use recoverable trash",
     ),
     (
         "rename",
@@ -112,15 +163,23 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     (
         "move",
         r"\b(move|put|transfer|shift|place)\b",
-        r"\b(file|files|into|in my|to my|folder|document|documents|downloads)\b",
+        r"\b(file|files|into|in my|to my|folder|document|documents|downloads)\b|"
+        + _FILE_NOUN + "|" + _PATH_NOUN,
         ("move_file", "list_folder", "get_file_info", "create_folder"),
         "asking to move a file or folder, so both ends must be discoverable",
+    ),
+    (
+        "edit",
+        r"\b(edit|modify|replace|change|update|insert|patch)\b",
+        _FILE_NOUN,
+        ("read_text_file", "replace_in_file", "get_file_info"),
+        "asking for a surgical edit; read the current text before replacing it",
     ),
     (
         "write",
         r"\b(write|save|append|add|create|make|put|replace|overwrite|update)\b",
         r"\b(file|files|note|notes|text|txt|\.md|\.txt|saying|contents?)\b",
-        ("create_text_file", "write_to_file", "get_file_info", "list_folder"),
+        ("create_text_file", "write_to_file", "replace_in_file", "get_file_info", "list_folder"),
         "asking to write text into a file, which needs the existing file checked first",
     ),
     (
@@ -133,7 +192,8 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     (
         "search",
         r"\b(find|search|locate|look for|where is|where are|which files|every|all)\b",
-        r"\b(file|files|pdf|doc|docs|document|documents|named|called|matching|pattern)\b",
+        r"\b(file|files|pdf|doc|docs|document|documents|named|called|matching|pattern)\b|"
+        + _PATH_NOUN,
         ("search_files",),
         "asking to locate files by name",
     ),
@@ -142,7 +202,8 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     (
         "list",
         r"\b(list|show|what is in|what's in|whats in|inside|contents|browse)\b",
-        r"\b(folder|folders|downloads|documents|directory|desktop|pictures|inside|in my)\b",
+        r"\b(folder|folders|downloads|documents|directory|desktop|pictures|inside|in my)\b|"
+        + _PATH_NOUN,
         ("list_folder",),
         "asking to see what a folder holds",
     ),
@@ -156,16 +217,27 @@ INTENTS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     (
         "read",
         r"\b(read|open|summar(y|ise|ize)|what does|contents|show me the text)\b",
-        r"\b(file|files|text|content|contents|note|notes|document|it)\b",
+        r"\b(file|files|text|content|contents|note|notes|document|it)\b|"
+        + _FILE_NOUN + "|" + _PATH_NOUN,
         ("read_text_file", "get_file_info"),
         "asking to read a file's contents",
     ),
     (
         "info",
         r"\b(how big|how large|modified|when was|details|info|information|size of)\b",
-        r"\b(file|files|folder|path|it|this)\b",
+        r"\b(file|files|folder|path|it|this)\b|" + _FILE_NOUN + "|" + _PATH_NOUN,
         ("get_file_info", "find_largest_files"),
         "asking about one path",
+    ),
+    # After every action rule: a concept question gets one small schema instead
+    # of the whole catalog. "How do I delete a file?" still matches trash first.
+    (
+        "explain",
+        r"^\s*(what is|what are|who is|why is|why do|why does|how does|define|"
+        r"meaning of|explain|tell me about)\b",
+        r".*",
+        ("search_memory",),
+        "explaining a concept; uses a local memory lookup instead of every tool",
     ),
 )
 
@@ -206,15 +278,22 @@ def _normalise(request: str) -> str:
 
 
 def route(request: str, registry: ToolRegistry) -> Route:
-    """Pick the tools for ``request``; never returns an empty or foreign set.
+    """Pick the tools for ``request``; never returns a foreign set.
 
     Unrecognised requests get the whole registry: narrowing is an optimisation,
-    so when there is no evidence it must not hide anything the owner needs.
+    so when there is no evidence it must not hide anything the owner needs. A
+    narrow conversation/explanation intent may return no tools at all.
     """
     text = _normalise(request)
     for name, verb, obj, tools, reason in _COMPILED:
         if not verb.search(text) or not obj.search(text):
             continue
+        # Conversation and explanation deliberately expose no tool at all. The
+        # model should answer, not spend a CPU prompt evaluation on schemas it
+        # cannot use. The patterns are anchored and every action rule is tried
+        # first, so "how do I delete a file?" still reaches the trash tools.
+        if name in {"conversation", "explain"}:
+            return Route(intent=name, tools=(), reason=reason, narrowed=True)
         chosen = tuple(tool for tool in tools if tool in registry)
         if chosen:
             return Route(intent=name, tools=chosen, reason=reason, narrowed=len(chosen) < len(registry))

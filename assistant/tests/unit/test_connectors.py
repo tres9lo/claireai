@@ -45,6 +45,7 @@ def test_ollama_qwen_is_the_default_provider() -> None:
     assert settings.brain_provider == "ollama"
     assert settings.brain_model == "qwen3:1.7b"
     assert settings.brain_coding_model == "qwen2.5-coder:1.5b"
+    assert settings.brain_think is False
     assert settings.brain_api_key_value is None
 
 
@@ -102,6 +103,7 @@ def test_factory_builds_the_ollama_brain_by_default(tmp_path) -> None:  # noqa: 
     assert isinstance(brain, OllamaBrain)
     assert brain.model == "qwen3:1.7b"
     assert brain.coding_model == "qwen2.5-coder:1.5b"
+    assert brain.think is False
 
 
 def test_factory_builds_the_selected_connector() -> None:
@@ -327,7 +329,25 @@ async def test_ollama_reads_object_arguments_and_reports_tools() -> None:
     assert response.tool_calls[0].arguments == {"path": "~/a.txt"}
     payload = seen[0]
     assert payload["stream"] is False
+    assert "think" not in payload
     assert payload["tools"][0]["function"]["name"] == "get_file_info"
+
+
+async def test_ollama_disables_qwen3_thinking_and_applies_the_saved_cap() -> None:
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    brain = OllamaBrain(model="qwen3:1.7b")
+    brain._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    brain.max_output_tokens = 192
+    await brain.generate([Message(role="user", content="Reply exactly: ok")])
+    await brain.aclose()
+
+    assert seen[0]["think"] is False
+    assert seen[0]["options"]["num_predict"] == 192
 
 
 async def test_ollama_routes_code_turns_to_the_coder_model() -> None:

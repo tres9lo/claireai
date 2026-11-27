@@ -120,6 +120,8 @@ The defaults are already correct:
 CLAIREAI_BRAIN_PROVIDER=ollama
 CLAIREAI_BRAIN_MODEL=qwen3:1.7b
 CLAIREAI_BRAIN_CODING_MODEL=qwen2.5-coder:1.5b
+# Off is faster on CPU. Set true only when deeper reasoning is worth the wait.
+CLAIREAI_BRAIN_THINK=false
 CLAIREAI_BRAIN_BASE_URL=http://127.0.0.1:11434/api
 
 # Local memory uses the same Ollama daemon.

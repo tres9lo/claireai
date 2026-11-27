@@ -4,7 +4,7 @@
 
 No cloud provider or API key is required by default. Network features and connectors are opt-in; nothing leaves the laptop unless you enable and approve it.
 
-> **Runtime change (2026-11-25).** ClaireAI now uses **Ollama** as its brain: **Qwen3 1.7B** for normal turns and **Qwen2.5-Coder 1.5B** for code-heavy turns. The from-scratch trainer in `brain-lab/` is kept as archived research, not as the required path. The reason is practical: this project is developed on a **budget PC (7 GB RAM, CPU only)**. Training a useful model from random initialization was slow and difficult, several candidates failed the gate, and the time cost did not produce a usable assistant. Serving a small pretrained model locally is the honest fit for that hardware.
+> **Runtime change (2026-11-25).** ClaireAI now uses **Ollama** as its brain: **Qwen3 1.7B** for normal turns and **Qwen2.5-Coder 1.5B** for code-heavy turns. Qwen3's hidden thinking is off by default because it cost 7.5 s for a 32-token probe versus 1.8 s with thinking off; enable it with `CLAIREAI_BRAIN_THINK=true` when a task needs deliberate reasoning. The from-scratch trainer in `brain-lab/` is kept as archived research, not as the required path. The reason is practical: this project is developed on a **budget PC (7 GB RAM, CPU only)**. Training a useful model from random initialization was slow and difficult, several candidates failed the gate, and the time cost did not produce a usable assistant. Serving a small pretrained model locally is the honest fit for that hardware.
 
 ### Why the model approach changed
 
@@ -54,7 +54,7 @@ From-scratch training was measured, not hand-waved: the runs and failures are in
 | Opt-in Claude and ChatGPT connectors | ✅ optional |
 | CLI chat that records every turn as a task plus audit entries | ✅ |
 | Read-only tools (files, calendar, day plan, image identification; browser tools when enabled) | ✅ |
-| 9 approval-gated writes (folder, file, overwrite/append, rename, move, trash, download, appointment, day plan) | ✅ |
+| 10 approval-gated writes (folder, file, overwrite/append, surgical replace, rename, move, trash, download, appointment, day plan) | ✅ |
 | Interactive approval flow with per-decision audit references | ✅ |
 | Agent loop with schema validation, risk policy and step cap | ✅ |
 | Strict ToolACE/Hermes name mapping to real registry schemas | ✅ code path; full mapped sample pending |
@@ -72,10 +72,15 @@ From-scratch training was measured, not hand-waved: the runs and failures are in
 | Stored conversation history, owner directives and preferences | ✅ first version |
 | Offline speech output with pitch/rate controls | ✅ Piper neural voice, else eSpeak NG |
 | Push-to-talk local speech transcription in the desktop Voice page | ✅ optional faster-whisper + local model |
-| Local semantic memory (SQLite vector index; Ollama or explicit hash embeddings) | ✅ `remember_note` / `search_memory`; embeddings stay local |
-| Screen reading and CUA input driver | ✅ capability-gated; screen needs approval, cursor/keyboard are `dangerous`; optional extras |
-| Wake-word engine | ✅ openWakeWord adapter + microphone listener; a pretrained model and live microphone are still required |
-| FastAPI backend/API service | ✅ loopback, bearer-token authenticated; tool writes still need a signed approval |
+| Local semantic memory (SQLite vector index; Ollama or explicit hash embeddings) | ✅ `remember_note` / `search_memory`; Memory page lists/deletes entries and can embed turns; embeddings stay local |
+| Screen reading and CUA input driver | ✅ capability-gated; live screen capture, pointer movement and keyboard input verified on Linux; cursor/keyboard are `dangerous` and always approved |
+| Wake-word engine | ✅ local speech phrase engine for **“Hey Claire”** using the installed faster-whisper model (`stt`), plus the openWakeWord adapter; synthetic spoken clip recognized, human-spoken acceptance still pending |
+| Visual canvases | ✅ `create_canvas` turns structured sections/steps/sources into a modern local HTML page; `media` adds live news cards, YouTube/Vimeo embeds, images and links. Native **Canvas** page lists and opens them |
+| App and browser launch | ✅ `list_apps` / `open_app` / `open_in_browser` behind the opt-in `apps` capability and per-action approval; pointer/keyboard control operates the window |
+| Window arrangement | ✅ approved `list_windows` / `arrange_windows`: focus, move, resize, center, tile left/right, maximize, tile all, and browser tab reorder via keyboard |
+| Presence-first desktop | ✅ animated local-neural **Presence** screen with a Presence/Chat switch; the permission card handles allow/deny in-window |
+| Learning and self-improvement | ✅ opt-in journal + background learner + gated trainer; startup now starts both workers correctly and the Settings page reports candidate status |
+| FastAPI backend/API service | ✅ loopback bearer auth, tasks/cancel, devices, approvals, audit, summaries, settings, memory and SSE; tool writes still need a signed approval |
 | OS family detection (Linux/Windows first targets) | ✅ detection only |
 | Reproducible MIT synthetic task corpus + split-aware text training | ✅ starter data |
 | Random-init visual-grounding prototype using attributed online synthetic images | 🧪 research only; not integrated |

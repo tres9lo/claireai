@@ -45,7 +45,7 @@ class RemoteBrain:
         model: str,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 60.0,
+        timeout: float = 180.0,
         max_tokens: int = 1024,
     ) -> None:
         if not str(model or "").strip():
@@ -58,6 +58,23 @@ class RemoteBrain:
         self.timeout = float(timeout)
         self.max_tokens = int(max_tokens)
         self._http: httpx.AsyncClient | None = None
+
+    @property
+    def max_output_tokens(self) -> int:
+        """The runtime's saved reply cap, applied to every HTTP brain.
+
+        The agent sets this before each turn. A separate attribute was previously
+        only honoured by the archived scratch brain, so the desktop's "Max answer
+        tokens" control silently did nothing for Ollama.
+        """
+        return self.max_tokens
+
+    @max_output_tokens.setter
+    def max_output_tokens(self, value: int) -> None:
+        tokens = int(value)
+        if tokens < 1:
+            raise ValueError("max output tokens must be at least 1")
+        self.max_tokens = tokens
 
     # -- transport ---------------------------------------------------------
     def headers(self) -> dict[str, str]:

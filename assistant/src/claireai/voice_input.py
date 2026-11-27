@@ -79,19 +79,23 @@ class LocalTranscriber:
     def runtime_available(self) -> bool:
         return self.model_factory is not None or importlib.util.find_spec("faster_whisper") is not None
 
-    def transcribe(self, audio: bytes, *, content_type: str) -> str:
+    def transcribe(
+        self, audio: bytes, *, content_type: str, hotwords: str | None = None
+    ) -> str:
         if content_type not in SUPPORTED_AUDIO_TYPES:
             raise ValueError("unsupported audio format from the browser recorder")
         if not audio or len(audio) > MAX_AUDIO_BYTES:
             raise ValueError(f"audio must be between 1 byte and {MAX_AUDIO_BYTES} bytes")
         with self._lock:
             model = self._load(allow_download=False)
+            hint = (hotwords or "").strip()
             try:
                 segments, info = model.transcribe(
                     io.BytesIO(audio),
-                    beam_size=1,
+                    beam_size=5 if hint else 1,
                     vad_filter=True,
                     condition_on_previous_text=False,
+                    **({"hotwords": hint} if hint else {}),
                 )
                 if float(info.duration) > MAX_AUDIO_SECONDS:
                     raise ValueError(f"recording exceeds {MAX_AUDIO_SECONDS} seconds")

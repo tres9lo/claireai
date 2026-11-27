@@ -46,7 +46,11 @@ cua = ["pyautogui>=0.9,<1", "mss>=9,<11", "Pillow>=10,<13"]
 # Wake word: openWakeWord inference plus microphone capture. Model files are a
 # separate explicit download, not an implicit package-install side effect.
 wakeword = [
-  "openwakeword>=0.6,<1",
+  # openWakeWord 0.6 requires tflite-runtime, which has no Python 3.12 wheel.
+  # On 3.12 the ONNX-only package is installed with --no-deps by
+  # `claireai-install-wakeword`; its training-only scipy imports are stubbed by
+  # claireai.wakeword. On 3.11 pip can install the full package normally.
+  "openwakeword>=0.6,<1; python_version < '3.12'",
   "sounddevice>=0.4,<1",
   "numpy>=1.26,<3",
   "onnxruntime>=1.17,<2",
@@ -82,7 +86,7 @@ all = [
   "uvicorn>=0.30,<1",
   "pyautogui>=0.9,<1",
   "mss>=9,<11",
-  "openwakeword>=0.6,<1",
+  "openwakeword>=0.6,<1; python_version < '3.12'",
   "sounddevice>=0.4,<1",
   "numpy>=1.26,<3",
   "onnxruntime>=1.17,<2",
@@ -96,6 +100,7 @@ claireai = "claireai.app:main"
 # module level, so a core install would fail before it could explain the extra.
 claireai-desktop = "claireai.desktop.launcher:main"
 claireai-api = "claireai.api.main:main"
+claireai-install-wakeword = "claireai.wakeword_install:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claireai"]
